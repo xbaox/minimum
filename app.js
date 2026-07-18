@@ -455,9 +455,26 @@ function importJSON(file) {
       alert('Файл не похож на экспорт «Минимума».');
       return;
     }
-    if (!confirm('Заменить текущие данные данными из файла?')) return;
-    store = migrate(data);
+    let incoming;
+    try {
+      incoming = migrate(data);
+    } catch (e) {
+      alert('Импорт не выполнен: файл повреждён. Текущие данные не изменены.');
+      return;
+    }
+    // сводка из файла — перед подтверждением
+    const dayCount = Object.keys(incoming.days).length;
+    const range = Object.keys(incoming.days).filter(isDayKey).sort();
+    const parts = [
+      `пунктов: ${incoming.items.length}`,
+      `дней с отметками: ${dayCount}`,
+      `закрытых недель: ${incoming.reviews.length}`
+    ];
+    if (range.length) parts.push(`отметки: ${fmtShort(range[0])} — ${fmtShort(range[range.length - 1])}`);
+    if (!confirm(`Заменить текущие данные данными из файла?\n\nВ файле: ${parts.join(', ')}.`)) return;
+    store = incoming;
     save();
+    ui.importNote = `Импортировано: ${store.items.length} пунктов, ${dayCount} дней`;
     renderAll();
   };
   r.readAsText(file);
@@ -472,7 +489,8 @@ const ui = {
   addType: 'daily',
   raiseEdit: {},   // itemId -> true, когда открыт ввод своего значения
   missOpen: {},    // itemId -> true, когда показана подпись «вчера — пропуск»
-  justClosed: false
+  justClosed: false,
+  importNote: null // строка «Импортировано: …», исчезает при следующем действии
 };
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -729,6 +747,7 @@ function renderItems() {
       <button class="btn" data-act="export">Экспорт JSON</button>
       <button class="btn" data-act="import">Импорт JSON</button>
     </div>
+    ${ui.importNote ? `<p class="muted">${esc(ui.importNote)}</p>` : ''}
     <input type="file" id="import-file" accept="application/json,.json" hidden>
     <p class="muted">Экспортируйте данные время от времени: localStorage может быть очищен системой.</p>`;
 
@@ -825,6 +844,7 @@ function parsePositive(v) {
 function onClick(e) {
   const b = e.target.closest('[data-act]');
   if (!b) return;
+  ui.importNote = null; // строка «Импортировано…» живёт до следующего действия
   const act = b.dataset.act;
   const id = b.dataset.id;
   const item = id ? store.items.find(i => i.id === id) : null;
@@ -935,6 +955,7 @@ function onClick(e) {
 
 function onChange(e) {
   const t = e.target;
+  ui.importNote = null;
   const act = t.dataset.act;
   if (act === 'mark') {
     toggleMark(todayKey(), t.dataset.id);
@@ -976,7 +997,7 @@ function init() {
   document.addEventListener('change', onChange);
   document.addEventListener('input', onInput);
   document.querySelectorAll('#tabs button').forEach(b =>
-    b.addEventListener('click', () => { ui.tab = b.dataset.tab; renderAll(); }));
+    b.addEventListener('click', () => { ui.importNote = null; ui.tab = b.dataset.tab; renderAll(); }));
   renderAll();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
