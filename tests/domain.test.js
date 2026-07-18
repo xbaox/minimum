@@ -325,7 +325,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 2);
+  assert.equal(m.schemaVersion, 3);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -356,7 +356,7 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 2);
+    assert.equal(m.schemaVersion, 3);
     assert.equal(Array.isArray(m.items), true);
     assert.equal(m.items.length, 7); // дефолтный набор
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);

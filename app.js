@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -181,6 +181,15 @@ function migrate(s) {
       };
       const at = s.items.findIndex(i => i.name === 'Умыться');
       s.items.splice(at >= 0 ? at + 1 : 0, 0, shower);
+    }
+  }
+
+  // v2 → v3: срез недели получает weekStart — период счёта тренировок
+  if (s.schemaVersion < 3) {
+    for (const r of s.reviews) {
+      if (!isDayKey(r.weekStart)) {
+        r.weekStart = (Array.isArray(r.keys) && isDayKey(r.keys[0])) ? r.keys[0] : today;
+      }
     }
   }
 
@@ -392,6 +401,7 @@ function moveItem(id, dir) {
 /* ── Закрытие недели ───────────────────────────────────────── */
 
 function closeWeek() {
+  if (!reviewDue()) return false; // guard: неделя не назрела — в т.ч. защита от повторного вызова
   const keys = windowKeys();
   const perItem = {};
   for (const it of store.items) {
@@ -402,10 +412,13 @@ function closeWeek() {
   }
   const trainings = {};
   for (const w of store.items.filter(i => i.type === 'weekly')) {
-    trainings[w.id] = { name: w.name, count: trainCount(w.id), goal: w.goal };
+    const count = trainCount(w.id);
+    if (!w.active && !count) continue; // как и в perItem: выключенные без счёта не попадают
+    trainings[w.id] = { name: w.name, count, goal: w.goal };
   }
   store.reviews.push({
     closedAt: Date.now(),
+    weekStart: store.weekStart, // период счёта тренировок — вся открытая неделя (инвариант 3)
     keys,
     perItem,
     trainings,
@@ -417,6 +430,7 @@ function closeWeek() {
   store.weekLog = [];        // счётчик тренировок обнуляется
   store.weekStart = todayKey(); // открывается новая неделя
   save();
+  return true;
 }
 
 /* ── Экспорт / импорт ──────────────────────────────────────── */
