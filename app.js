@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -94,7 +94,7 @@ function defaultStore() {
     pendingRaises: [], // принятые повышения, ещё не записанные в разбор
     draftOneChange: '',
     weekStart: today,  // логическая дата последнего закрытия (или первого запуска)
-    settings: { dayBoundary: 4, hintShownForItemId: null }
+    settings: { dayBoundary: 4, hintShownForItemId: null, exportedAt: null }
   };
 }
 
@@ -197,6 +197,11 @@ function migrate(s) {
         r.weekStart = (Array.isArray(r.keys) && isDayKey(r.keys[0])) ? r.keys[0] : today;
       }
     }
+  }
+
+  // v3 → v4: отметка последнего экспорта — мягкий дефолт
+  if (s.schemaVersion < 4) {
+    if (!('exportedAt' in s.settings)) s.settings.exportedAt = null;
   }
 
   s.schemaVersion = SCHEMA_VERSION;
@@ -364,6 +369,11 @@ function fmtShort(k) {
   return keyToDate(k).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 }
 
+/* Дата и время из миллисекунд — для строки резервной копии */
+function fmtStamp(ms) {
+  return new Date(ms).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
 function plural(n, one, few, many) {
   const m10 = n % 10, m100 = n % 100;
   if (m10 === 1 && m100 !== 11) return one;
@@ -526,6 +536,8 @@ function closeWeek() {
 /* ── Экспорт / импорт ──────────────────────────────────────── */
 
 function exportJSON() {
+  store.settings.exportedAt = Date.now(); // дата попадает и в сам файл
+  save();
   const blob = new Blob([JSON.stringify(store, null, 1)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -971,6 +983,9 @@ function renderItems() {
     </label>
     <p class="muted">Отметки до этого часа относятся к предыдущему дню.</p>`;
 
+  const exp = (typeof store.settings.exportedAt === 'number' && isFinite(store.settings.exportedAt))
+    ? `Последний экспорт: ${esc(fmtShort(dateKeyFromDate(new Date(store.settings.exportedAt))))}`
+    : 'Экспорта ещё не было';
   h += `
     <h2>Данные</h2>
     <div class="btns">
@@ -978,11 +993,26 @@ function renderItems() {
       <button class="btn" data-act="import">Импорт JSON</button>
     </div>
     ${ui.importNote ? `<p class="muted">${esc(ui.importNote)}</p>` : ''}
+    <p class="muted">${exp}</p>
+    <p class="muted" id="mirror-note" hidden></p>
     <input type="file" id="import-file" accept="application/json,.json" hidden>
     <p class="muted">Экспортируйте данные время от времени: localStorage может быть очищен системой.</p>`;
 
   el('scr-items').innerHTML = h;
   restoreOpenForm();
+  updateMirrorNote();
+}
+
+/* Строка «Резервная копия: …» — асинхронно и точечно после рендера
+   «Пунктов»; при недоступном зеркале не показывается вовсе */
+function updateMirrorNote() {
+  if (typeof indexedDB === 'undefined') return;
+  mirrorRead().then(snap => {
+    const p = el('mirror-note');
+    if (!p || !snap || typeof snap.savedAt !== 'number') return;
+    p.textContent = 'Резервная копия: ' + fmtStamp(snap.savedAt);
+    p.hidden = false;
+  });
 }
 
 function groupField(idPrefix, value) {
@@ -1208,8 +1238,8 @@ function onClick(e) {
     }
 
     case 'export':
-      if (hadImportNote) renderItems(); // эти действия не перерисовывают экран сами
       exportJSON();
+      renderItems(); // обновить строку «Последний экспорт» (и погасить строку импорта)
       break;
     case 'import':
       if (hadImportNote) renderItems(); // до открытия диалога: file-input должен остаться в живом DOM

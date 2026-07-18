@@ -325,7 +325,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 3);
+  assert.equal(m.schemaVersion, 4);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -356,7 +356,7 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 3);
+    assert.equal(m.schemaVersion, 4);
     assert.equal(Array.isArray(m.items), true);
     assert.equal(m.items.length, 7); // дефолтный набор
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);
@@ -473,7 +473,7 @@ test('З2: мусорный schemaVersion трактуется как v1 — в�
   const src = v1Store();
   src.schemaVersion = 'мусор';
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 3);
+  assert.equal(m.schemaVersion, 4);
   assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
   assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
@@ -501,7 +501,7 @@ test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпоте
     ]
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 3);
+  assert.equal(m.schemaVersion, 4);
   assert.equal(m.reviews[0].weekStart, '2026-06-01');
   assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
@@ -595,6 +595,23 @@ test('З2: load — битая строка уходит в minimum:data:corrupt
   } finally {
     delete global.localStorage;
   }
+});
+
+test('З4: миграция v3→v4 — exportedAt с мягким дефолтом null, идемпотентно', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const src = {
+    schemaVersion: 3, items: [], days: {}, weekLog: [], reviews: [],
+    pendingRaises: [], draftOneChange: '', weekStart: '2026-07-15',
+    settings: { dayBoundary: 4, hintShownForItemId: null }
+  };
+  const m = app.migrate(src);
+  assert.equal(m.schemaVersion, 4);
+  assert.equal(m.settings.exportedAt, null);
+  const again = app.migrate(JSON.parse(JSON.stringify(m)));
+  assert.deepEqual(again, m);
+  // существующее значение не перезаписывается
+  const withDate = app.migrate({ ...JSON.parse(JSON.stringify(src)), schemaVersion: 3, settings: { dayBoundary: 4, exportedAt: 123 } });
+  assert.equal(withDate.settings.exportedAt, 123);
 });
 
 test('З4: зеркало без indexedDB — тихие no-op, исключений нет', async () => {
