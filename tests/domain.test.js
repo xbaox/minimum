@@ -595,6 +595,54 @@ test('З2: load — битая строка уходит в minimum:data:corrupt
   }
 });
 
+/* ── Задача 3. Гигиена migrate и uid ───────────────────────── */
+
+test('З3: migrate фильтрует не-объекты в pendingRaises', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const m = app.migrate({
+    schemaVersion: 3, items: [], days: {}, weekLog: [], reviews: [],
+    pendingRaises: [null, 'мусор', 5, [1], { itemId: 'a', from: 5, to: 6 }],
+    draftOneChange: '', weekStart: '2026-07-15', settings: { dayBoundary: 4 }
+  });
+  assert.deepEqual(m.pendingRaises, [{ itemId: 'a', from: 5, to: 6 }]);
+});
+
+test('З3: migrate — value ≤ 0 обнуляется, name и unit приводятся к строке', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const m = app.migrate({
+    schemaVersion: 3,
+    items: [
+      { id: 'a', name: { x: 1 }, unit: 42, value: -5 },
+      { id: 'b', name: 'Ноль', unit: 'м', value: 0 },
+      { id: 'c', name: 'Плюс', unit: 'м', value: 3 }
+    ],
+    days: {}, weekLog: [], reviews: [], pendingRaises: [],
+    draftOneChange: '', weekStart: '2026-07-15', settings: { dayBoundary: 4 }
+  });
+  assert.equal(m.items[0].name, '');
+  assert.equal(m.items[0].unit, '');
+  assert.equal(m.items[0].value, null);
+  assert.equal(m.items[1].value, null);
+  assert.equal(m.items[2].value, 3);
+});
+
+test('З3: uid — crypto.randomUUID и фолбэк без него', () => {
+  // с crypto — UUID
+  assert.match(app.defaultStore().items[0].id, /^[0-9a-f]{8}-[0-9a-f]{4}-/);
+  // без crypto — фолбэк на Math.random/Date
+  const desc = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', { value: undefined, configurable: true });
+  try {
+    const id = app.defaultStore().items[0].id;
+    assert.equal(typeof id, 'string');
+    assert.ok(id.length > 0);
+    assert.doesNotMatch(id, /-/);
+    assert.match(id, /^[a-z0-9]+$/);
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', desc);
+  }
+});
+
 /* ── Инвариант 7. «Не пропускай дважды» ────────────────────── */
 
 test('И7: точка-маркер — пункт существовал вчера и не был отмечен', () => {
