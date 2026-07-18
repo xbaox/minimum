@@ -156,7 +156,7 @@ h2 {
 }
 .list > .g-label:first-child { margin-top: 10px; }
 
-.rowwrap { display: flex; flex-wrap: wrap; align-items: center; }
+.rowwrap { display: flex; flex-wrap: wrap; align-items: center; gap: 0 14px; } /* зазор текст–точка как до выноса из label */
 .rowwrap > .row { flex: 1 1 auto; min-width: 0; }
 .rowwrap > .card.form, .rowwrap > .miss-note { width: 100%; }
 .rowwrap + .rowwrap { border-top: 1px solid var(--line); }

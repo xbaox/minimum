@@ -1131,7 +1131,6 @@ function onClick(e) {
       break;
 
     case 'miss-note':
-      e.preventDefault();
       ui.missOpen[id] = !ui.missOpen[id];
       renderToday();
       break;
