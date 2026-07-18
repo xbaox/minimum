@@ -394,6 +394,195 @@ test('И6: экспорт → очистка → импорт восстанав
   assert.equal(app.todayKey(), app.dateKeyShift(new Date(), 3));
 });
 
+/* ── Задача 2. Устойчивость хранилища и валидация ──────────── */
+
+test('З2: migrate фильтрует мусор в items, достраивает id и addedAt, дедуплицирует id', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const m = app.migrate({
+    schemaVersion: 3,
+    items: [
+      null, 'строка', 42, [1],
+      { name: 'Без полей' },
+      { id: 'dup', name: 'Первый', addedAt: '2026-07-01' },
+      { id: 'dup', name: 'Второй', addedAt: 'мусор' },
+      { id: 77, name: 'Числовой id', value: '5', goal: '2,5', raiseAfter: 'x' }
+    ],
+    days: {}, weekLog: [], reviews: [], pendingRaises: [],
+    draftOneChange: '', weekStart: '2026-07-15',
+    settings: { dayBoundary: 4 }
+  });
+  assert.equal(m.items.length, 4); // не-объекты выброшены
+  assert.equal(new Set(m.items.map(i => i.id)).size, 4); // id уникальны
+  for (const it of m.items) {
+    assert.equal(typeof it.id, 'string');
+    assert.equal(it.id.length > 0, true);
+    assert.equal(app.isDayKey(it.addedAt), true);
+    assert.equal(it.type, 'daily');
+    assert.equal(Array.isArray(it.history), true);
+  }
+  assert.equal(m.items[1].addedAt, '2026-07-01'); // валидный addedAt сохранён
+  assert.equal(m.items[2].addedAt, '2026-07-17'); // мусорный заменён на сегодня
+  const num = m.items[3];
+  assert.equal(num.value, 5);      // числовая строка приведена
+  assert.equal(num.goal, 3);       // '2,5' → 2.5 → целое ≥1
+  assert.equal(num.raiseAfter, 0); // мусор обнулён
+});
+
+test('З2: migrate чистит days, weekLog, reviews и мусорный weekStart', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const m = app.migrate({
+    schemaVersion: 3,
+    items: [],
+    days: {
+      '2026-07-01': { a: true, b: false },
+      '2026-07-02': 'мусор',
+      '2026-07-03': { a: 1 },
+      '2026-07-04': [true],
+      '2026-07-05': null
+    },
+    weekLog: [null, 'x', { itemId: 'a', date: '2026-07-10', ts: 1 }, 5],
+    reviews: [null, 'y', { closedAt: 1, weekStart: '2026-07-01', keys: [], perItem: {}, trainings: {}, oneChange: '', raises: [] }],
+    pendingRaises: [], draftOneChange: '',
+    weekStart: '2026-02-31', // несуществующая дата
+    settings: { dayBoundary: 4 }
+  });
+  assert.deepEqual(Object.keys(m.days), ['2026-07-01']);
+  assert.equal(m.weekLog.length, 1);
+  assert.equal(m.reviews.length, 1);
+  assert.equal(m.weekStart, '2026-07-17');
+});
+
+test('З2: migrate не бросает ни на каком мусоре', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const cases = [
+    { items: [null], days: null },
+    { items: [{ history: 'мусор' }], days: { d: { a: 'нет' } } },
+    { schemaVersion: 3, items: [{ history: [null, { date: 'x', value: 1 }, { date: '2026-07-01', value: 'y' }, { date: '2026-07-02', value: 3 }] }] },
+    { items: [], weekLog: {}, reviews: 'мусор', weekStart: 42, settings: 'мусор' }
+  ];
+  for (const c of cases) assert.doesNotThrow(() => app.migrate(c), JSON.stringify(c));
+  // из мусорной истории выживают только валидные записи
+  const m = app.migrate(cases[2]);
+  assert.deepEqual(m.items[0].history, [{ date: '2026-07-02', value: 3 }]);
+});
+
+test('З2: isDayKey — формат и существование даты', () => {
+  assert.equal(app.isDayKey('2026-07-17'), true);
+  assert.equal(app.isDayKey('2026-02-31'), false);
+  assert.equal(app.isDayKey('2026-7-1'), false);
+  assert.equal(app.isDayKey('мусор'), false);
+  assert.equal(app.isDayKey(42), false);
+  assert.equal(app.isDayKey(null), false);
+});
+
+test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпотентно', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const src = {
+    schemaVersion: 2,
+    items: [{ id: 'a1', name: 'Умыться', addedAt: '2026-06-01' },
+      { id: 'a2', name: 'Принять душ', addedAt: '2026-06-01' }],
+    days: {}, weekLog: [], pendingRaises: [], draftOneChange: '',
+    weekStart: '2026-07-15', settings: { dayBoundary: 4 },
+    reviews: [
+      { closedAt: 1, keys: ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05', '2026-06-06', '2026-06-07'], perItem: {}, trainings: {}, oneChange: '', raises: [] },
+      { closedAt: 2, keys: 'мусор', perItem: {}, trainings: {}, oneChange: '', raises: [] }
+    ]
+  };
+  const m = app.migrate(src);
+  assert.equal(m.schemaVersion, 3);
+  assert.equal(m.reviews[0].weekStart, '2026-06-01');
+  assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
+  const again = app.migrate(JSON.parse(JSON.stringify(m)));
+  assert.deepEqual(again, m); // повторный прогон ничего не меняет
+});
+
+test('З2: closeWeek guard — незрелая неделя и повторный вызов не пишут срез', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore(); // weekStart = сегодня
+  assert.equal(app.closeWeek(), false);
+  assert.equal(s.reviews.length, 0);
+
+  const oldStart = app.addDays(app.todayKey(), -7);
+  s.weekStart = oldStart;
+  assert.equal(app.closeWeek(), true);
+  assert.equal(s.reviews.length, 1);
+  assert.equal(s.reviews[0].weekStart, oldStart); // период счёта зафиксирован в срезе
+
+  assert.equal(app.closeWeek(), false); // сразу после закрытия неделя не назрела
+  assert.equal(s.reviews.length, 1);
+});
+
+test('З2: trainings в срезе — активные либо с ненулевым счётом', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  s.weekStart = app.addDays(app.todayKey(), -7);
+  const w1 = s.items.find(i => i.type === 'weekly'); // активный, счёт 0
+  s.items.push(
+    { ...w1, id: 'w2', name: 'Выключенный без счёта', active: false },
+    { ...w1, id: 'w3', name: 'Выключенный со счётом', active: false }
+  );
+  app.incTrain('w3');
+  app.closeWeek();
+  const t = s.reviews[0].trainings;
+  assert.equal(w1.id in t, true);  // активный с нулём — в срезе
+  assert.equal('w2' in t, false);  // выключенный без счёта — нет
+  assert.equal('w3' in t, true);   // выключенный со счётом — да
+  assert.equal(t.w3.count, 1);
+});
+
+test('З2: recordBar — возврат к прежнему значению схлопывает запись, дублей не бывает', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const item = s.items.find(i => i.name === 'Пешком'); // [{2026-07-17, 500}]
+  advanceDays(7);
+  app.recordBar(item, 600);
+  assert.equal(item.history.length, 2);
+  app.recordBar(item, 500); // тот же день: вернулись к прежней планке
+  assert.equal(item.history.length, 1);
+  assert.deepEqual(item.history[0], { date: '2026-07-17', value: 500 });
+  advanceDays(7);
+  app.recordBar(item, 500); // и межднёвный дубль того же значения не создаётся
+  assert.equal(item.history.length, 1);
+});
+
+test('З2: parsePositive — матрица входов', () => {
+  assert.equal(app.parsePositive('5'), 5);
+  assert.equal(app.parsePositive('5,5'), 5.5);
+  assert.equal(app.parsePositive(' 7 '), 7);
+  assert.equal(app.parsePositive('0.25'), 0.25);
+  assert.equal(app.parsePositive(500), 500);
+  assert.equal(app.parsePositive('0'), null);
+  assert.equal(app.parsePositive('-3'), null);
+  assert.equal(app.parsePositive(''), null);
+  assert.equal(app.parsePositive('   '), null);
+  assert.equal(app.parsePositive('1о'), null); // буква вместо нуля
+  assert.equal(app.parsePositive('abc'), null);
+  assert.equal(app.parsePositive(null), null);
+  assert.equal(app.parsePositive(undefined), null);
+});
+
+test('З2: load — битая строка уходит в minimum:data:corrupt, возвращается дефолт', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const mem = {};
+  global.localStorage = {
+    getItem: k => (k in mem ? mem[k] : null),
+    setItem: (k, v) => { mem[k] = String(v); },
+    removeItem: k => { delete mem[k]; }
+  };
+  try {
+    mem['minimum:data'] = '{битый json';
+    const s = app.load();
+    assert.equal(s.items.length, 7); // дефолтный набор
+    assert.equal(mem['minimum:data:corrupt'], '{битый json');
+    // валидная строка резервный ключ не трогает
+    mem['minimum:data'] = JSON.stringify(app.defaultStore());
+    app.load();
+    assert.equal(mem['minimum:data:corrupt'], '{битый json');
+  } finally {
+    delete global.localStorage;
+  }
+});
+
 /* ── Инвариант 7. «Не пропускай дважды» ────────────────────── */
 
 test('И7: точка-маркер — пункт существовал вчера и не был отмечен', () => {

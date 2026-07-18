@@ -27,7 +27,7 @@ function daysAgo(n) {
   return dayKey(new Date(Date.now() - n * 86400000));
 }
 
-async function boot({ seed } = {}) {
+async function boot({ seed, raw } = {}) {
   const dom = new JSDOM(HTML, {
     url: 'https://example.org/minimum/',
     runScripts: 'outside-only',
@@ -38,7 +38,8 @@ async function boot({ seed } = {}) {
     await new Promise(res => window.addEventListener('load', res));
   }
   window.scrollTo = () => {}; // в jsdom не реализовано — глушим шум
-  if (seed) window.localStorage.setItem(NS, JSON.stringify(seed));
+  if (raw != null) window.localStorage.setItem(NS, raw);
+  else if (seed) window.localStorage.setItem(NS, JSON.stringify(seed));
   vm.runInContext(APP, dom.getInternalVMContext());
   assert.equal(typeof window.init, 'function', 'app.js должен определить init() в window');
   window.init();
@@ -164,6 +165,69 @@ test('назревший разбор: баннер на «Сегодня», с�
   const saved = JSON.parse(window.localStorage.getItem(NS));
   assert.equal(saved.reviews.length, 1);
   assert.equal(saved.reviews[0].perItem.it1.count, 2);
+  assert.equal(saved.reviews[0].weekStart, daysAgo(8)); // период счёта зафиксирован
   assert.deepEqual(saved.weekLog, []);
   assert.equal(saved.weekStart, daysAgo(0));
+});
+
+test('битый localStorage: сырая строка сохраняется в minimum:data:corrupt', async () => {
+  const { document, window } = await boot({ raw: '{битый json' });
+  assert.equal(window.localStorage.getItem('minimum:data:corrupt'), '{битый json');
+  assert.ok(JSON.parse(window.localStorage.getItem(NS))); // основной ключ перезаписан валидным дефолтом
+  assert.equal(document.querySelectorAll('input[data-act="mark"]').length, 6);
+});
+
+test('импорт мусора: migrate чинит, экраны живы, XSS-id не ломает разметку', async () => {
+  const { document, window } = await boot();
+  const evil = '"><script>window.__xss = 1</scr' + 'ipt><b x="';
+  const payload = {
+    schemaVersion: 3,
+    items: [
+      null, 'мусор',
+      { id: evil, name: 'Пункт с плохим id', addedAt: daysAgo(3), type: 'daily', active: true },
+      { name: 'Без id' }
+    ],
+    days: { [daysAgo(1)]: 'не объект', [daysAgo(2)]: { [evil]: true } },
+    weekLog: [null], reviews: [null], weekStart: 'мусор'
+  };
+  let confirmText = '';
+  window.confirm = m => { confirmText = m; return true; };
+  window.alert = m => { throw new Error('alert при успешном импорте: ' + m); };
+
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const inp = document.getElementById('import-file');
+  const file = new window.File([JSON.stringify(payload)], 'x.json', { type: 'application/json' });
+  Object.defineProperty(inp, 'files', { value: [file], configurable: true });
+  inp.dispatchEvent(new window.Event('change', { bubbles: true }));
+  for (let i = 0; i < 100 && !confirmText; i++) await new Promise(r => setTimeout(r, 10));
+
+  // сводка предпросмотра
+  assert.match(confirmText, /пунктов: 2/);
+  assert.match(confirmText, /дней с отметками: 1/);
+  assert.match(confirmText, /закрытых недель: 0/);
+  // тихая строка успеха в «Данных»
+  assert.match(document.getElementById('scr-items').textContent, /Импортировано: 2 пунктов, 1 дней/);
+
+  // все 4 экрана рендерятся без исключений
+  const map = { today: 'scr-today', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
+  for (const b of document.querySelectorAll('#tabs button')) {
+    b.click();
+    assert.ok(document.getElementById(map[b.dataset.tab]).innerHTML.length > 0, b.dataset.tab);
+  }
+
+  // XSS не материализовался: скрипт не исполнен и не вставлен в экраны
+  assert.equal(window.__xss, undefined);
+  assert.equal(document.querySelector('main script'), null);
+
+  // строка успеха исчезла после следующего действия (переключения вкладок)
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  assert.doesNotMatch(document.getElementById('scr-items').textContent, /Импортировано/);
+
+  // пункт с «плохим» id работает: разметка не разорвана, отметка пишется
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  const cb = [...document.querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === evil);
+  assert.ok(cb, 'чекбокс пункта с плохим id существует');
+  cb.click();
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(saved.days[daysAgo(0)][evil], true);
 });
