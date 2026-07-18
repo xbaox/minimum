@@ -134,9 +134,12 @@ function migrate(s) {
     if (!isDayKey(it.addedAt)) it.addedAt = today;
     it.type = it.type === 'weekly' ? 'weekly' : 'daily';
     if (typeof it.active !== 'boolean') it.active = true;
+    if (typeof it.name !== 'string') it.name = '';
+    if (typeof it.unit !== 'string') it.unit = '';
     if (typeof it.note !== 'string') it.note = '';
     if (typeof it.group !== 'string') it.group = '';
     it.value = numOr(it.value, null);
+    if (it.value !== null && it.value <= 0) it.value = null; // планка всегда > 0, как и в формах
     const g = numOr(it.goal, null);
     it.goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : null;
     it.raiseAfter = Math.max(0, Math.round(numOr(it.raiseAfter, 0)));
@@ -163,6 +166,7 @@ function migrate(s) {
   if (!Array.isArray(s.reviews)) s.reviews = [];
   s.reviews = s.reviews.filter(r => r && typeof r === 'object' && !Array.isArray(r));
   if (!Array.isArray(s.pendingRaises)) s.pendingRaises = [];
+  s.pendingRaises = s.pendingRaises.filter(e => e && typeof e === 'object' && !Array.isArray(e));
   if (typeof s.draftOneChange !== 'string') s.draftOneChange = '';
   if (!isDayKey(s.weekStart)) s.weekStart = today;
 
@@ -485,7 +489,9 @@ function importJSON(file) {
     if (!confirm(`Заменить текущие данные данными из файла?\n\nВ файле: ${parts.join(', ')}.`)) return;
     store = incoming;
     save();
-    ui.importNote = `Импортировано: ${store.items.length} пунктов, ${dayCount} дней`;
+    const n = store.items.length;
+    ui.importNote = `Импортировано: ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ` +
+      `${dayCount} ${plural(dayCount, 'день', 'дня', 'дней')}`;
     renderAll();
   };
   r.readAsText(file);
@@ -551,7 +557,8 @@ function renderAll() {
   if (ui.tab === 'review') renderReview();
   if (ui.tab === 'items') renderItems();
   if (ui.tab === 'system') renderSystem();
-  window.scrollTo(0, 0);
+  if (ui.renderedTab !== ui.tab) window.scrollTo(0, 0); // скролл — только при фактической смене вкладки
+  ui.renderedTab = ui.tab;
 }
 
 /* Экран 1 — «Сегодня» */
@@ -630,6 +637,57 @@ function renderToday() {
   h += `<p class="creed">Минимум выполняется даже в худший день.</p>`;
 
   el('scr-today').innerHTML = h;
+}
+
+/* ── Точечные обновления «Сегодня» (горячие пути) ──────────────
+   Существующие узлы не пересоздаются — CSS-переходы чекбокса и
+   планки дня реально проигрываются. Структурные изменения идут
+   через renderToday(). */
+
+function updateDayline() {
+  const t = todayKey();
+  const items = activeDaily();
+  const done = items.filter(i => isMarked(t, i.id)).length;
+  const total = items.length;
+  const pct = total ? Math.round(done / total * 100) : 0;
+  const closed = total > 0 && done === total;
+  const bar = document.querySelector('#scr-today .bar i');
+  if (bar) bar.style.width = pct + '%';
+  const note = document.querySelector('#scr-today .bar-note');
+  if (note) {
+    note.classList.toggle('ok', closed);
+    note.innerHTML = closed ? 'День закрыт' : (total ? `<b>${done}</b>&nbsp;из&nbsp;${total}` : 'Нет активных пунктов');
+  }
+}
+
+function updateTodayMark(input) {
+  const on = isMarked(todayKey(), input.dataset.id);
+  input.checked = on;
+  const label = input.closest('label.check');
+  if (label) label.classList.toggle('on', on);
+  updateDayline();
+}
+
+function updateWeekCount(id) {
+  const scr = el('scr-today');
+  const plus = [...scr.querySelectorAll('[data-act="train-inc"]')].find(x => x.dataset.id === id);
+  if (!plus) { renderToday(); return; }
+  const n = trainCount(id);
+  const wc = plus.closest('.weekcount');
+  const num = wc.querySelector('.wnum b');
+  if (num) num.textContent = n;
+  const next = wc.nextElementSibling;
+  const hasUndo = !!(next && next.classList.contains('undo') && next.dataset.id === id);
+  if (n && !hasUndo) {
+    const btn = document.createElement('button');
+    btn.className = 'undo';
+    btn.dataset.act = 'train-undo';
+    btn.dataset.id = id;
+    btn.textContent = 'отменить последний';
+    wc.after(btn);
+  } else if (!n && hasUndo) {
+    next.remove();
+  }
 }
 
 /* Экран 2 — «Разбор недели» */
@@ -734,7 +792,56 @@ function barHistory(it) {
   return `<span class="hist">Планка: ${shown.map(esc).join(' → ')}${it.unit ? ' ' + esc(it.unit) : ''} · с ${esc(fmtShort(last.date))}</span>`;
 }
 
+/* Черновик открытой формы «Пунктов»: значения всех полей (сливаются
+   с прежним черновиком — цель переживает смену типа), сфокусированное
+   поле и позиция каретки. Восстанавливается при каждом renderItems,
+   пока открыта та же форма. */
+function currentFormKey() {
+  if (ui.addOpen) return 'add';
+  if (ui.editingId !== null) return 'edit:' + ui.editingId;
+  return null;
+}
+
+function snapshotOpenForm() {
+  const key = currentFormKey();
+  if (!key) { ui.formDraft = null; return; }
+  const form = document.querySelector('#scr-items .card.form');
+  const domKey = form ? (form.dataset.form === 'add' ? 'add' : 'edit:' + form.dataset.id) : null;
+  if (domKey !== key) {
+    if (ui.formDraft && ui.formDraft.key !== key) ui.formDraft = null; // открыли другую форму
+    return;
+  }
+  const fields = {};
+  for (const inp of form.querySelectorAll('input[id], select[id]')) fields[inp.id] = inp.value;
+  const ae = document.activeElement;
+  const focus = (ae && form.contains(ae) && ae.id)
+    ? { id: ae.id, start: ae.selectionStart ?? null, end: ae.selectionEnd ?? null }
+    : null;
+  const base = (ui.formDraft && ui.formDraft.key === key) ? ui.formDraft.fields : null;
+  ui.formDraft = { key, fields: Object.assign({}, base, fields), focus };
+}
+
+function restoreOpenForm() {
+  const key = currentFormKey();
+  if (!key || !ui.formDraft || ui.formDraft.key !== key) return;
+  for (const [fid, v] of Object.entries(ui.formDraft.fields)) {
+    const inp = el(fid);
+    if (inp) inp.value = v;
+  }
+  const f = ui.formDraft.focus;
+  if (f) {
+    const inp = el(f.id);
+    if (inp) {
+      inp.focus();
+      if (f.start !== null && typeof inp.setSelectionRange === 'function') {
+        try { inp.setSelectionRange(f.start, f.end); } catch (e) { /* select и др. */ }
+      }
+    }
+  }
+}
+
 function renderItems() {
+  snapshotOpenForm();
   let h = `<header class="page"><p class="overline">Настройка блоков</p><h1>Пункты</h1></header>`;
 
   h += `<div class="list">`;
@@ -788,6 +895,7 @@ function renderItems() {
     <p class="muted">Экспортируйте данные время от времени: localStorage может быть очищен системой.</p>`;
 
   el('scr-items').innerHTML = h;
+  restoreOpenForm();
 }
 
 function groupField(idPrefix, value) {
@@ -896,8 +1004,20 @@ function onClick(e) {
       renderToday();
       break;
 
-    case 'train-inc': incTrain(id); renderToday(); break;
-    case 'train-undo': undoTrain(id); renderToday(); break;
+    case 'train-inc': {
+      const hadFail = saveFailed;
+      incTrain(id);
+      if (saveFailed !== hadFail) renderToday(); // баннер хранилища — редкий структурный путь
+      else updateWeekCount(id);
+      break;
+    }
+    case 'train-undo': {
+      const hadFail = saveFailed;
+      undoTrain(id);
+      if (saveFailed !== hadFail) renderToday();
+      else updateWeekCount(id);
+      break;
+    }
 
     case 'raise-edit': ui.raiseEdit[id] = true; renderReview(); break;
     case 'raise-later':
@@ -915,13 +1035,22 @@ function onClick(e) {
     }
 
     case 'close-week':
-      closeWeek();
-      ui.justClosed = true;
+      if (closeWeek()) ui.justClosed = true;
       renderReview();
+      window.scrollTo(0, 0); // длинный экран разбора схлопывается — наверх
       break;
 
-    case 'move-up': if (moveItem(id, 'up')) renderItems(); break;
-    case 'move-down': if (moveItem(id, 'down')) renderItems(); break;
+    case 'move-up':
+    case 'move-down': {
+      if (!moveItem(id, act === 'move-up' ? 'up' : 'down')) break;
+      renderItems();
+      // вернуть фокус кнопке того же действия и пункта; на краю списка — парной
+      const find = a => [...el('scr-items').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.id === id);
+      let btn = find(act);
+      if (!btn || btn.disabled) btn = find(act === 'move-up' ? 'move-down' : 'move-up');
+      if (btn && !btn.disabled) btn.focus();
+      break;
+    }
 
     case 'edit-open': ui.editingId = id; ui.addOpen = false; renderItems(); break;
     case 'edit-cancel': ui.editingId = null; renderItems(); break;
@@ -1003,22 +1132,25 @@ function onChange(e) {
   ui.importNote = null;
   const act = t.dataset.act;
   if (act === 'mark') {
+    const hadFail = saveFailed;
     toggleMark(todayKey(), t.dataset.id);
-    renderToday();
+    if (saveFailed !== hadFail) renderToday(); // баннер хранилища — редкий структурный путь
+    else updateTodayMark(t);
   } else if (act === 'toggle-active') {
     const item = store.items.find(i => i.id === t.dataset.id);
-    if (item) { item.active = t.checked; save(); renderItems(); }
+    if (item) {
+      item.active = t.checked;
+      save();
+      const wrap = t.closest('.rowwrap');
+      if (wrap) wrap.classList.toggle('off', !item.active); // переход тумблера играет
+    }
   } else if (act === 'boundary') {
     store.settings.dayBoundary = Number(t.value) || 0;
     save();
     armDayTimer(); // граница сместилась — таймер на новую; экран «Пункты» от неё не зависит, select держит фокус
   } else if (act === 'add-type') {
     ui.addType = t.value;
-    const keep = { name: el('f-name').value, value: el('f-value').value, unit: el('f-unit').value,
-      note: el('f-note').value, group: el('f-group').value };
-    renderItems();
-    el('f-name').value = keep.name; el('f-value').value = keep.value; el('f-unit').value = keep.unit;
-    el('f-note').value = keep.note; el('f-group').value = keep.group;
+    renderItems(); // снимок/восстановление формы — внутри renderItems, цель не сбрасывается
   } else if (t.id === 'import-file') {
     if (t.files && t.files[0]) importJSON(t.files[0]);
     t.value = '';
