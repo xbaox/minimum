@@ -671,6 +671,35 @@ test('pagehide сбрасывает недописанный дебаунс-сн
   assert.ok(marks, 'снапшот содержит несброшенную отметку');
 });
 
+test('снапшот старой схемы в зеркале проходит migrate при восстановлении', async () => {
+  const idb = new IDBFactory();
+  const oldStore = mirrorStore();
+  oldStore.schemaVersion = 2; // v2-снапшот: без weekStart в reviews и exportedAt
+  delete oldStore.settings.exportedAt;
+  oldStore.reviews = [{ closedAt: 1, keys: [daysAgo(20)], perItem: {}, trainings: {}, oneChange: '', raises: [] }];
+  await idbPut(idb, { json: JSON.stringify(oldStore), savedAt: Date.now(), schemaVersion: 2 });
+
+  const { document, window } = await boot({ idb });
+
+  assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(saved.schemaVersion, 4);                    // migrate прогнан
+  assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
+  assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
+});
+
+test('уход в фон (visibilitychange→hidden) сбрасывает зеркало немедленно', async () => {
+  const idb = new IDBFactory();
+  const { document, window } = await boot({ idb });
+  document.querySelector('input[data-act="mark"]').click(); // дебаунс ещё не истёк
+  Object.defineProperty(window.document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+  window.document.dispatchEvent(new window.Event('visibilitychange'));
+  await new Promise(r => setTimeout(r, 50)); // много меньше дебаунса
+  const snap = await idbGet(idb);
+  assert.ok(snap, 'flush по уходу в фон записал снапшот');
+  assert.ok(Object.values(JSON.parse(snap.json).days)[0], 'снапшот содержит отметку');
+});
+
 test('exportedAt ставится при экспорте, строки «Данных» рендерятся', async () => {
   const { document, window } = await boot();
   document.querySelector('#tabs button[data-tab="items"]').click();

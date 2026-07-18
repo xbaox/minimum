@@ -302,6 +302,9 @@ function flushMirror() {
     json: JSON.stringify(store),
     savedAt: Date.now(),
     schemaVersion: store.schemaVersion
+  }).then(ok => {
+    if (!ok) mirrorDirty = true; // сбой записи — изменения не потеряны, доедут со следующим flush
+    return ok;
   });
 }
 
@@ -984,7 +987,8 @@ function renderItems() {
     <p class="muted">Отметки до этого часа относятся к предыдущему дню.</p>`;
 
   const exp = (typeof store.settings.exportedAt === 'number' && isFinite(store.settings.exportedAt))
-    ? `Последний экспорт: ${esc(fmtShort(dateKeyFromDate(new Date(store.settings.exportedAt))))}`
+    // логический день — как в имени файла экспорта (инвариант 1)
+    ? `Последний экспорт: ${esc(fmtShort(dateKeyShift(new Date(store.settings.exportedAt), store.settings.dayBoundary)))}`
     : 'Экспорта ещё не было';
   h += `
     <h2>Данные</h2>
@@ -1302,8 +1306,12 @@ async function init() {
     mirrorReady = true; // localStorage валиден — источник истины
     save();             // рендер сразу, зеркало обновится асинхронно через дебаунс
   } else {
-    // localStorage пуст или бит (corrupt-ключ уже записан) — пробуем зеркало
-    const snap = await mirrorRead();
+    // localStorage пуст или бит (corrupt-ключ уже записан) — пробуем зеркало;
+    // зависший IndexedDB (WebKit) не должен блокировать первый рендер
+    const snap = await Promise.race([
+      mirrorRead(),
+      new Promise(r => setTimeout(() => r(null), 1500))
+    ]);
     if (snap && typeof snap.json === 'string') {
       try { store = migrate(JSON.parse(snap.json)); } catch (e) { store = null; }
     }
