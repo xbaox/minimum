@@ -9,14 +9,15 @@
   --bg: #f5f4f1;
   --surface: #fdfcfa;
   --fg: #1f2226;
-  --muted: #898b8f;
-  --faint: #b2b3b6;
+  --muted: #67696d;                      /* ≥4.5:1 на --bg */
+  --faint: #6c6f74;                      /* ≥4.5:1; тише muted за счёт кегля и веса */
   --line: #e7e5e0;
   --line-strong: #cfcdc7;
+  --control-border: #85868a;             /* обводка чекбокса, ≥3:1 */
   --accent: #40685a;                     /* глубокий эвкалипт */
   --accent-weak: rgba(64, 104, 90, .12);
   --on-accent: #f4faf7;
-  --dot: #b9b8b2;                        /* нейтральный маркер пропуска */
+  --dot: #8a8a86;                        /* нейтральный маркер пропуска, ≥3:1 */
   --tabbar: rgba(245, 244, 241, .82);
   --radius: 14px;
 }
@@ -27,13 +28,14 @@
     --surface: #17181c;
     --fg: #e8e9e8;
     --muted: #84878d;
-    --faint: #55585e;
+    --faint: #7b7e84;
     --line: #24262b;
     --line-strong: #3d4046;
+    --control-border: #666a71;
     --accent: #8fbcaa;
     --accent-weak: rgba(143, 188, 170, .14);
     --on-accent: #0d1f18;
-    --dot: #5b5e64;
+    --dot: #63666c;
     --tabbar: rgba(14, 15, 18, .82);
   }
 }
@@ -179,7 +181,7 @@ h2 {
   flex: none;
   width: 26px;
   height: 26px;
-  border: 1.5px solid var(--line-strong);
+  border: 1.5px solid var(--control-border);
   border-radius: 50%;
   position: relative;
   transition: background .16s ease, border-color .16s ease;
