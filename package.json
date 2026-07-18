@@ -1,0 +1,11 @@
+{
+  "name": "minimum",
+  "private": true,
+  "description": "Персональный PWA-трекер ежедневного минимума",
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\""
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}
