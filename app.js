@@ -1130,10 +1130,14 @@ function onClick(e) {
       renderAll();
       break;
 
-    case 'miss-note':
+    case 'miss-note': {
       ui.missOpen[id] = !ui.missOpen[id];
       renderToday();
+      // вернуть фокус пересозданной кнопке — disclosure-паттерн остаётся рабочим для AT
+      const dot = [...el('scr-today').querySelectorAll('[data-act="miss-note"]')].find(b => b.dataset.id === id);
+      if (dot) dot.focus();
       break;
+    }
 
     case 'train-inc': {
       const hadFail = saveFailed;

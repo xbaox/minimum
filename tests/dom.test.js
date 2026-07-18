@@ -612,14 +612,17 @@ test('доступность: точка вне label, aria-expanded, имена
   const label = document.querySelector('label.check');
   assert.doesNotMatch(label.textContent, /пропуск/);
 
-  // aria-expanded переключается вместе с подписью
+  // aria-expanded переключается вместе с подписью, фокус возвращается кнопке
   assert.equal(dot.getAttribute('aria-expanded'), 'false');
   dot.click();
   const dot2 = document.querySelector('[data-act="miss-note"]');
   assert.equal(dot2.getAttribute('aria-expanded'), 'true');
+  assert.equal(document.activeElement, dot2, 'фокус на пересозданной кнопке');
   assert.ok(document.querySelector('.miss-note'));
   dot2.click();
-  assert.equal(document.querySelector('[data-act="miss-note"]').getAttribute('aria-expanded'), 'false');
+  const dot3 = document.querySelector('[data-act="miss-note"]');
+  assert.equal(dot3.getAttribute('aria-expanded'), 'false');
+  assert.equal(document.activeElement, dot3);
 
   // .bar-note: aria-live и переживание точечной отметки тем же узлом
   const note = document.querySelector('.bar-note');
