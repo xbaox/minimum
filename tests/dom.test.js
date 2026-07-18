@@ -669,6 +669,82 @@ test('доступность: сетка разбора скрыта от AT, с
   assert.match(sr.textContent, /отмечено 2 из 7/);
 });
 
+test('ретро-отметка: «отметить» ставит вчера, точка исчезает, фокус на чекбоксе', async () => {
+  const seed = dueSeed();
+  seed.weekStart = daysAgo(2);
+  seed.days = {}; // вчера не отмечено — есть точка
+  const { document, window } = await boot({ seed });
+
+  document.querySelector('[data-act="miss-note"]').click();
+  const btn = document.querySelector('[data-act="mark-yesterday"]');
+  assert.ok(btn, 'кнопка «отметить» в раскрытой подписи');
+  assert.equal(btn.closest('label'), null, 'кнопка вне label чекбокса');
+
+  btn.click();
+
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(saved.days[daysAgo(1)].it1, true);            // ровно вчера
+  assert.equal(saved.days[daysAgo(0)], undefined);           // сегодня не тронуто
+  assert.equal(document.querySelector('[data-act="miss-note"]'), null, 'точка исчезла');
+  const cb = [...document.querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === 'it1');
+  assert.equal(document.activeElement, cb, 'фокус на чекбоксе пункта');
+  assert.doesNotMatch(document.querySelector('label.check').textContent, /пропуск/);
+});
+
+test('ретро-отметка видна в сетке разбора и входит в count при закрытии', async () => {
+  const seed = dueSeed(); // weekStart = daysAgo(8) — разбор назрел
+  seed.days = {};
+  const { document, window } = await boot({ seed });
+
+  document.querySelector('[data-act="miss-note"]').click();
+  document.querySelector('[data-act="mark-yesterday"]').click();
+
+  document.querySelector('#tabs button[data-tab="review"]').click();
+  assert.match(document.querySelector('.g-name .sr-only').textContent, /отмечено 1 из 7/);
+  assert.equal(document.querySelectorAll('.grid i.on').length, 1);
+
+  document.querySelector('[data-act="close-week"]').click();
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(saved.reviews[0].perItem.it1.count, 1); // ретро-отметка в срезе
+});
+
+test('«Изменение этой недели» в обоих состояниях разбора, с экранированием', async () => {
+  const evilChange = '  раньше <script>window.__oc=1</script> ложиться  ';
+  const mkReview = () => ({
+    closedAt: 1, weekStart: daysAgo(9), keys: [daysAgo(9)],
+    perItem: {}, trainings: {}, oneChange: evilChange, raises: []
+  });
+
+  // состояние ожидания
+  const wait = dueSeed();
+  wait.weekStart = daysAgo(2);
+  wait.reviews = [mkReview()];
+  const a = await boot({ seed: wait });
+  a.document.querySelector('#tabs button[data-tab="review"]').click();
+  let scr = a.document.getElementById('scr-review');
+  assert.match(scr.textContent, /Разбор откроется/);
+  assert.match(scr.textContent, /Изменение этой недели: „раньше <script>window\.__oc=1<\/script> ложиться“/);
+  assert.equal(scr.querySelector('script'), null, 'разметка не материализовалась');
+  assert.equal(a.window.__oc, undefined);
+
+  // открытый разбор
+  const due = dueSeed(); // weekStart = daysAgo(8)
+  due.reviews = [mkReview()];
+  const b = await boot({ seed: due });
+  b.document.querySelector('#tabs button[data-tab="review"]').click();
+  scr = b.document.getElementById('scr-review');
+  assert.ok(scr.querySelector('.grid'), 'открытый разбор');
+  assert.match(scr.textContent, /Изменение этой недели: „раньше <script>window\.__oc=1<\/script> ложиться“/);
+
+  // пустое «одно изменение» — строки нет
+  const empty = dueSeed();
+  empty.weekStart = daysAgo(2);
+  empty.reviews = [{ closedAt: 1, weekStart: daysAgo(9), keys: [daysAgo(9)], perItem: {}, trainings: {}, oneChange: '   ', raises: [] }];
+  const c = await boot({ seed: empty });
+  c.document.querySelector('#tabs button[data-tab="review"]').click();
+  assert.doesNotMatch(c.document.getElementById('scr-review').textContent, /Изменение этой недели/);
+});
+
 test('раздел «Данные»: пассивная строка вместо императива', async () => {
   const { document } = await boot();
   document.querySelector('#tabs button[data-tab="items"]').click();

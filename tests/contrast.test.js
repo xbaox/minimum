@@ -48,25 +48,31 @@ const THRESHOLDS = [
 ];
 
 /* Правила, обязанные использовать контрастную переменную: трек выключенного
-   тумблера и рамка полей форм. Имя переменной извлекается из правила —
-   контраст проверяется по ней в обеих темах. */
+   тумблера, рамка полей форм и рамка инпута карточки повышения. Имя
+   переменной извлекается из правила — контраст проверяется по ней в обеих
+   темах против --bg и против --surface (поля лежат и на карточках). */
 const SWITCH_VAR = (CSS.match(/\.switch span\s*\{[^}]*background:\s*var\(--([\w-]+)\)/) || [])[1];
 const FIELD_VAR = (CSS.match(/\.field input[^{]*\{[^}]*border:\s*1px solid var\(--([\w-]+)\)/) || [])[1];
+const RAISE_VAR = (CSS.match(/\.raise-line \.num\s*\{[^}]*border:\s*1px solid var\(--([\w-]+)\)/) || [])[1];
 
-test('контраст: трек тумблера и рамка поля привязаны к переменным', () => {
+test('контраст: трек тумблера, рамка поля и raise-инпут привязаны к переменным', () => {
   assert.ok(SWITCH_VAR, 'у .switch span фон из переменной');
   assert.ok(FIELD_VAR, 'у .field input рамка из переменной');
+  assert.ok(RAISE_VAR, 'у .raise-line .num рамка из переменной');
   // select в .field — под тем же правилом рамки, что и input
   const fieldSelectors = (CSS.match(/([^{}]*\.field input[^{]*)\{[^}]*border:\s*1px solid var\(/) || [])[1] || '';
   assert.match(fieldSelectors, /\.field select/, 'рамка .field select задаётся тем же правилом');
 });
 
 for (const [theme, vars] of Object.entries(THEMES)) {
-  test(`контраст (${theme}): трек тумблера и рамка поля ≥3 против --bg`, () => {
-    for (const name of [SWITCH_VAR, FIELD_VAR]) {
+  test(`контраст (${theme}): контролы ≥3 против --bg и против --surface`, () => {
+    for (const name of [SWITCH_VAR, FIELD_VAR, RAISE_VAR]) {
       assert.ok(vars[name], `--${name} определён в теме ${theme}`);
-      const c = contrast(vars[name], vars.bg);
-      assert.ok(c >= 3, `--${name} ${vars[name]} на ${vars.bg}: ${c.toFixed(2)}:1 < 3:1`);
+      for (const bgName of ['bg', 'surface']) {
+        assert.ok(vars[bgName], `--${bgName} определён в теме ${theme}`);
+        const c = contrast(vars[name], vars[bgName]);
+        assert.ok(c >= 3, `--${name} ${vars[name]} на --${bgName} ${vars[bgName]}: ${c.toFixed(2)}:1 < 3:1`);
+      }
     }
   });
 }

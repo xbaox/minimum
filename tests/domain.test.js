@@ -681,6 +681,50 @@ test('З3: uid — crypto.randomUUID и фолбэк без него', () => {
   }
 });
 
+/* ── Задача 7. Ретро-отметка и «одно изменение» ────────────── */
+
+test('З7: markYesterday — матрица guard\'ов, запись ровно во вчера, повтор — false', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const t = app.todayKey();
+  const y = app.addDays(t, -1);
+  const item = s.items.find(i => i.name === 'Умыться');
+  const weekly = s.items.find(i => i.type === 'weekly');
+  const inactive = s.items.find(i => i.name === 'Развитие');
+
+  assert.equal(app.markYesterday('нет-такого-id'), false); // несуществующий пункт
+  assert.equal(app.markYesterday(item.id), false);         // добавлен сегодня — вчера не существовал
+
+  item.addedAt = y;
+  weekly.addedAt = app.addDays(t, -5);
+  assert.equal(app.markYesterday(weekly.id), false);       // weekly не отмечается
+  inactive.addedAt = app.addDays(t, -5);
+  inactive.active = false;
+  assert.equal(app.markYesterday(inactive.id), false);     // неактивный
+
+  assert.equal(app.markYesterday(item.id), true);
+  assert.equal(app.isMarked(y, item.id), true);            // ровно вчерашний ключ
+  assert.equal(app.isMarked(t, item.id), false);
+  assert.equal(app.missedYesterday(item, t), false);       // точка исчезнет
+
+  assert.equal(app.markYesterday(item.id), false);         // повторный вызов — false
+  assert.equal(app.isMarked(y, item.id), true);            // и отметка не снята
+});
+
+test('З7: currentOneChange — null без записей, при пустоте и пробелах; trim', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  assert.equal(app.currentOneChange(), null);          // нет reviews
+  s.reviews.push({ oneChange: '' });
+  assert.equal(app.currentOneChange(), null);          // пусто
+  s.reviews.push({ oneChange: '   ' });
+  assert.equal(app.currentOneChange(), null);          // пробелы
+  s.reviews.push({});
+  assert.equal(app.currentOneChange(), null);          // поля нет
+  s.reviews.push({ oneChange: '  меньше сахара  ' });
+  assert.equal(app.currentOneChange(), 'меньше сахара'); // trim, берётся последний
+});
+
 /* ── Инвариант 7. «Не пропускай дважды» ────────────────────── */
 
 test('И7: точка-маркер — пункт существовал вчера и не был отмечен', () => {
