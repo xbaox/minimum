@@ -48,7 +48,7 @@ async function boot({ seed, raw } = {}) {
   else if (seed) window.localStorage.setItem(NS, JSON.stringify(seed));
   vm.runInContext(APP, dom.getInternalVMContext());
   assert.equal(typeof window.init, 'function', 'app.js должен определить init() в window');
-  window.init();
+  await window.init(); // init асинхронный: стартовая проверка зеркала (инвариант 9)
   return { window, document: window.document };
 }
 

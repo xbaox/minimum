@@ -203,16 +203,19 @@ function migrate(s) {
   return s;
 }
 
+/* Чтение localStorage: store при валидной строке, null при пустой или битой —
+   дальше решает стартовая проверка init() (зеркало или дефолт, инвариант 9).
+   Битая строка сохраняется в corrupt-ключ до любого восстановления. */
 function load() {
   let raw = null;
-  try { raw = localStorage.getItem(NS); } catch (e) { return defaultStore(); }
-  if (!raw) return defaultStore();
+  try { raw = localStorage.getItem(NS); } catch (e) { return null; }
+  if (!raw) return null;
   try {
     return migrate(JSON.parse(raw));
   } catch (e) {
     // нечитаемые данные не уничтожаются: сырая строка уходит в резервный ключ
     try { localStorage.setItem(NS + ':corrupt', raw); } catch (e2) { /* некуда сохранить */ }
-    return defaultStore();
+    return null;
   }
 }
 
@@ -220,9 +223,81 @@ function save() {
   try {
     localStorage.setItem(NS, JSON.stringify(store));
     saveFailed = false; // первый успешный save снимает флаг
+    scheduleMirror();   // успешное сохранение дублируется в зеркало (инвариант 9)
   } catch (e) {
     saveFailed = true; // приватный режим / переполнение — баннер на «Сегодня» при следующем рендере
   }
+}
+
+/* ── Зеркало в IndexedDB (инвариант 9) ─────────────────────────
+   Тонкая обёртка: open/get/put, все ошибки глушатся — недоступность
+   IndexedDB не меняет поведение приложения. */
+
+const IDB_NAME = 'minimum';
+const IDB_STORE = 'mirror';
+const IDB_KEY = 'snapshot';
+
+let mirrorTimer = null;
+let mirrorDirty = false; // есть изменения, не доехавшие до зеркала
+let mirrorReady = false; // стартовая проверка init() завершена — писать можно
+
+function idbOpen() {
+  return new Promise(resolve => {
+    if (typeof indexedDB === 'undefined') { resolve(null); return; }
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        try { req.result.createObjectStore(IDB_STORE); } catch (e) { /* уже есть */ }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    } catch (e) { resolve(null); }
+  });
+}
+
+function mirrorRead() {
+  return idbOpen().then(db => new Promise(resolve => {
+    if (!db) { resolve(null); return; }
+    try {
+      const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(IDB_KEY);
+      req.onsuccess = () => { resolve(req.result || null); db.close(); };
+      req.onerror = () => { resolve(null); db.close(); };
+    } catch (e) { resolve(null); try { db.close(); } catch (e2) {} }
+  })).catch(() => null);
+}
+
+function mirrorWrite(snapshot) {
+  return idbOpen().then(db => new Promise(resolve => {
+    if (!db) { resolve(false); return; }
+    try {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(snapshot, IDB_KEY);
+      tx.oncomplete = () => { resolve(true); db.close(); };
+      tx.onerror = () => { resolve(false); db.close(); };
+      tx.onabort = () => { resolve(false); db.close(); };
+    } catch (e) { resolve(false); try { db.close(); } catch (e2) {} }
+  })).catch(() => false);
+}
+
+/* Дебаунс ~500 мс: частые отметки не молотят IndexedDB */
+function scheduleMirror() {
+  if (!mirrorReady || typeof indexedDB === 'undefined') return;
+  mirrorDirty = true;
+  clearTimeout(mirrorTimer);
+  mirrorTimer = setTimeout(flushMirror, 500);
+}
+
+/* Немедленный сброс незаписанного снапшота (pagehide, уход в фон, тесты) */
+function flushMirror() {
+  if (!mirrorReady || !mirrorDirty) return Promise.resolve(false);
+  mirrorDirty = false;
+  clearTimeout(mirrorTimer);
+  return mirrorWrite({
+    json: JSON.stringify(store),
+    savedAt: Date.now(),
+    schemaVersion: store.schemaVersion
+  });
 }
 
 /* ── Даты и граница дня ────────────────────────────────────── */
@@ -1190,9 +1265,22 @@ function onInput(e) {
 
 /* ── Запуск ────────────────────────────────────────────────── */
 
-function init() {
+async function init() {
+  // Стартовая проверка (инвариант 9): зеркало не пишется, пока она не завершена
   store = load();
-  save();
+  if (store) {
+    mirrorReady = true; // localStorage валиден — источник истины
+    save();             // рендер сразу, зеркало обновится асинхронно через дебаунс
+  } else {
+    // localStorage пуст или бит (corrupt-ключ уже записан) — пробуем зеркало
+    const snap = await mirrorRead();
+    if (snap && typeof snap.json === 'string') {
+      try { store = migrate(JSON.parse(snap.json)); } catch (e) { store = null; }
+    }
+    mirrorReady = true;
+    if (!store) store = defaultStore();
+    save(); // тихое восстановление в localStorage либо первый mirror-write дефолта
+  }
   navigator.storage?.persist?.()?.catch?.(() => {}); // fire-and-forget: просим не вычищать localStorage
   document.addEventListener('click', onClick);
   document.addEventListener('change', onChange);
@@ -1206,8 +1294,10 @@ function init() {
     }));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') { syncDay(); armDayTimer(); }
+    else flushMirror(); // уход в фон — немедленный сброс незаписанного зеркала
   });
   window.addEventListener('focus', syncDay);
+  window.addEventListener('pagehide', flushMirror);
   renderAll();
   armDayTimer();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -1221,7 +1311,8 @@ if (typeof module !== 'undefined' && module.exports) {
     todayKey, msToNextBoundary, toggleMark, isMarked, incTrain, undoTrain, trainCount,
     reviewDue, windowKeys, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, plural, parseNum,
-    moveItem, recordBar, parsePositive, isDayKey, load
+    moveItem, recordBar, parsePositive, isDayKey, load,
+    mirrorRead, mirrorWrite, flushMirror
   };
 } else if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', init);

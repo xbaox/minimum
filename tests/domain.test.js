@@ -573,7 +573,7 @@ test('З2: parsePositive — матрица входов', () => {
   assert.equal(app.parsePositive(undefined), null);
 });
 
-test('З2: load — битая строка уходит в minimum:data:corrupt, возвращается дефолт', () => {
+test('З2: load — битая строка уходит в minimum:data:corrupt, решение о дефолте за init', () => {
   setNow(2026, 7, 17, 12, 0);
   const mem = {};
   global.localStorage = {
@@ -583,16 +583,24 @@ test('З2: load — битая строка уходит в minimum:data:corrupt
   };
   try {
     mem['minimum:data'] = '{битый json';
-    const s = app.load();
-    assert.equal(s.items.length, 7); // дефолтный набор
+    assert.equal(app.load(), null); // не дефолт: дальше init смотрит зеркало (инвариант 9)
     assert.equal(mem['minimum:data:corrupt'], '{битый json');
-    // валидная строка резервный ключ не трогает
+    // пустой localStorage — тоже null
+    delete mem['minimum:data'];
+    assert.equal(app.load(), null);
+    // валидная строка — store; резервный ключ не тронут
     mem['minimum:data'] = JSON.stringify(app.defaultStore());
-    app.load();
+    assert.equal(app.load().items.length, 7);
     assert.equal(mem['minimum:data:corrupt'], '{битый json');
   } finally {
     delete global.localStorage;
   }
+});
+
+test('З4: зеркало без indexedDB — тихие no-op, исключений нет', async () => {
+  assert.equal(await app.mirrorRead(), null);
+  assert.equal(await app.flushMirror(), false);
+  assert.equal(await app.mirrorWrite({ json: '{}', savedAt: 1, schemaVersion: 4 }), false);
 });
 
 /* ── Задача 3. Гигиена migrate и uid ───────────────────────── */
