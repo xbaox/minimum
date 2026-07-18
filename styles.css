@@ -140,6 +140,7 @@ h2 {
   cursor: pointer;
 }
 .banner .chev { font-size: 20px; line-height: 1; opacity: .8; }
+.banner.static { cursor: default; } /* информационный баннер, не кнопка */
 
 /* ── Список пунктов ────────────────────────────────────────── */
 

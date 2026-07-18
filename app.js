@@ -51,8 +51,11 @@ const NS = 'minimum:data';
 const SCHEMA_VERSION = 2;
 
 let store = null;
+let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
 
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const uid = () => (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+  ? crypto.randomUUID()
+  : Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
 /* Модуль по умолчанию для стартовых пунктов (и для миграции v1-данных) */
 const DEFAULT_GROUPS = {
@@ -95,31 +98,71 @@ function defaultStore() {
   };
 }
 
+/* Числовое поле из внешних данных: число или числовая строка
+   (запятая как точка); всё остальное — fallback. */
+function numOr(v, fallback) {
+  if (typeof v === 'number') return isFinite(v) ? v : fallback;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v.replace(',', '.'));
+    return isFinite(n) ? n : fallback;
+  }
+  return fallback;
+}
+
 /* Миграции схемы. При изменении структуры: поднять SCHEMA_VERSION
-   и добавить шаг вида if (s.schemaVersion < N) { ...; }. */
+   и добавить шаг вида if (s.schemaVersion < N) { ...; }.
+   Толерантна к мусору: не-объекты отбрасываются, обязательные поля
+   достраиваются, числовые приводятся или обнуляются — импортированный
+   или повреждённый store не должен ронять ни migrate, ни рендер. */
 function migrate(s) {
   if (!s || typeof s !== 'object' || Array.isArray(s)) return defaultStore();
   if (!s.schemaVersion) s.schemaVersion = 1;
 
-  // мягкая достройка полей (защита от частичных/старых экспортов)
-  if (!Array.isArray(s.items)) s.items = [];
-  if (!s.days || typeof s.days !== 'object') s.days = {};
-  if (!Array.isArray(s.weekLog)) s.weekLog = [];
-  if (!Array.isArray(s.reviews)) s.reviews = [];
-  if (!Array.isArray(s.pendingRaises)) s.pendingRaises = [];
-  if (typeof s.draftOneChange !== 'string') s.draftOneChange = '';
-  if (!s.settings || typeof s.settings !== 'object') s.settings = {};
-  if (typeof s.settings.dayBoundary !== 'number') s.settings.dayBoundary = 4;
+  // настройки — первыми: от dayBoundary зависит «сегодня» для достройки дат
+  if (!s.settings || typeof s.settings !== 'object' || Array.isArray(s.settings)) s.settings = {};
+  if (typeof s.settings.dayBoundary !== 'number' || !isFinite(s.settings.dayBoundary)) s.settings.dayBoundary = 4;
   if (!('hintShownForItemId' in s.settings)) s.settings.hintShownForItemId = null;
-  if (!s.weekStart) s.weekStart = dateKeyShift(new Date(), s.settings.dayBoundary);
+  const today = dateKeyShift(new Date(), s.settings.dayBoundary);
+
+  // пункты: только объекты; id и addedAt достраиваются, id дедуплицируются
+  if (!Array.isArray(s.items)) s.items = [];
+  s.items = s.items.filter(it => it && typeof it === 'object' && !Array.isArray(it));
+  const ids = new Set();
   for (const it of s.items) {
-    if (typeof it.raiseAfter !== 'number') it.raiseAfter = 0;
+    if (typeof it.id !== 'string' || !it.id || ids.has(it.id)) it.id = uid();
+    ids.add(it.id);
+    if (!isDayKey(it.addedAt)) it.addedAt = today;
+    it.type = it.type === 'weekly' ? 'weekly' : 'daily';
     if (typeof it.active !== 'boolean') it.active = true;
-    if (!it.type) it.type = 'daily';
     if (typeof it.note !== 'string') it.note = '';
     if (typeof it.group !== 'string') it.group = '';
+    it.value = numOr(it.value, null);
+    const g = numOr(it.goal, null);
+    it.goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : null;
+    it.raiseAfter = Math.max(0, Math.round(numOr(it.raiseAfter, 0)));
     if (!Array.isArray(it.history)) it.history = [];
+    it.history = it.history
+      .filter(h => h && typeof h === 'object' && !Array.isArray(h) && isDayKey(h.date))
+      .map(h => ({ date: h.date, value: numOr(h.value, null) }))
+      .filter(h => h.value !== null);
   }
+
+  // отметки: значения дней — объекты с булевыми полями, иначе запись отбрасывается
+  if (!s.days || typeof s.days !== 'object' || Array.isArray(s.days)) s.days = {};
+  for (const k of Object.keys(s.days)) {
+    const day = s.days[k];
+    const ok = day && typeof day === 'object' && !Array.isArray(day) &&
+      Object.values(day).every(v => typeof v === 'boolean');
+    if (!ok) delete s.days[k];
+  }
+
+  if (!Array.isArray(s.weekLog)) s.weekLog = [];
+  s.weekLog = s.weekLog.filter(e => e && typeof e === 'object' && !Array.isArray(e));
+  if (!Array.isArray(s.reviews)) s.reviews = [];
+  s.reviews = s.reviews.filter(r => r && typeof r === 'object' && !Array.isArray(r));
+  if (!Array.isArray(s.pendingRaises)) s.pendingRaises = [];
+  if (typeof s.draftOneChange !== 'string') s.draftOneChange = '';
+  if (!isDayKey(s.weekStart)) s.weekStart = today;
 
   // v1 → v2: «Принять душ», подпись тренировки, модули, посев истории планки
   if (s.schemaVersion < 2) {
@@ -146,17 +189,25 @@ function migrate(s) {
 }
 
 function load() {
+  let raw = null;
+  try { raw = localStorage.getItem(NS); } catch (e) { return defaultStore(); }
+  if (!raw) return defaultStore();
   try {
-    const raw = localStorage.getItem(NS);
-    if (!raw) return defaultStore();
     return migrate(JSON.parse(raw));
   } catch (e) {
+    // нечитаемые данные не уничтожаются: сырая строка уходит в резервный ключ
+    try { localStorage.setItem(NS + ':corrupt', raw); } catch (e2) { /* некуда сохранить */ }
     return defaultStore();
   }
 }
 
 function save() {
-  try { localStorage.setItem(NS, JSON.stringify(store)); } catch (e) { /* приватный режим / переполнение */ }
+  try {
+    localStorage.setItem(NS, JSON.stringify(store));
+    saveFailed = false; // первый успешный save снимает флаг
+  } catch (e) {
+    saveFailed = true; // приватный режим / переполнение — баннер на «Сегодня» при следующем рендере
+  }
 }
 
 /* ── Даты и граница дня ────────────────────────────────────── */
@@ -179,6 +230,12 @@ function todayKey() {
 function keyToDate(k) {
   const [y, m, d] = k.split('-').map(Number);
   return new Date(y, m - 1, d, 12, 0, 0); // полдень — вне зоны перевода часов
+}
+
+/* Валидный ключ логического дня: формат YYYY-MM-DD и существующая дата */
+function isDayKey(k) {
+  return typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k) &&
+    dateKeyFromDate(keyToDate(k)) === k;
 }
 
 function addDays(k, n) {
@@ -295,13 +352,19 @@ function resetRaiseCount(item) {
 }
 
 /* Запись изменения планки в историю пункта.
-   Повторное изменение в тот же день заменяет последнюю запись —
-   в истории остаётся движение по неделям, а не правки. */
+   Повторное изменение в тот же день заменяет последнюю запись,
+   возврат к прежнему значению схлопывает её — в истории остаётся
+   движение по неделям без правок и дублей («5 → 5» не бывает). */
 function recordBar(item, newValue) {
   if (!Array.isArray(item.history)) item.history = [];
   const last = item.history[item.history.length - 1];
-  if (last && last.date === todayKey()) last.value = newValue;
-  else item.history.push({ date: todayKey(), value: newValue });
+  if (last && last.date === todayKey()) {
+    const prev = item.history[item.history.length - 2];
+    if (prev && prev.value === newValue) item.history.pop();
+    else last.value = newValue;
+  } else if (!last || last.value !== newValue) {
+    item.history.push({ date: todayKey(), value: newValue });
+  }
 }
 
 function acceptRaise(item, newValue) {
@@ -439,6 +502,10 @@ function renderToday() {
       <h1>${esc(fmtDay(t))}</h1>
     </header>`;
 
+  if (saveFailed) {
+    h += `<p class="banner static">Хранилище недоступно — отметки сейчас не сохраняются</p>`;
+  }
+
   if (reviewDue()) {
     h += `<button class="banner" data-act="goto-review"><span>Доступен разбор недели</span><span class="chev" aria-hidden="true">&rsaquo;</span></button>`;
   }
@@ -463,13 +530,13 @@ function renderToday() {
     h += `
       <div class="rowwrap">
         <label class="row check${on ? ' on' : ''}">
-          <input type="checkbox" data-act="mark" data-id="${it.id}"${on ? ' checked' : ''}>
+          <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}>
           <span class="box" aria-hidden="true"></span>
           <span class="txt">
             <span class="tname">${esc(it.name)}${vu ? ` <span class="val">${esc(vu)}</span>` : ''}</span>
             ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
           </span>
-          ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${it.id}" aria-label="вчера — пропуск"><i></i></button>` : ''}
+          ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-label="вчера — пропуск"><i></i></button>` : ''}
         </label>
         ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск</p>` : ''}
       </div>`;
@@ -486,10 +553,10 @@ function renderToday() {
         </span>
         <span class="wctl">
           <span class="wnum"><b>${n}</b>&thinsp;/&thinsp;${w.goal || 0}</span>
-          <button class="btn icon plus" data-act="train-inc" data-id="${w.id}" aria-label="плюс один">+</button>
+          <button class="btn icon plus" data-act="train-inc" data-id="${esc(w.id)}" aria-label="плюс один">+</button>
         </span>
       </div>
-      ${n ? `<button class="undo" data-act="train-undo" data-id="${w.id}">отменить последний</button>` : ''}`;
+      ${n ? `<button class="undo" data-act="train-undo" data-id="${esc(w.id)}">отменить последний</button>` : ''}`;
   }
 
   h += `<p class="creed">Минимум выполняется даже в худший день.</p>`;
@@ -552,17 +619,17 @@ function renderReview() {
     const sug = raiseSuggest(it.value);
     const editing = ui.raiseEdit[it.id];
     h += `
-      <div class="card raise" data-raise="${it.id}">
+      <div class="card raise" data-raise="${esc(it.id)}">
         <p>${esc(it.name)}: три недели подряд не меньше 6 из 7.</p>
         <p class="raise-line">Повысить ${esc(String(it.value))} →
           ${editing
-            ? `<input class="num" id="raise-${it.id}" type="text" inputmode="decimal" value="${esc(String(sug))}">`
+            ? `<input class="num" id="raise-${esc(it.id)}" type="text" inputmode="decimal" value="${esc(String(sug))}">`
             : `<b>${esc(String(sug))}</b>`}
           ${it.unit ? esc(it.unit) : ''}?</p>
         <div class="btns">
-          <button class="btn" data-act="raise-ok" data-id="${it.id}">Принять</button>
-          ${editing ? '' : `<button class="btn quiet" data-act="raise-edit" data-id="${it.id}">Изменить</button>`}
-          <button class="btn quiet" data-act="raise-later" data-id="${it.id}">Не сейчас</button>
+          <button class="btn" data-act="raise-ok" data-id="${esc(it.id)}">Принять</button>
+          ${editing ? '' : `<button class="btn quiet" data-act="raise-edit" data-id="${esc(it.id)}">Изменить</button>`}
+          <button class="btn quiet" data-act="raise-later" data-id="${esc(it.id)}">Не сейчас</button>
         </div>
       </div>`;
   }
@@ -591,6 +658,7 @@ function groupList() {
 }
 
 function barHistory(it) {
+  if (typeof it.value !== 'number' || !isFinite(it.value)) return ''; // после очистки значения строка не показывается
   if (!Array.isArray(it.history) || it.history.length < 2) return '';
   const vals = it.history.map(x => String(x.value));
   const shown = vals.length > 6 ? ['…'].concat(vals.slice(-6)) : vals;
@@ -609,17 +677,17 @@ function renderItems() {
     h += `
       <div class="rowwrap${it.active ? '' : ' off'}">
         <div class="row item">
-          <button class="itxt" data-act="edit-open" data-id="${it.id}" aria-label="изменить «${esc(it.name)}»">
+          <button class="itxt" data-act="edit-open" data-id="${esc(it.id)}" aria-label="изменить «${esc(it.name)}»">
             <span class="tname">${esc(it.name)}</span>
             ${meta ? `<span class="meta">${esc(meta)}</span>` : ''}
             ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
             ${barHistory(it)}
           </button>
           <span class="ictl">
-            <button class="btn icon quiet" data-act="move-up" data-id="${it.id}"${idx === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
-            <button class="btn icon quiet" data-act="move-down" data-id="${it.id}"${idx === store.items.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
+            <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${idx === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
+            <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${idx === store.items.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
             <label class="switch" aria-label="включён">
-              <input type="checkbox" data-act="toggle-active" data-id="${it.id}"${it.active ? ' checked' : ''}>
+              <input type="checkbox" data-act="toggle-active" data-id="${esc(it.id)}"${it.active ? ' checked' : ''}>
               <span></span>
             </label>
           </span>
@@ -664,17 +732,17 @@ function groupField(idPrefix, value) {
 
 function editForm(it) {
   return `
-    <div class="card form" data-form="edit" data-id="${it.id}">
+    <div class="card form" data-form="edit" data-id="${esc(it.id)}">
       <label class="field"><span>Название</span><input type="text" id="e-name" value="${esc(it.name)}"></label>
       <label class="field"><span>Подпись</span><input type="text" id="e-note" value="${esc(it.note || '')}" placeholder="необязательная строка под названием"></label>
       <div class="pair">
-        <label class="field"><span>Значение</span><input class="num" type="text" inputmode="decimal" id="e-value" value="${it.value ?? ''}"></label>
+        <label class="field"><span>Значение</span><input class="num" type="text" inputmode="decimal" id="e-value" value="${esc(it.value)}"></label>
         <label class="field"><span>Единица</span><input type="text" id="e-unit" value="${esc(it.unit || '')}"></label>
       </div>
       ${groupField('e', it.group)}
-      ${it.type === 'weekly' ? `<label class="field"><span>Цель за неделю</span><input class="num" type="text" inputmode="numeric" id="e-goal" value="${it.goal ?? ''}"></label>` : ''}
+      ${it.type === 'weekly' ? `<label class="field"><span>Цель за неделю</span><input class="num" type="text" inputmode="numeric" id="e-goal" value="${esc(it.goal)}"></label>` : ''}
       <div class="btns">
-        <button class="btn primary" data-act="edit-save" data-id="${it.id}">Сохранить</button>
+        <button class="btn primary" data-act="edit-save" data-id="${esc(it.id)}">Сохранить</button>
         <button class="btn quiet" data-act="edit-cancel">Отмена</button>
       </div>
     </div>`;
@@ -734,6 +802,12 @@ function parseNum(v) {
   return isFinite(n) ? n : null;
 }
 
+/* Единая валидация пользовательского ввода чисел: только > 0, иначе null */
+function parsePositive(v) {
+  const n = parseNum(v);
+  return n !== null && n > 0 ? n : null;
+}
+
 function onClick(e) {
   const b = e.target.closest('[data-act]');
   if (!b) return;
@@ -760,8 +834,8 @@ function onClick(e) {
     case 'raise-ok': {
       if (!item) break;
       const input = el('raise-' + id);
-      const v = input ? parseNum(input.value) : raiseSuggest(item.value);
-      if (v === null || v <= 0) break;
+      const v = input ? parsePositive(input.value) : raiseSuggest(item.value);
+      if (v === null) break; // осознанный тихий no-op: карточка остаётся
       acceptRaise(item, v);
       delete ui.raiseEdit[id];
       renderReview();
@@ -783,15 +857,20 @@ function onClick(e) {
       if (!item) break;
       const name = el('e-name').value.trim();
       if (name) item.name = name;
-      const oldV = item.value;
-      item.value = parseNum(el('e-value').value);
+      const rawValue = el('e-value').value;
+      if (!String(rawValue).trim()) {
+        item.value = null; // осознанная очистка: пункт остаётся чекбоксом без числа, история не трогается
+      } else {
+        const v = parsePositive(rawValue);
+        if (v !== null && v !== item.value) { item.value = v; recordBar(item, v); }
+        // невалидный ввод — старое значение сохраняется
+      }
       item.unit = el('e-unit').value.trim();
       item.note = el('e-note').value.trim();
       item.group = el('e-group').value.trim();
-      if (typeof item.value === 'number' && item.value !== oldV) recordBar(item, item.value);
       if (item.type === 'weekly') {
-        const g = parseNum(el('e-goal') ? el('e-goal').value : null);
-        item.goal = g && g > 0 ? Math.round(g) : item.goal;
+        const g = parsePositive(el('e-goal') ? el('e-goal').value : null);
+        if (g !== null && Math.round(g) >= 1) item.goal = Math.round(g); // невалид — старая цель
       }
       save();
       ui.editingId = null;
@@ -814,15 +893,18 @@ function onClick(e) {
       const name = el('f-name').value.trim();
       if (!name) { el('f-name').focus(); break; }
       const type = el('f-type').value === 'weekly' ? 'weekly' : 'daily';
-      const goalEl = el('f-goal');
-      const g = type === 'weekly' ? (parseNum(goalEl ? goalEl.value : '3') || 3) : null;
-      const value = parseNum(el('f-value').value);
+      let goal = null;
+      if (type === 'weekly') {
+        const g = parsePositive(el('f-goal') ? el('f-goal').value : null);
+        goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : 3; // невалид — цель по умолчанию
+      }
+      const value = parsePositive(el('f-value').value); // невалид/пусто — пункт без числа
       store.items.push({
         id: uid(), name, value,
         unit: el('f-unit').value.trim(),
         note: el('f-note').value.trim(),
         group: el('f-group').value.trim(),
-        type, goal: g ? Math.round(g) : null,
+        type, goal,
         active: true, addedAt: todayKey(), raiseAfter: 0,
         history: (typeof value === 'number') ? [{ date: todayKey(), value }] : []
       });
@@ -875,6 +957,7 @@ function onInput(e) {
 function init() {
   store = load();
   save();
+  navigator.storage?.persist?.()?.catch?.(() => {}); // fire-and-forget: просим не вычищать localStorage
   document.addEventListener('click', onClick);
   document.addEventListener('change', onChange);
   document.addEventListener('input', onInput);
@@ -892,7 +975,7 @@ if (typeof module !== 'undefined' && module.exports) {
     todayKey, toggleMark, isMarked, incTrain, undoTrain, trainCount,
     reviewDue, windowKeys, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, plural, parseNum,
-    moveItem, recordBar
+    moveItem, recordBar, parsePositive, isDayKey, load
   };
 } else if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', init);
