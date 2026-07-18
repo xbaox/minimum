@@ -5,7 +5,7 @@
    и app.js идёт по браузерному пути. К моменту запуска кода DOMContentLoaded
    в jsdom уже отстрелял, так что init() вызывается вручную ровно один раз. */
 
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -27,12 +27,18 @@ function daysAgo(n) {
   return dayKey(new Date(Date.now() - n * 86400000));
 }
 
+/* app.js взводит таймер границы дня — окна нужно закрывать, иначе
+   процесс node --test не завершится из-за живого setTimeout */
+const doms = [];
+after(() => { for (const d of doms) d.window.close(); });
+
 async function boot({ seed, raw } = {}) {
   const dom = new JSDOM(HTML, {
     url: 'https://example.org/minimum/',
     runScripts: 'outside-only',
     pretendToBeVisual: true
   });
+  doms.push(dom);
   const { window } = dom;
   if (window.document.readyState !== 'complete') {
     await new Promise(res => window.addEventListener('load', res));

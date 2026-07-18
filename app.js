@@ -249,6 +249,15 @@ function isDayKey(k) {
     dateKeyFromDate(keyToDate(k)) === k;
 }
 
+/* Миллисекунды до ближайшего момента границы дня */
+function msToNextBoundary() {
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(),
+    store.settings.dayBoundary, 0, 0, 0);
+  while (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
 function addDays(k, n) {
   const d = keyToDate(k);
   d.setDate(d.getDate() + n);
@@ -489,11 +498,35 @@ const ui = {
   editingId: null,
   addOpen: false,
   addType: 'daily',
+  addHint: false,
   raiseEdit: {},   // itemId -> true, когда открыт ввод своего значения
   missOpen: {},    // itemId -> true, когда показана подпись «вчера — пропуск»
   justClosed: false,
-  importNote: null // строка «Импортировано: …», исчезает при следующем действии
+  importNote: null,     // строка «Импортировано: …», исчезает при следующем действии
+  renderedDayKey: null, // логический день, для которого отрисован интерфейс (инвариант 8)
+  renderedTab: null,    // последняя отрисованная вкладка — скролл сбрасывается только при её смене
+  formDraft: null       // черновик открытой формы «Пунктов»: значения, фокус, каретка
 };
+
+let dayTimer = null; // таймер на ближайшую границу дня
+
+/* Инвариант 8: экран мог устареть (смена логического дня в открытом
+   приложении). При расхождении — чистка дневного ui-состояния и полная
+   перерисовка текущей вкладки; true = действие применять нельзя. */
+function syncDay() {
+  if (ui.renderedDayKey === null || todayKey() === ui.renderedDayKey) return false;
+  ui.missOpen = {};
+  ui.raiseEdit = {};
+  ui.renderedDayKey = todayKey(); // фиксируем новый день и для не-«Сегодня» вкладок
+  renderAll();
+  return true;
+}
+
+function armDayTimer() {
+  clearTimeout(dayTimer);
+  // +1 c запаса: таймеры iOS могут срабатывать на самой границе
+  dayTimer = setTimeout(() => { syncDay(); armDayTimer(); }, msToNextBoundary() + 1000);
+}
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -524,6 +557,7 @@ function renderAll() {
 /* Экран 1 — «Сегодня» */
 function renderToday() {
   const t = todayKey();
+  ui.renderedDayKey = t;
   const items = activeDaily();
   const done = items.filter(i => isMarked(t, i.id)).length;
   const total = items.length;
@@ -609,9 +643,9 @@ function renderReview() {
     h += `<p class="muted">Идёт ${passed + 1}-й день недели. Разбор откроется через ${left} ${plural(left, 'день', 'дня', 'дней')}.</p>`;
     h += `<p class="muted">Неделя началась ${esc(fmtShort(store.weekStart))}.</p>`;
     el('scr-review').innerHTML = h;
+    ui.justClosed = false; // «Неделя закрыта.» показывается ровно один раз
     return;
   }
-  ui.justClosed = false;
 
   const keys = windowKeys();
   const gridItems = store.items.filter(it =>
@@ -846,6 +880,7 @@ function parsePositive(v) {
 function onClick(e) {
   const b = e.target.closest('[data-act]');
   if (!b) return;
+  if (syncDay()) return; // stale-экран: действие не применяется (инвариант 8)
   const hadImportNote = ui.importNote !== null;
   ui.importNote = null; // строка «Импортировано…» живёт до следующего действия
   const act = b.dataset.act;
@@ -964,6 +999,7 @@ function onClick(e) {
 
 function onChange(e) {
   const t = e.target;
+  if (syncDay()) return; // stale-экран: действие не применяется (инвариант 8)
   ui.importNote = null;
   const act = t.dataset.act;
   if (act === 'mark') {
@@ -975,7 +1011,7 @@ function onChange(e) {
   } else if (act === 'boundary') {
     store.settings.dayBoundary = Number(t.value) || 0;
     save();
-    renderItems();
+    armDayTimer(); // граница сместилась — таймер на новую; экран «Пункты» от неё не зависит, select держит фокус
   } else if (act === 'add-type') {
     ui.addType = t.value;
     const keep = { name: el('f-name').value, value: el('f-value').value, unit: el('f-unit').value,
@@ -1006,8 +1042,18 @@ function init() {
   document.addEventListener('change', onChange);
   document.addEventListener('input', onInput);
   document.querySelectorAll('#tabs button').forEach(b =>
-    b.addEventListener('click', () => { ui.importNote = null; ui.tab = b.dataset.tab; renderAll(); }));
+    b.addEventListener('click', () => {
+      ui.importNote = null;
+      if (b.dataset.tab !== ui.tab) { ui.missOpen = {}; ui.raiseEdit = {}; }
+      ui.tab = b.dataset.tab;
+      if (!syncDay()) renderAll(); // при смене дня syncDay уже перерисовал новую вкладку
+    }));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') { syncDay(); armDayTimer(); }
+  });
+  window.addEventListener('focus', syncDay);
   renderAll();
+  armDayTimer();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
