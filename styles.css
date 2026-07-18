@@ -418,6 +418,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .raise-line .num {
   width: 84px;
   display: inline-block;
+  font: inherit;     /* как у полей .field */
   font-size: 16px;   /* iOS: не масштабировать при фокусе */
   min-height: 44px;  /* тач-таргет */
   padding: 8px 12px;
