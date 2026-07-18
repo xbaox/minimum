@@ -626,6 +626,19 @@ test('З3: migrate — value ≤ 0 обнуляется, name и unit приво
   assert.equal(m.items[2].value, 3);
 });
 
+test('З3: msToNextBoundary — миллисекунды до ближайшей границы дня', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore(); // dayBoundary: 4
+  assert.equal(app.msToNextBoundary(), 16 * 3600000); // завтра 04:00
+  s.settings.dayBoundary = 0;
+  assert.equal(app.msToNextBoundary(), 12 * 3600000); // ближайшая полночь
+  setNow(2026, 7, 17, 4, 0);
+  s.settings.dayBoundary = 4;
+  assert.equal(app.msToNextBoundary(), 24 * 3600000); // ровно на границе — через сутки
+  setNow(2026, 7, 17, 3, 59);
+  assert.equal(app.msToNextBoundary(), 60000);
+});
+
 test('З3: uid — crypto.randomUUID и фолбэк без него', () => {
   // с crypto — UUID
   assert.match(app.defaultStore().items[0].id, /^[0-9a-f]{8}-[0-9a-f]{4}-/);

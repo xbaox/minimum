@@ -436,6 +436,119 @@ test('открытая форма переживает перестановку 
   assert.equal(document.getElementById('e-name').value, 'Новое имя');
 });
 
+test('фокус-событие окна после смены дня обновляет экран', async () => {
+  const { document, window } = await boot();
+  const before = document.querySelector('#scr-today h1').textContent;
+  shiftWindowDate(window, 24 * 3600000);
+  window.dispatchEvent(new window.Event('focus'));
+  assert.notEqual(document.querySelector('#scr-today h1').textContent, before);
+});
+
+test('тумблер активности переключает .off точечно, без перерисовки', async () => {
+  const { document, window } = await boot();
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const input = document.querySelector('input[data-act="toggle-active"]');
+  const wrap = input.closest('.rowwrap');
+  assert.equal(wrap.classList.contains('off'), false);
+
+  input.click();
+
+  assert.equal(document.contains(wrap), true); // узел тот же — экран не перерисовывался
+  assert.equal(wrap.classList.contains('off'), true);
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(saved.items.find(i => i.id === input.dataset.id).active, false);
+
+  input.click();
+  assert.equal(wrap.classList.contains('off'), false);
+});
+
+test('смена границы дня не перерисовывает «Пункты»; сдвиг дня не глушит следующий клик', async () => {
+  const { document, window } = await boot();
+  // привести «сейчас» к 02:30 — внутри окна 00:00–04:00, где границы 4 и 0 дают разные дни
+  const now = new Date();
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 2, 30, 0, 0);
+  shiftWindowDate(window, target.getTime() - now.getTime());
+  document.dispatchEvent(new window.Event('visibilitychange')); // синхронизировать экран со сдвинутым «сейчас»
+
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const sel = document.querySelector('select[data-act="boundary"]');
+  sel.value = '0';
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+
+  // экран не перерисован — select тот же узел; настройка сохранена
+  assert.equal(document.querySelector('select[data-act="boundary"]'), sel);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).settings.dayBoundary, 0);
+
+  // граница сдвинула логический день (02:30: вчера → сегодня), но первый же
+  // клик применяется, а не глотается stale-guard'ом
+  document.querySelector('[data-act="add-open"]').click();
+  assert.ok(document.getElementById('f-name'), 'форма открылась с первого клика');
+});
+
+test('подпись «вчера — пропуск» закрывается при смене вкладки', async () => {
+  const seed = dueSeed();
+  seed.weekStart = daysAgo(2);
+  seed.days = {}; // вчера не отмечено — у пункта есть точка-маркер
+  const { document, window } = await boot({ seed });
+  const dot = document.querySelector('[data-act="miss-note"]');
+  assert.ok(dot, 'точка-маркер есть');
+  dot.click();
+  assert.ok(document.querySelector('.miss-note'), 'подпись раскрыта');
+
+  document.querySelector('#tabs button[data-tab="system"]').click();
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(document.querySelector('.miss-note'), null); // missOpen очищен
+  assert.ok(document.querySelector('[data-act="miss-note"]')); // сама точка на месте
+});
+
+test('скролл наверх — только при фактической смене вкладки', async () => {
+  const { document, window } = await boot();
+  const calls = [];
+  window.scrollTo = (...a) => calls.push(a);
+
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  assert.equal(calls.length, 1); // смена вкладки — скролл
+
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  assert.equal(calls.length, 1); // та же вкладка — позиция не трогается
+
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(calls.length, 2);
+});
+
+test('импорт при открытой форме: черновик не накатывается на импортированный пункт', async () => {
+  const { document, window } = await boot();
+  document.querySelector('#tabs button[data-tab="items"]').click();
+
+  // открыть редактирование первого пункта и оставить несохранённый черновик
+  const editBtn = document.querySelector('[data-act="edit-open"]');
+  const sameId = editBtn.dataset.id;
+  editBtn.click();
+  document.getElementById('e-name').value = 'Черновик';
+
+  // импортировать файл, где пункт имеет ТОТ ЖЕ id, но другие значения
+  const payload = {
+    schemaVersion: 3,
+    items: [{ id: sameId, name: 'Импортный', value: 7, unit: 'мин', type: 'daily',
+      goal: null, note: '', group: '', active: true, addedAt: daysAgo(5), raiseAfter: 0,
+      history: [{ date: daysAgo(5), value: 7 }] }],
+    days: {}, weekLog: [], reviews: [], pendingRaises: [],
+    draftOneChange: '', weekStart: daysAgo(2), settings: { dayBoundary: 4 }
+  };
+  window.confirm = () => true;
+  window.alert = m => { throw new Error('alert при успешном импорте: ' + m); };
+  const inp = document.getElementById('import-file');
+  const file = new window.File([JSON.stringify(payload)], 'x.json', { type: 'application/json' });
+  Object.defineProperty(inp, 'files', { value: [file], configurable: true });
+  inp.dispatchEvent(new window.Event('change', { bubbles: true }));
+  for (let i = 0; i < 100 && document.getElementById('e-name'); i++) await new Promise(r => setTimeout(r, 10));
+
+  assert.equal(document.getElementById('e-name'), null); // форма закрыта импортом
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(saved.items[0].name, 'Импортный'); // черновик не затёр импортированное
+  assert.match(document.getElementById('scr-items').textContent, /Импортный/);
+});
+
 test('баннер хранилища: появляется при сбое save и снимается первым успешным', async () => {
   const { document, window } = await boot();
   const realLS = window.localStorage;

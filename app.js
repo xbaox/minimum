@@ -489,6 +489,15 @@ function importJSON(file) {
     if (!confirm(`Заменить текущие данные данными из файла?\n\nВ файле: ${parts.join(', ')}.`)) return;
     store = incoming;
     save();
+    // импорт заменил состояние целиком: черновики форм и дневное ui-состояние
+    // не переносятся, граница дня могла смениться — таймер и день заново
+    ui.editingId = null;
+    ui.addOpen = false;
+    ui.formDraft = null;
+    ui.missOpen = {};
+    ui.raiseEdit = {};
+    ui.renderedDayKey = todayKey();
+    armDayTimer();
     const n = store.items.length;
     ui.importNote = `Импортировано: ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ` +
       `${dayCount} ${plural(dayCount, 'день', 'дня', 'дней')}`;
@@ -812,7 +821,10 @@ function snapshotOpenForm() {
     return;
   }
   const fields = {};
-  for (const inp of form.querySelectorAll('input[id], select[id]')) fields[inp.id] = inp.value;
+  for (const inp of form.querySelectorAll('input[id], select[id]')) {
+    if (inp.dataset.act) continue; // управляемые ui-состоянием контролы (select типа) — не черновик
+    fields[inp.id] = inp.value;
+  }
   const ae = document.activeElement;
   const focus = (ae && form.contains(ae) && ae.id)
     ? { id: ae.id, start: ae.selectionStart ?? null, end: ae.selectionEnd ?? null }
@@ -996,7 +1008,12 @@ function onClick(e) {
   const item = id ? store.items.find(i => i.id === id) : null;
 
   switch (act) {
-    case 'goto-review': ui.tab = 'review'; renderAll(); break;
+    case 'goto-review':
+      ui.missOpen = {}; // смена вкладки — как в таб-баре
+      ui.raiseEdit = {};
+      ui.tab = 'review';
+      renderAll();
+      break;
 
     case 'miss-note':
       e.preventDefault();
@@ -1148,6 +1165,13 @@ function onChange(e) {
     store.settings.dayBoundary = Number(t.value) || 0;
     save();
     armDayTimer(); // граница сместилась — таймер на новую; экран «Пункты» от неё не зависит, select держит фокус
+    if (todayKey() !== ui.renderedDayKey) {
+      // новая граница сдвинула логический день прямо сейчас — фиксируем без
+      // перерисовки, иначе guard молча проглотит следующее действие
+      ui.missOpen = {};
+      ui.raiseEdit = {};
+      ui.renderedDayKey = todayKey();
+    }
   } else if (act === 'add-type') {
     ui.addType = t.value;
     renderItems(); // снимок/восстановление формы — внутри renderItems, цель не сбрасывается
@@ -1194,7 +1218,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     get store() { return store; }, set store(v) { store = v; },
     defaultStore, migrate, dateKeyShift, dateKeyFromDate, addDays, diffDays,
-    todayKey, toggleMark, isMarked, incTrain, undoTrain, trainCount,
+    todayKey, msToNextBoundary, toggleMark, isMarked, incTrain, undoTrain, trainCount,
     reviewDue, windowKeys, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, plural, parseNum,
     moveItem, recordBar, parsePositive, isDayKey, load
