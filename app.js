@@ -677,7 +677,7 @@ function renderToday() {
     </header>`;
 
   if (saveFailed) {
-    h += `<p class="banner static">Хранилище недоступно — отметки сейчас не сохраняются</p>`;
+    h += `<p class="banner static" role="status">Хранилище недоступно — отметки сейчас не сохраняются</p>`;
   }
 
   if (reviewDue()) {
@@ -687,7 +687,7 @@ function renderToday() {
   h += `
     <div class="dayline">
       <div class="bar"><i style="width:${pct}%"></i></div>
-      <p class="bar-note${closed ? ' ok' : ''}">${closed ? 'День закрыт' : (total ? `<b>${done}</b>&nbsp;из&nbsp;${total}` : 'Нет активных пунктов')}</p>
+      <p class="bar-note${closed ? ' ok' : ''}" aria-live="polite">${closed ? 'День закрыт' : (total ? `<b>${done}</b>&nbsp;из&nbsp;${total}` : 'Нет активных пунктов')}</p>
     </div>`;
 
   h += `<div class="list">`;
@@ -710,8 +710,8 @@ function renderToday() {
             <span class="tname">${esc(it.name)}${vu ? ` <span class="val">${esc(vu)}</span>` : ''}</span>
             ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
           </span>
-          ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-label="вчера — пропуск"><i></i></button>` : ''}
         </label>
+        ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-label="вчера — пропуск"><i></i></button>` : ''}
         ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск</p>` : ''}
       </div>`;
   }
@@ -727,10 +727,10 @@ function renderToday() {
         </span>
         <span class="wctl">
           <span class="wnum"><b>${n}</b>&thinsp;/&thinsp;${w.goal || 0}</span>
-          <button class="btn icon plus" data-act="train-inc" data-id="${esc(w.id)}" aria-label="плюс один">+</button>
+          <button class="btn icon plus" data-act="train-inc" data-id="${esc(w.id)}" aria-label="+1 к «${esc(w.name)}»">+</button>
         </span>
       </div>
-      ${n ? `<button class="undo" data-act="train-undo" data-id="${esc(w.id)}">отменить последний</button>` : ''}`;
+      ${n ? `<button class="undo" data-act="train-undo" data-id="${esc(w.id)}" aria-label="отменить последний: «${esc(w.name)}»">отменить последний</button>` : ''}`;
   }
 
   h += `<p class="creed">Минимум выполняется даже в худший день.</p>`;
@@ -778,11 +778,13 @@ function updateWeekCount(id) {
   const next = wc.nextElementSibling;
   const hasUndo = !!(next && next.classList.contains('undo') && next.dataset.id === id);
   if (n && !hasUndo) {
+    const it = store.items.find(x => x.id === id);
     const btn = document.createElement('button');
     btn.className = 'undo';
     btn.dataset.act = 'train-undo';
     btn.dataset.id = id;
     btn.textContent = 'отменить последний';
+    btn.setAttribute('aria-label', `отменить последний: «${it ? it.name : ''}»`);
     wc.after(btn);
   } else if (!n && hasUndo) {
     next.remove();
@@ -796,7 +798,7 @@ function renderReview() {
   if (!reviewDue()) {
     const passed = diffDays(todayKey(), store.weekStart);
     const left = 7 - passed;
-    if (ui.justClosed) h += `<p class="lead">Неделя закрыта.</p>`;
+    if (ui.justClosed) h += `<p class="lead" role="status">Неделя закрыта.</p>`;
     h += `<p class="muted">Идёт ${passed + 1}-й день недели. Разбор откроется через ${left} ${plural(left, 'день', 'дня', 'дней')}.</p>`;
     h += `<p class="muted">Неделя началась ${esc(fmtShort(store.weekStart))}.</p>`;
     el('scr-review').innerHTML = h;
@@ -810,12 +812,16 @@ function renderReview() {
 
   h += `<p class="muted">${esc(fmtShort(keys[0]))} — ${esc(fmtShort(keys[6]))}</p>`;
 
-  // Сетка 7 дней × пункты
+  // Сетка 7 дней × пункты: кружки и числа скрыты от AT (aria-hidden-обёртки
+  // с display:contents), итог строки — визуально скрытым счётчиком в имени
   h += `<div class="grid" style="--cols:${keys.length}">`;
-  h += `<span class="g-head"></span>` + keys.map(k => `<span class="g-head">${Number(k.slice(8))}</span>`).join('');
+  h += `<span class="g-vis" aria-hidden="true"><span class="g-head"></span>` +
+    keys.map(k => `<span class="g-head">${Number(k.slice(8))}</span>`).join('') + `</span>`;
   for (const it of gridItems) {
-    h += `<span class="g-name">${esc(it.name)}</span>`;
-    h += keys.map(k => `<i class="c${isMarked(k, it.id) ? ' on' : ''}"></i>`).join('');
+    const n = keys.filter(k => isMarked(k, it.id)).length;
+    h += `<span class="g-name">${esc(it.name)}<span class="sr-only">, отмечено ${n} из 7</span></span>`;
+    h += `<span class="g-vis" aria-hidden="true">` +
+      keys.map(k => `<i class="c${isMarked(k, it.id) ? ' on' : ''}"></i>`).join('') + `</span>`;
   }
   h += `</div>`;
 
@@ -963,7 +969,7 @@ function renderItems() {
           <span class="ictl">
             <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${idx === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
             <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${idx === store.items.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
-            <label class="switch" aria-label="включён">
+            <label class="switch" aria-label="включён: «${esc(it.name)}»">
               <input type="checkbox" data-act="toggle-active" data-id="${esc(it.id)}"${it.active ? ' checked' : ''}>
               <span></span>
             </label>
@@ -996,11 +1002,11 @@ function renderItems() {
       <button class="btn" data-act="export">Экспорт JSON</button>
       <button class="btn" data-act="import">Импорт JSON</button>
     </div>
-    ${ui.importNote ? `<p class="muted">${esc(ui.importNote)}</p>` : ''}
+    ${ui.importNote ? `<p class="muted" role="status">${esc(ui.importNote)}</p>` : ''}
     <p class="muted">${exp}</p>
     <p class="muted" id="mirror-note" hidden></p>
     <input type="file" id="import-file" accept="application/json,.json" hidden>
-    <p class="muted">Экспортируйте данные время от времени: localStorage может быть очищен системой.</p>`;
+    <p class="muted">Все данные — на этом устройстве: рабочая копия и автоматическая резервная. Экспорт — способ сохранить их вне приложения.</p>`;
 
   el('scr-items').innerHTML = h;
   restoreOpenForm();

@@ -156,7 +156,10 @@ h2 {
 }
 .list > .g-label:first-child { margin-top: 10px; }
 
-.rowwrap + .rowwrap .row { border-top: 1px solid var(--line); }
+.rowwrap { display: flex; flex-wrap: wrap; align-items: center; }
+.rowwrap > .row { flex: 1 1 auto; min-width: 0; }
+.rowwrap > .card.form, .rowwrap > .miss-note { width: 100%; }
+.rowwrap + .rowwrap { border-top: 1px solid var(--line); }
 .rowwrap.off .tname { color: var(--muted); }
 
 .row {
@@ -175,7 +178,7 @@ h2 {
 .hist { font-size: 13px; color: var(--accent); }
 
 /* чекбокс-круг */
-.check { cursor: pointer; }
+.check { cursor: pointer; position: relative; } /* containing block для скрытого input */
 .check input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .check .box {
   flex: none;
@@ -391,6 +394,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   white-space: nowrap;
   padding-right: 6px;
 }
+.g-vis { display: contents; } /* aria-hidden-обёртка, не ломающая grid-раскладку */
 .grid i {
   width: 9px;
   height: 9px;
@@ -493,6 +497,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 #tabs button[aria-current="page"] { color: var(--accent); font-weight: 650; }
 
 /* ── Прочее ────────────────────────────────────────────────── */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; }
