@@ -56,6 +56,9 @@ const FIELD_VAR = (CSS.match(/\.field input[^{]*\{[^}]*border:\s*1px solid var\(
 test('контраст: трек тумблера и рамка поля привязаны к переменным', () => {
   assert.ok(SWITCH_VAR, 'у .switch span фон из переменной');
   assert.ok(FIELD_VAR, 'у .field input рамка из переменной');
+  // select в .field — под тем же правилом рамки, что и input
+  const fieldSelectors = (CSS.match(/([^{}]*\.field input[^{]*)\{[^}]*border:\s*1px solid var\(/) || [])[1] || '';
+  assert.match(fieldSelectors, /\.field select/, 'рамка .field select задаётся тем же правилом');
 });
 
 for (const [theme, vars] of Object.entries(THEMES)) {

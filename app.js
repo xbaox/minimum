@@ -1134,7 +1134,7 @@ function onClick(e) {
       ui.missOpen[id] = !ui.missOpen[id];
       renderToday();
       // вернуть фокус пересозданной кнопке — disclosure-паттерн остаётся рабочим для AT
-      const dot = [...el('scr-today').querySelectorAll('[data-act="miss-note"]')].find(b => b.dataset.id === id);
+      const dot = [...el('scr-today').querySelectorAll('[data-act="miss-note"]')].find(d => d.dataset.id === id);
       if (dot) dot.focus();
       break;
     }
