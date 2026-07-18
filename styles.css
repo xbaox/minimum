@@ -220,6 +220,7 @@ h2 {
 }
 .dot i { width: 7px; height: 7px; border-radius: 50%; background: var(--dot); }
 .miss-note { font-size: 13px; color: var(--muted); padding: 0 0 10px 40px; margin-top: -6px; }
+.miss-note .undo { display: inline-block; margin: 0 0 0 14px; vertical-align: middle; } /* тихое «отметить» рядом с подписью */
 
 /* ── Недельный счётчик ─────────────────────────────────────── */
 
@@ -419,6 +420,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   display: inline-block;
   font-size: 16px;   /* iOS: не масштабировать при фокусе */
   min-height: 44px;  /* тач-таргет */
+  padding: 8px 12px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--control-border);
+  border-radius: 10px;
+  appearance: none;
 }
 .card.raise .btns { margin-top: 12px; }
 

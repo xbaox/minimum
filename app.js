@@ -410,6 +410,20 @@ function missedYesterday(item, tKey) {
   return item.addedAt <= y && !isMarked(y, item.id);
 }
 
+/* Единственная допустимая правка прошлого (инвариант 7): установить отметку
+   за вчера через точку-маркер. Только вчера, только установка — не снятие. */
+function markYesterday(itemId) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || !item.active || item.type !== 'daily') return false;
+  const y = addDays(todayKey(), -1);
+  if (!(item.addedAt <= y)) return false;
+  if (isMarked(y, item.id)) return false;
+  const day = store.days[y] || (store.days[y] = {});
+  day[item.id] = true;
+  save();
+  return true;
+}
+
 function trainCount(itemId) {
   return store.weekLog.reduce((n, e) => n + (e.itemId === itemId ? 1 : 0), 0);
 }
@@ -436,6 +450,13 @@ function windowKeys() {
   const keys = [];
   for (let i = 6; i >= 0; i--) keys.push(addDays(t, -i));
   return keys;
+}
+
+/* Последнее записанное «одно изменение» — тихая строка на разборе (инвариант 3) */
+function currentOneChange() {
+  const last = store.reviews[store.reviews.length - 1];
+  const s = (last && typeof last.oneChange === 'string') ? last.oneChange.trim() : '';
+  return s || null;
 }
 
 /* ── Повышение минимума ────────────────────────────────────── */
@@ -712,7 +733,7 @@ function renderToday() {
           </span>
         </label>
         ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-label="вчера — пропуск"><i></i></button>` : ''}
-        ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск</p>` : ''}
+        ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск<button type="button" class="undo" data-act="mark-yesterday" data-id="${esc(it.id)}">отметить</button></p>` : ''}
       </div>`;
   }
   h += `</div>`;
@@ -801,6 +822,8 @@ function renderReview() {
     if (ui.justClosed) h += `<p class="lead" role="status">Неделя закрыта.</p>`;
     h += `<p class="muted">Идёт ${passed + 1}-й день недели. Разбор откроется через ${left} ${plural(left, 'день', 'дня', 'дней')}.</p>`;
     h += `<p class="muted">Неделя началась ${esc(fmtShort(store.weekStart))}.</p>`;
+    const ocWait = currentOneChange();
+    if (ocWait) h += `<p class="muted">Изменение этой недели: „${esc(ocWait)}“</p>`;
     el('scr-review').innerHTML = h;
     ui.justClosed = false; // «Неделя закрыта.» показывается ровно один раз
     return;
@@ -811,6 +834,8 @@ function renderReview() {
     it.type === 'daily' && (it.active || keys.some(k => isMarked(k, it.id))));
 
   h += `<p class="muted">${esc(fmtShort(keys[0]))} — ${esc(fmtShort(keys[6]))}</p>`;
+  const oc = currentOneChange();
+  if (oc) h += `<p class="muted">Изменение этой недели: „${esc(oc)}“</p>`;
 
   // Сетка 7 дней × пункты: кружки и числа скрыты от AT (aria-hidden-обёртки
   // с display:contents), итог строки — визуально скрытым счётчиком в имени
@@ -1139,6 +1164,15 @@ function onClick(e) {
       break;
     }
 
+    case 'mark-yesterday': {
+      markYesterday(id); // guard'ы внутри; «вчера» актуален — stale-guard уже отработал
+      delete ui.missOpen[id];
+      renderToday(); // структурный путь: точка исчезает
+      const cb = [...el('scr-today').querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
+      if (cb) cb.focus();
+      break;
+    }
+
     case 'train-inc': {
       const hadFail = saveFailed;
       incTrain(id);
@@ -1356,8 +1390,8 @@ if (typeof module !== 'undefined' && module.exports) {
     get store() { return store; }, set store(v) { store = v; },
     defaultStore, migrate, dateKeyShift, dateKeyFromDate, addDays, diffDays,
     todayKey, msToNextBoundary, toggleMark, isMarked, incTrain, undoTrain, trainCount,
-    reviewDue, windowKeys, raiseEligible, raiseSuggest, resetRaiseCount,
-    acceptRaise, closeWeek, missedYesterday, plural, parseNum,
+    reviewDue, windowKeys, currentOneChange, raiseEligible, raiseSuggest, resetRaiseCount,
+    acceptRaise, closeWeek, missedYesterday, markYesterday, plural, parseNum,
     moveItem, recordBar, parsePositive, isDayKey, load,
     mirrorRead, mirrorWrite, flushMirror
   };
