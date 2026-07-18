@@ -326,7 +326,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   position: absolute;
   inset: 0;
   border-radius: 14px;
-  background: var(--line-strong);
+  background: var(--control-border); /* выключенный трек различим: ≥3:1 */
   transition: background .16s ease;
 }
 .switch span::after {
@@ -363,7 +363,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   padding: 8px 12px;
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--control-border);
   border-radius: 10px;
   width: 100%;
   appearance: none;

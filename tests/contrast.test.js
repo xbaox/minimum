@@ -47,6 +47,27 @@ const THRESHOLDS = [
   ['control-border', 3]
 ];
 
+/* Правила, обязанные использовать контрастную переменную: трек выключенного
+   тумблера и рамка полей форм. Имя переменной извлекается из правила —
+   контраст проверяется по ней в обеих темах. */
+const SWITCH_VAR = (CSS.match(/\.switch span\s*\{[^}]*background:\s*var\(--([\w-]+)\)/) || [])[1];
+const FIELD_VAR = (CSS.match(/\.field input[^{]*\{[^}]*border:\s*1px solid var\(--([\w-]+)\)/) || [])[1];
+
+test('контраст: трек тумблера и рамка поля привязаны к переменным', () => {
+  assert.ok(SWITCH_VAR, 'у .switch span фон из переменной');
+  assert.ok(FIELD_VAR, 'у .field input рамка из переменной');
+});
+
+for (const [theme, vars] of Object.entries(THEMES)) {
+  test(`контраст (${theme}): трек тумблера и рамка поля ≥3 против --bg`, () => {
+    for (const name of [SWITCH_VAR, FIELD_VAR]) {
+      assert.ok(vars[name], `--${name} определён в теме ${theme}`);
+      const c = contrast(vars[name], vars.bg);
+      assert.ok(c >= 3, `--${name} ${vars[name]} на ${vars.bg}: ${c.toFixed(2)}:1 < 3:1`);
+    }
+  });
+}
+
 for (const [theme, vars] of Object.entries(THEMES)) {
   test(`контраст (${theme}): muted/faint ≥4.5, dot/control-border ≥3 против --bg`, () => {
     assert.ok(vars.bg, '--bg определён');
