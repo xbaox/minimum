@@ -211,8 +211,8 @@ test('импорт мусора: migrate чинит, экраны живы, XSS-
   assert.match(confirmText, /пунктов: 2/);
   assert.match(confirmText, /дней с отметками: 1/);
   assert.match(confirmText, /закрытых недель: 0/);
-  // тихая строка успеха в «Данных»
-  assert.match(document.getElementById('scr-items').textContent, /Импортировано: 2 пунктов, 1 дней/);
+  // тихая строка успеха в «Данных», числительные согласованы
+  assert.match(document.getElementById('scr-items').textContent, /Импортировано: 2 пункта, 1 день/);
 
   // строка исчезает при следующем действии — даже если оно само не перерисовывает экран
   document.querySelector('[data-act="import"]').click();

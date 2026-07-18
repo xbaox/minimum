@@ -232,7 +232,8 @@ h2 {
 .wnum b { font-size: 22px; font-weight: 650; color: var(--fg); }
 .undo {
   display: block;
-  margin: 4px 0 0 auto;
+  margin: 12px 0 0 auto; /* отступ от кнопки «+» — меньше случайных нажатий */
+  min-height: 44px;      /* тач-таргет */
   padding: 6px 0;
   font: inherit;
   font-size: 13px;
@@ -314,6 +315,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 
 /* переключатель */
 .switch { position: relative; flex: none; width: 46px; height: 28px; margin-left: 6px; cursor: pointer; }
+.switch::before { content: ""; position: absolute; inset: -8px -6px; } /* зона нажатия ≥44px при прежнем визуале */
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .switch span {
   position: absolute;
@@ -406,7 +408,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .card.raise p { font-size: 15px; margin-bottom: 8px; }
 .raise-line { font-size: 17px; }
 .raise-line b { color: var(--accent); }
-.raise-line .num { width: 84px; display: inline-block; }
+.raise-line .num {
+  width: 84px;
+  display: inline-block;
+  font-size: 16px;   /* iOS: не масштабировать при фокусе */
+  min-height: 44px;  /* тач-таргет */
+}
 .card.raise .btns { margin-top: 12px; }
 
 .field:has(> input[data-bind="one-change"]) { margin-top: 26px; display: flex; flex-direction: column; gap: 6px; }
