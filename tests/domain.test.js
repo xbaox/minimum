@@ -438,7 +438,9 @@ test('З2: migrate чистит days, weekLog, reviews и мусорный weekS
       '2026-07-02': 'мусор',
       '2026-07-03': { a: 1 },
       '2026-07-04': [true],
-      '2026-07-05': null
+      '2026-07-05': null,
+      '2026-07-06': {},          // пустой день toggleMark не оставляет — отбрасывается
+      'не-дата': { a: true }     // мусорный ключ отбрасывается
     },
     weekLog: [null, 'x', { itemId: 'a', date: '2026-07-10', ts: 1 }, 5],
     reviews: [null, 'y', { closedAt: 1, weekStart: '2026-07-01', keys: [], perItem: {}, trainings: {}, oneChange: '', raises: [] }],
@@ -464,6 +466,16 @@ test('З2: migrate не бросает ни на каком мусоре', () =>
   // из мусорной истории выживают только валидные записи
   const m = app.migrate(cases[2]);
   assert.deepEqual(m.items[0].history, [{ date: '2026-07-02', value: 3 }]);
+});
+
+test('З2: мусорный schemaVersion трактуется как v1 — версионные шаги не пропускаются', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const src = v1Store();
+  src.schemaVersion = 'мусор';
+  const m = app.migrate(src);
+  assert.equal(m.schemaVersion, 3);
+  assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
+  assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
 
 test('З2: isDayKey — формат и существование даты', () => {

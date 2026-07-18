@@ -116,7 +116,7 @@ function numOr(v, fallback) {
    или повреждённый store не должен ронять ни migrate, ни рендер. */
 function migrate(s) {
   if (!s || typeof s !== 'object' || Array.isArray(s)) return defaultStore();
-  if (!s.schemaVersion) s.schemaVersion = 1;
+  s.schemaVersion = numOr(s.schemaVersion, 0) || 1; // мусорная версия = v1, шаги миграций не пропускаются
 
   // настройки — первыми: от dayBoundary зависит «сегодня» для достройки дат
   if (!s.settings || typeof s.settings !== 'object' || Array.isArray(s.settings)) s.settings = {};
@@ -147,11 +147,13 @@ function migrate(s) {
       .filter(h => h.value !== null);
   }
 
-  // отметки: значения дней — объекты с булевыми полями, иначе запись отбрасывается
+  // отметки: ключ — валидный день, значение — непустой объект с булевыми
+  // полями (как их оставляет toggleMark); иначе запись отбрасывается
   if (!s.days || typeof s.days !== 'object' || Array.isArray(s.days)) s.days = {};
   for (const k of Object.keys(s.days)) {
     const day = s.days[k];
-    const ok = day && typeof day === 'object' && !Array.isArray(day) &&
+    const ok = isDayKey(k) && day && typeof day === 'object' && !Array.isArray(day) &&
+      Object.keys(day).length > 0 &&
       Object.values(day).every(v => typeof v === 'boolean');
     if (!ok) delete s.days[k];
   }
@@ -462,9 +464,9 @@ function importJSON(file) {
       alert('Импорт не выполнен: файл повреждён. Текущие данные не изменены.');
       return;
     }
-    // сводка из файла — перед подтверждением
+    // сводка из файла — перед подтверждением (после migrate все ключи days валидны)
     const dayCount = Object.keys(incoming.days).length;
-    const range = Object.keys(incoming.days).filter(isDayKey).sort();
+    const range = Object.keys(incoming.days).sort();
     const parts = [
       `пунктов: ${incoming.items.length}`,
       `дней с отметками: ${dayCount}`,
@@ -640,7 +642,7 @@ function renderReview() {
     h += `<div class="consist">`;
     for (const it of gridItems) {
       const counts = last3.map(r => (r.perItem && r.perItem[it.id]) ? r.perItem[it.id].count : '—');
-      h += `<span class="c-name">${esc(it.name)}</span><span class="c-val">${counts.join(' · ')} из 7</span>`;
+      h += `<span class="c-name">${esc(it.name)}</span><span class="c-val">${counts.map(c => esc(c)).join(' · ')} из 7</span>`;
     }
     h += `</div>`;
   }
@@ -844,6 +846,7 @@ function parsePositive(v) {
 function onClick(e) {
   const b = e.target.closest('[data-act]');
   if (!b) return;
+  const hadImportNote = ui.importNote !== null;
   ui.importNote = null; // строка «Импортировано…» живёт до следующего действия
   const act = b.dataset.act;
   const id = b.dataset.id;
@@ -948,8 +951,14 @@ function onClick(e) {
       break;
     }
 
-    case 'export': exportJSON(); break;
-    case 'import': el('import-file').click(); break;
+    case 'export':
+      if (hadImportNote) renderItems(); // эти действия не перерисовывают экран сами
+      exportJSON();
+      break;
+    case 'import':
+      if (hadImportNote) renderItems(); // до открытия диалога: file-input должен остаться в живом DOM
+      el('import-file').click();
+      break;
   }
 }
 

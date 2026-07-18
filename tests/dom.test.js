@@ -208,6 +208,10 @@ test('импорт мусора: migrate чинит, экраны живы, XSS-
   // тихая строка успеха в «Данных»
   assert.match(document.getElementById('scr-items').textContent, /Импортировано: 2 пунктов, 1 дней/);
 
+  // строка исчезает при следующем действии — даже если оно само не перерисовывает экран
+  document.querySelector('[data-act="import"]').click();
+  assert.doesNotMatch(document.getElementById('scr-items').textContent, /Импортировано/);
+
   // все 4 экрана рендерятся без исключений
   const map = { today: 'scr-today', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
   for (const b of document.querySelectorAll('#tabs button')) {
@@ -219,10 +223,6 @@ test('импорт мусора: migrate чинит, экраны живы, XSS-
   assert.equal(window.__xss, undefined);
   assert.equal(document.querySelector('main script'), null);
 
-  // строка успеха исчезла после следующего действия (переключения вкладок)
-  document.querySelector('#tabs button[data-tab="items"]').click();
-  assert.doesNotMatch(document.getElementById('scr-items').textContent, /Импортировано/);
-
   // пункт с «плохим» id работает: разметка не разорвана, отметка пишется
   document.querySelector('#tabs button[data-tab="today"]').click();
   const cb = [...document.querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === evil);
@@ -230,4 +230,88 @@ test('импорт мусора: migrate чинит, экраны живы, XSS-
   cb.click();
   const saved = JSON.parse(window.localStorage.getItem(NS));
   assert.equal(saved.days[daysAgo(0)][evil], true);
+});
+
+test('вредоносный count в reviews не ломает разбор: подстановка экранируется', async () => {
+  const seed = dueSeed();
+  seed.reviews = [{
+    closedAt: 1, weekStart: daysAgo(15), keys: [daysAgo(15)],
+    perItem: { it1: { name: 'Тестовый пункт', marks: [], count: '<img src=x onerror="window.__x=1">' } },
+    trainings: {}, oneChange: '', raises: []
+  }];
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="review"]').click();
+  const scr = document.getElementById('scr-review');
+  assert.ok(scr.innerHTML.length > 0);
+  assert.equal(scr.querySelector('img'), null); // разметка не материализовалась
+  assert.equal(window.__x, undefined);
+  assert.match(scr.textContent, /<img src=x/); // показана как текст
+});
+
+test('правка значения: невалид сохраняет старое, пустое — осознанная очистка без истории', async () => {
+  const seed = dueSeed();
+  seed.weekStart = daysAgo(2); // разбор не назрел — не мешает
+  seed.items = [{
+    id: 'e1', name: 'Правка', value: 12, unit: 'мин', type: 'daily', goal: null,
+    note: '', group: '', active: true, addedAt: daysAgo(10), raiseAfter: 0,
+    history: [{ date: daysAgo(10), value: 10 }, { date: daysAgo(3), value: 12 }]
+  }, {
+    id: 'w1', name: 'Недельный', value: null, unit: '', type: 'weekly', goal: 3,
+    note: '', group: '', active: true, addedAt: daysAgo(10), raiseAfter: 0, history: []
+  }];
+  seed.days = {};
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const openEdit = name => [...document.querySelectorAll('[data-act="edit-open"]')]
+    .find(b => b.querySelector('.tname').textContent === name).click();
+  const savedItem = name => JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.name === name);
+
+  assert.match(document.getElementById('scr-items').textContent, /Планка: 10 → 12/);
+
+  // невалидный ввод — значение и история не меняются
+  openEdit('Правка');
+  document.getElementById('e-value').value = '1о';
+  document.querySelector('[data-act="edit-save"]').click();
+  assert.equal(savedItem('Правка').value, 12);
+  assert.equal(savedItem('Правка').history.length, 2);
+
+  // пустое поле — осознанная очистка: значение null, история не растёт, «Планка:» скрыта
+  openEdit('Правка');
+  document.getElementById('e-value').value = '';
+  document.querySelector('[data-act="edit-save"]').click();
+  assert.equal(savedItem('Правка').value, null);
+  assert.equal(savedItem('Правка').history.length, 2);
+  assert.doesNotMatch(document.getElementById('scr-items').textContent, /Планка:/);
+
+  // цель weekly: пустое и невалидное поле сохраняют старую цель, валидное — меняет
+  openEdit('Недельный');
+  document.getElementById('e-goal').value = '';
+  document.querySelector('[data-act="edit-save"]').click();
+  assert.equal(savedItem('Недельный').goal, 3);
+  openEdit('Недельный');
+  document.getElementById('e-goal').value = '0';
+  document.querySelector('[data-act="edit-save"]').click();
+  assert.equal(savedItem('Недельный').goal, 3);
+  openEdit('Недельный');
+  document.getElementById('e-goal').value = '5';
+  document.querySelector('[data-act="edit-save"]').click();
+  assert.equal(savedItem('Недельный').goal, 5);
+});
+
+test('баннер хранилища: появляется при сбое save и снимается первым успешным', async () => {
+  const { document, window } = await boot();
+  const realLS = window.localStorage;
+  const broken = {
+    getItem: k => realLS.getItem(k),
+    setItem: () => { throw new Error('quota'); },
+    removeItem: () => {}
+  };
+  Object.defineProperty(window, 'localStorage', { configurable: true, get: () => broken });
+
+  document.querySelector('input[data-act="mark"]').click(); // save падает, экран перерисовывается
+  assert.match(document.getElementById('scr-today').textContent, /Хранилище недоступно/);
+
+  Object.defineProperty(window, 'localStorage', { configurable: true, get: () => realLS });
+  document.querySelector('input[data-act="mark"]').click(); // успешный save снимает флаг
+  assert.doesNotMatch(document.getElementById('scr-today').textContent, /Хранилище недоступно/);
 });
