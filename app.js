@@ -114,12 +114,11 @@ function defaultStore() {
     weekLog: [],       // инкременты недельных счётчиков текущей календарной недели
     reviews: [],       // закрытые недели
     pendingRaises: [], // принятые повышения, ещё не записанные в разбор
-    paramDecided: {},  // itemId -> {from, to|null}: решения по параметрам открытого разбора
+    paramDecided: {},  // itemId -> {week, from, to|null}: решения по параметрам, привязанные к разбираемой неделе
     draftOneChange: '',
     weekStart: today,  // историческая отсечка скользящей эпохи
     settings: {
       dayBoundary: 4,
-      hintShownForItemId: null,
       exportedAt: null,
       calendarSince: nextCalendarMonday(today),
       habitSeeded: true
@@ -150,7 +149,6 @@ function migrate(s) {
   // настройки — первыми: от dayBoundary зависит «сегодня» для достройки дат
   if (!s.settings || typeof s.settings !== 'object' || Array.isArray(s.settings)) s.settings = {};
   if (typeof s.settings.dayBoundary !== 'number' || !isFinite(s.settings.dayBoundary)) s.settings.dayBoundary = 4;
-  if (!('hintShownForItemId' in s.settings)) s.settings.hintShownForItemId = null;
   const today = dateKeyShift(new Date(), s.settings.dayBoundary);
 
   // пункты: только объекты; id и addedAt достраиваются, id дедуплицируются
@@ -210,7 +208,7 @@ function migrate(s) {
   if (!s.paramDecided || typeof s.paramDecided !== 'object' || Array.isArray(s.paramDecided)) s.paramDecided = {};
   for (const k of Object.keys(s.paramDecided)) {
     const d = s.paramDecided[k];
-    const ok = d && typeof d === 'object' && !Array.isArray(d) &&
+    const ok = d && typeof d === 'object' && !Array.isArray(d) && isDayKey(d.week) &&
       typeof d.from === 'number' && (d.to === null || typeof d.to === 'number');
     if (!ok) delete s.paramDecided[k];
   }
@@ -252,7 +250,7 @@ function migrate(s) {
     if (!('exportedAt' in s.settings)) s.settings.exportedAt = null;
   }
 
-  // v4 → v5: календарные недели и программа привычек
+  // v4 → v5: календарные недели и программа привычек; мёртвое поле подсказки вычищается
   if (s.schemaVersion < 5) {
     if (!isDayKey(s.settings.calendarSince)) {
       s.settings.calendarSince = nextCalendarMonday(dateKeyShift(new Date(), s.settings.dayBoundary));
@@ -261,6 +259,7 @@ function migrate(s) {
       s.items.push(...seedHabits(dateKeyShift(new Date(), s.settings.dayBoundary)));
       s.settings.habitSeeded = true;
     }
+    delete s.settings.hintShownForItemId;
   }
   // рукотворный/битый calendarSince приводится тем же правилом; не-понедельник
   // нормализуется вперёд — недели существуют только целиком
@@ -536,12 +535,12 @@ function previousWeekStart() {
 
 /* Разбор предлагается только за последнюю завершённую календарную неделю.
    Пропущенные недели тихо проходят; скользящие записи reviews (без week)
-   первый календарный разбор не блокируют. */
+   первый календарный разбор не блокируют. Уже разобранная неделя не
+   разбирается повторно, где бы её запись ни стояла в reviews. */
 function reviewDue() {
   const prev = previousWeekStart();
   if (!prev || prev < store.settings.calendarSince) return false;
-  const last = store.reviews[store.reviews.length - 1];
-  return !(last && last.week === prev);
+  return !store.reviews.some(r => r.week === prev);
 }
 
 /* Окно разбора — ровно последняя завершённая неделя; сегодня не входит */
@@ -626,15 +625,22 @@ function paramStepTarget(item) {
   return item.pvalue + item.pstep;
 }
 
+/* Решение по параметру, принадлежащее разбираемой неделе;
+   решение чужой недели — как отсутствие решения */
+function paramDecision(itemId) {
+  const d = store.paramDecided[itemId];
+  return (d && d.week === previousWeekStart()) ? d : null;
+}
+
 /* Одно решение на параметр за разбор (инвариант 10); шаг применяется немедленно */
 function applyParamStep(itemId) {
   const item = store.items.find(i => i.id === itemId);
   if (!item || item.type !== 'param' || !item.active) return false;
-  if (!reviewDue() || store.paramDecided[itemId]) return false;
+  if (!reviewDue() || paramDecision(itemId)) return false;
   const from = item.pvalue;
   item.pvalue = paramStepTarget(item);
   recordBar(item, item.pvalue); // история порога — по общим правилам истории планки
-  store.paramDecided[itemId] = { from, to: item.pvalue };
+  store.paramDecided[itemId] = { week: previousWeekStart(), from, to: item.pvalue };
   save();
   return true;
 }
@@ -642,8 +648,8 @@ function applyParamStep(itemId) {
 function keepParam(itemId) {
   const item = store.items.find(i => i.id === itemId);
   if (!item || item.type !== 'param' || !item.active) return false;
-  if (!reviewDue() || store.paramDecided[itemId]) return false;
-  store.paramDecided[itemId] = { from: item.pvalue, to: null };
+  if (!reviewDue() || paramDecision(itemId)) return false;
+  store.paramDecided[itemId] = { week: previousWeekStart(), from: item.pvalue, to: null };
   save();
   return true;
 }
@@ -701,7 +707,10 @@ function closeWeek() {
     trainings,
     oneChange: (store.draftOneChange || '').trim(),
     raises: store.pendingRaises,
-    params: Object.entries(store.paramDecided).map(([id, d]) => ({ id, from: d.from, to: d.to }))
+    // в срез идут только решения разобранной недели; чистится paramDecided целиком
+    params: Object.entries(store.paramDecided)
+      .filter(([, d]) => d.week === week)
+      .map(([id, d]) => ({ id, from: d.from, to: d.to }))
   });
   store.pendingRaises = [];
   store.draftOneChange = '';
@@ -785,8 +794,7 @@ const ui = {
   missOpen: {},    // itemId -> true, когда показана подпись «вчера — пропуск»
   justClosed: false,
   addArea: 'min',       // область формы добавления: 'min' | 'habit'
-  addPkind: 'time',     // вид параметра в форме добавления
-  editPkind: null,      // переключённый вид в форме правки параметра (null — как у пункта)
+  addPkind: 'time',     // вид параметра в форме добавления; после создания вид не меняется
   importNote: null,     // строка «Импортировано: …», исчезает при следующем действии
   renderedDayKey: null, // логический день, для которого отрисован интерфейс (инвариант 8)
   renderedTab: null,    // последняя отрисованная вкладка — скролл сбрасывается только при её смене
@@ -1061,10 +1069,10 @@ function renderReview() {
     if (ui.justClosed) h += `<p class="lead" role="status">Неделя закрыта.</p>`;
     const cur = currentWeekStart();
     if (!cur) {
-      // переходные дни скользящей эпохи
-      h += `<p class="muted">Календарные недели начнутся в понедельник, ${esc(fmtShort(store.settings.calendarSince))}.</p>`;
+      // переходные дни скользящей эпохи: первый разбор — после первой целой календарной недели
+      h += `<p class="muted">Разбор откроется в понедельник, ${esc(fmtShort(addDays(store.settings.calendarSince, 7)))}.</p>`;
     } else {
-      h += `<p class="muted">Идёт ${diffDays(todayKey(), cur) + 1}-й день недели. Разбор откроется в понедельник.</p>`;
+      h += `<p class="muted">Идёт ${diffDays(todayKey(), cur) + 1}-й день недели. Разбор откроется в понедельник, ${esc(fmtShort(addDays(cur, 7)))}.</p>`;
     }
     const ocWait = currentOneChange();
     if (ocWait) h += `<p class="muted">Изменение этой недели: „${esc(ocWait)}“</p>`;
@@ -1151,7 +1159,7 @@ function renderReview() {
   }
 
   for (const p of store.items.filter(i => i.type === 'param' && i.active)) {
-    const decided = store.paramDecided[p.id];
+    const decided = paramDecision(p.id); // решение чужой недели карточку не гасит
     if (decided) {
       h += `<p class="muted">${esc(p.name)}: ${decided.to === null
         ? `${esc(fmtParam(p, decided.from))}, без шага`
@@ -1372,20 +1380,15 @@ function editForm(it) {
       </div>
     </div>`;
   if (it.type === 'param') {
-    const kind = ui.editPkind || it.pkind;
+    // вид фиксируется при создании (инвариант 10) — не селект, а тихая строка
     return head + `
-      <label class="field"><span>Вид</span>
-        <select id="e-pkind" data-act="edit-pkind">
-          <option value="time"${kind !== 'number' ? ' selected' : ''}>время</option>
-          <option value="number"${kind === 'number' ? ' selected' : ''}>число</option>
-        </select>
-      </label>
-      ${kind === 'number'
+      <p class="muted">Вид: ${it.pkind === 'number' ? 'число' : 'время'}</p>
+      ${it.pkind === 'number'
         ? `<div class="pair">
             <label class="field"><span>Порог</span><input class="num" type="text" inputmode="decimal" id="e-pvalue" value="${esc(it.pvalue)}"></label>
             <label class="field"><span>Единица</span><input type="text" id="e-punit" value="${esc(it.unit || '')}"></label>
           </div>`
-        : `<label class="field"><span>Порог</span><input id="e-ptime" type="time" value="${esc(it.pkind === 'time' ? fmtParam(it) : '00:00')}"></label>`}
+        : `<label class="field"><span>Порог</span><input id="e-ptime" type="time" value="${esc(fmtParam(it))}"></label>`}
       <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="e-pstep" value="${esc(it.pstep)}"></label>` + foot;
   }
   if (it.area === 'habit') return head + foot; // привычка: только название и подпись
@@ -1571,26 +1574,24 @@ function onClick(e) {
       break;
     }
 
-    case 'edit-open': ui.editingId = id; ui.addOpen = false; ui.editPkind = null; renderItems(); break;
-    case 'edit-cancel': ui.editingId = null; ui.editPkind = null; renderItems(); break;
+    case 'edit-open': ui.editingId = id; ui.addOpen = false; renderItems(); break;
+    case 'edit-cancel': ui.editingId = null; renderItems(); break;
     case 'edit-save': {
       if (!item) break;
       const name = el('e-name').value.trim();
       if (name) item.name = name;
       item.note = el('e-note').value.trim();
       if (item.type === 'param') {
-        const kind = el('e-pkind') && el('e-pkind').value === 'number' ? 'number' : 'time';
-        item.pkind = kind;
+        // pkind фиксирован при создании — правятся только порог, единица и шаг
         const oldPv = item.pvalue;
         let pv = oldPv;
-        if (kind === 'time') {
-          const m = /^(\d{1,2}):(\d{2})$/.exec((el('e-ptime') ? el('e-ptime').value : '') || '');
-          if (m) pv = Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]);
-          item.unit = '';
-        } else {
+        if (item.pkind === 'number') {
           const n = parseNum(el('e-pvalue') ? el('e-pvalue').value : '');
           if (n !== null) pv = n; // невалид — старый порог
           if (el('e-punit')) item.unit = el('e-punit').value.trim();
+        } else {
+          const m = /^(\d{1,2}):(\d{2})$/.exec((el('e-ptime') ? el('e-ptime').value : '') || '');
+          if (m) pv = Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]);
         }
         if (pv !== oldPv) { item.pvalue = pv; recordBar(item, pv); } // история — по общим правилам
         const st = parseNum(el('e-pstep') ? el('e-pstep').value : '');
@@ -1613,7 +1614,6 @@ function onClick(e) {
       } // ежедневная привычка: только название и подпись
       save();
       ui.editingId = null;
-      ui.editPkind = null;
       renderItems();
       break;
     }
@@ -1731,9 +1731,6 @@ function onChange(e) {
   } else if (act === 'add-pkind') {
     ui.addPkind = t.value === 'number' ? 'number' : 'time';
     renderItems();
-  } else if (act === 'edit-pkind') {
-    ui.editPkind = t.value === 'number' ? 'number' : 'time';
-    renderItems();
   } else if (t.id === 'import-file') {
     if (t.files && t.files[0]) importJSON(t.files[0]);
     t.value = '';
@@ -1800,7 +1797,7 @@ if (typeof module !== 'undefined' && module.exports) {
     toggleMark, isMarked, incTrain, undoTrain, trainCount,
     reviewDue, windowKeys, currentOneChange, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, markYesterday, plural, parseNum,
-    fmtParam, applyParamStep, keepParam, habitsSteady,
+    fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     moveItem, recordBar, parsePositive, isDayKey, load,
     mirrorRead, mirrorWrite, flushMirror
   };
