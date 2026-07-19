@@ -123,7 +123,7 @@ function mirrorStore() {
     days: { [daysAgo(1)]: { r1: true } },
     weekLog: [], reviews: [], pendingRaises: [],
     draftOneChange: '', weekStart: daysAgo(2),
-    settings: { dayBoundary: 4, hintShownForItemId: null, exportedAt: null }
+    settings: { dayBoundary: 4, hintShownForItemId: null, exportedAt: null, habitSeeded: true }
   };
 }
 
@@ -279,7 +279,8 @@ test('импорт мусора: migrate чинит, экраны живы, XSS-
       { name: 'Без id' }
     ],
     days: { [daysAgo(1)]: 'не объект', [daysAgo(2)]: { [evil]: true } },
-    weekLog: [null], reviews: [null], weekStart: 'мусор'
+    weekLog: [null], reviews: [null], weekStart: 'мусор',
+    settings: { dayBoundary: 4, habitSeeded: true }
   };
   let confirmText = '';
   window.confirm = m => { confirmText = m; return true; };
@@ -842,7 +843,7 @@ test('пустое зеркало → дефолт в зеркале; непус
   await a.window.flushMirror();
   const defSnap = await idbGet(empty);
   assert.ok(defSnap);
-  assert.equal(JSON.parse(defSnap.json).items.length, 7);
+  assert.equal(JSON.parse(defSnap.json).items.length, 10);
 
   // пустой LS + непустое зеркало: порядок bootstrap — сначала чтение, потом запись
   const seeded = new IDBFactory();

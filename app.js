@@ -75,10 +75,25 @@ function nextCalendarMonday(k) {
   return mon === k ? k : addDays(mon, 7);
 }
 
+/* Стартовая программа привычек — тот же посев идёт миграцией v5 */
+function seedHabits(today) {
+  const habit = (name) => ({
+    id: uid(), name, value: null, unit: '', type: 'daily', area: 'habit',
+    goal: null, note: '', group: '', active: true, addedAt: today, raiseAfter: 0, history: []
+  });
+  return [
+    { id: uid(), name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
+      pkind: 'time', pvalue: 0, pstep: -15, goal: null, note: '', group: '',
+      active: true, addedAt: today, raiseAfter: 0, history: [{ date: today, value: 0 }] },
+    habit('Перестать грызть ногти'),
+    habit('Ловить импульс трат → алгоритм')
+  ];
+}
+
 function defaultStore() {
   const today = dateKeyShift(new Date(), 4);
   const mk = (name, value, unit, type, goal, note) => ({
-    id: uid(), name, value, unit, type,
+    id: uid(), name, value, unit, type, area: 'min',
     goal: goal || null, note: note || '', group: DEFAULT_GROUPS[name] || '',
     active: true, addedAt: today, raiseAfter: 0,
     history: (typeof value === 'number') ? [{ date: today, value }] : []
@@ -92,19 +107,22 @@ function defaultStore() {
       mk('Пешком', 500, 'м', 'daily'),
       mk('Телефон вне кровати', 30, 'мин до сна', 'daily'),
       mk('Развитие', 10, 'мин', 'daily'),
-      mk('Тренировка', null, '', 'weekly', 3, TRAIN_NOTE)
+      mk('Тренировка', null, '', 'weekly', 3, TRAIN_NOTE),
+      ...seedHabits(today)
     ],
     days: {},          // "YYYY-MM-DD" -> { itemId: true }
-    weekLog: [],       // инкременты недельных счётчиков текущей открытой недели
+    weekLog: [],       // инкременты недельных счётчиков текущей календарной недели
     reviews: [],       // закрытые недели
     pendingRaises: [], // принятые повышения, ещё не записанные в разбор
+    paramDecided: {},  // itemId -> {from, to|null}: решения по параметрам открытого разбора
     draftOneChange: '',
-    weekStart: today,  // логическая дата последнего закрытия (или первого запуска)
+    weekStart: today,  // историческая отсечка скользящей эпохи
     settings: {
       dayBoundary: 4,
       hintShownForItemId: null,
       exportedAt: null,
-      calendarSince: nextCalendarMonday(today)
+      calendarSince: nextCalendarMonday(today),
+      habitSeeded: true
     }
   };
 }
@@ -143,7 +161,8 @@ function migrate(s) {
     if (typeof it.id !== 'string' || !it.id || ids.has(it.id)) it.id = uid();
     ids.add(it.id);
     if (!isDayKey(it.addedAt)) it.addedAt = today;
-    it.type = it.type === 'weekly' ? 'weekly' : 'daily';
+    it.type = it.type === 'weekly' ? 'weekly' : (it.type === 'param' ? 'param' : 'daily');
+    it.area = it.area === 'habit' ? 'habit' : 'min';
     if (typeof it.active !== 'boolean') it.active = true;
     if (typeof it.name !== 'string') it.name = '';
     if (typeof it.unit !== 'string') it.unit = '';
@@ -151,6 +170,15 @@ function migrate(s) {
     if (typeof it.group !== 'string') it.group = '';
     it.value = numOr(it.value, null);
     if (it.value !== null && it.value <= 0) it.value = null; // планка всегда > 0, как и в формах
+    if (it.type === 'param') {
+      it.area = 'habit'; // параметры существуют только в области привычек
+      it.value = null;   // и не несут планку минимума
+      it.pkind = it.pkind === 'number' ? 'number' : 'time';
+      let pv = Math.round(numOr(it.pvalue, 0));
+      if (it.pkind === 'time') pv = ((pv % 1440) + 1440) % 1440; // минуты суток
+      it.pvalue = pv;
+      it.pstep = Math.round(numOr(it.pstep, 0));
+    }
     const g = numOr(it.goal, null);
     it.goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : null;
     it.raiseAfter = Math.max(0, Math.round(numOr(it.raiseAfter, 0)));
@@ -178,6 +206,14 @@ function migrate(s) {
   s.reviews = s.reviews.filter(r => r && typeof r === 'object' && !Array.isArray(r));
   if (!Array.isArray(s.pendingRaises)) s.pendingRaises = [];
   s.pendingRaises = s.pendingRaises.filter(e => e && typeof e === 'object' && !Array.isArray(e));
+  if (!s.paramDecided || typeof s.paramDecided !== 'object' || Array.isArray(s.paramDecided)) s.paramDecided = {};
+  for (const k of Object.keys(s.paramDecided)) {
+    const d = s.paramDecided[k];
+    const ok = d && typeof d === 'object' && !Array.isArray(d) &&
+      typeof d.from === 'number' && (d.to === null || typeof d.to === 'number');
+    if (!ok) delete s.paramDecided[k];
+  }
+  if (typeof s.settings.habitSeeded !== 'boolean') s.settings.habitSeeded = false;
   if (typeof s.draftOneChange !== 'string') s.draftOneChange = '';
   if (!isDayKey(s.weekStart)) s.weekStart = today;
 
@@ -192,7 +228,7 @@ function migrate(s) {
     }
     if (!s.items.some(i => i.name === 'Принять душ')) {
       const shower = {
-        id: uid(), name: 'Принять душ', value: null, unit: '', type: 'daily',
+        id: uid(), name: 'Принять душ', value: null, unit: '', type: 'daily', area: 'min',
         goal: null, note: '', group: 'Тело', active: true,
         addedAt: dateKeyShift(new Date(), s.settings.dayBoundary), raiseAfter: 0, history: []
       };
@@ -215,10 +251,14 @@ function migrate(s) {
     if (!('exportedAt' in s.settings)) s.settings.exportedAt = null;
   }
 
-  // v4 → v5: календарные недели — понедельник дня миграции или ближайший следующий
+  // v4 → v5: календарные недели и программа привычек
   if (s.schemaVersion < 5) {
     if (!isDayKey(s.settings.calendarSince)) {
       s.settings.calendarSince = nextCalendarMonday(dateKeyShift(new Date(), s.settings.dayBoundary));
+    }
+    if (!s.settings.habitSeeded) { // однократность посева — по флагу, не по именам
+      s.items.push(...seedHabits(dateKeyShift(new Date(), s.settings.dayBoundary)));
+      s.settings.habitSeeded = true;
     }
   }
   // рукотворный/битый calendarSince приводится тем же правилом
@@ -522,7 +562,7 @@ function currentOneChange() {
    и с момента якоря (raiseAfter) закрыто не меньше 3 недель.
    «Не сейчас» и «Принять» сдвигают якорь — отсчёт трёх недель начинается заново. */
 function raiseEligible(item) {
-  if (item.type !== 'daily' || !item.active) return false;
+  if (item.type !== 'daily' || !item.active || item.area !== 'min') return false; // повышение — только минимум
   if (!(typeof item.value === 'number' && isFinite(item.value) && item.value > 0)) return false;
   const R = store.reviews;
   if (R.length < (item.raiseAfter || 0) + 3) return false;
@@ -566,6 +606,54 @@ function acceptRaise(item, newValue) {
   save();
 }
 
+/* ── Параметры недели и готовность к новой привычке (area habit) ── */
+
+function fmtParam(item, v) {
+  const val = (v === undefined) ? item.pvalue : v;
+  if (item.pkind === 'time') {
+    const m = ((Math.round(val) % 1440) + 1440) % 1440;
+    return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60);
+  }
+  return item.unit ? `${val} ${item.unit}` : String(val);
+}
+
+function paramStepTarget(item) {
+  if (item.pkind === 'time') return (((item.pvalue + item.pstep) % 1440) + 1440) % 1440;
+  return item.pvalue + item.pstep;
+}
+
+/* Одно решение на параметр за разбор (инвариант 10); шаг применяется немедленно */
+function applyParamStep(itemId) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || item.type !== 'param' || !item.active) return false;
+  if (!reviewDue() || store.paramDecided[itemId]) return false;
+  const from = item.pvalue;
+  item.pvalue = paramStepTarget(item);
+  recordBar(item, item.pvalue); // история порога — по общим правилам истории планки
+  store.paramDecided[itemId] = { from, to: item.pvalue };
+  save();
+  return true;
+}
+
+function keepParam(itemId) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || item.type !== 'param' || !item.active) return false;
+  if (!reviewDue() || store.paramDecided[itemId]) return false;
+  store.paramDecided[itemId] = { from: item.pvalue, to: null };
+  save();
+  return true;
+}
+
+/* Информационная готовность: 2 закрытые недели каждая активная привычка ≥6/7 */
+function habitsSteady() {
+  const habits = store.items.filter(i => i.type === 'daily' && i.area === 'habit' && i.active);
+  if (!habits.length || store.reviews.length < 2) return false;
+  return store.reviews.slice(-2).every(r => habits.every(h => {
+    const p = r.perItem && r.perItem[h.id];
+    return p && p.count >= 6;
+  }));
+}
+
 /* Перестановка пункта в списке (универсальная настройка блоков) */
 function moveItem(id, dir) {
   const i = store.items.findIndex(x => x.id === id);
@@ -606,10 +694,12 @@ function closeWeek() {
     perItem,
     trainings,
     oneChange: (store.draftOneChange || '').trim(),
-    raises: store.pendingRaises
+    raises: store.pendingRaises,
+    params: Object.entries(store.paramDecided).map(([id, d]) => ({ id, from: d.from, to: d.to }))
   });
   store.pendingRaises = [];
   store.draftOneChange = '';
+  store.paramDecided = {};
   // счётчик «Сегодня» обнуляется сменой недели, не закрытием: чистим только прошлое
   const cur = currentWeekStart();
   store.weekLog = store.weekLog.filter(e => e.date >= cur);
@@ -741,11 +831,11 @@ function renderAll() {
   ui.renderedTab = ui.tab;
 }
 
-/* Экран 1 — «Сегодня» */
+/* Экран 1 — «Сегодня»: только область min (инвариант 10) */
 function renderToday() {
   const t = todayKey();
   ui.renderedDayKey = t;
-  const items = activeDaily();
+  const items = activeDaily().filter(i => i.area === 'min');
   const done = items.filter(i => isMarked(t, i.id)).length;
   const total = items.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -798,7 +888,7 @@ function renderToday() {
   }
   h += `</div>`;
 
-  for (const w of activeWeekly()) {
+  for (const w of activeWeekly().filter(i => i.area === 'min')) {
     const n = trainCount(w.id);
     h += `
       <div class="weekcount">
@@ -826,7 +916,7 @@ function renderToday() {
 
 function updateDayline() {
   const t = todayKey();
-  const items = activeDaily();
+  const items = activeDaily().filter(i => i.area === 'min');
   const done = items.filter(i => isMarked(t, i.id)).length;
   const total = items.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -1456,6 +1546,7 @@ if (typeof module !== 'undefined' && module.exports) {
     toggleMark, isMarked, incTrain, undoTrain, trainCount,
     reviewDue, windowKeys, currentOneChange, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, markYesterday, plural, parseNum,
+    fmtParam, applyParamStep, keepParam, habitsSteady,
     moveItem, recordBar, parsePositive, isDayKey, load,
     mirrorRead, mirrorWrite, flushMirror
   };
