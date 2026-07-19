@@ -222,6 +222,38 @@ h2 {
 .miss-note { font-size: 13px; color: var(--muted); padding: 0 0 10px 40px; margin-top: -6px; }
 .miss-note .undo { display: inline-block; margin: 0 0 0 14px; vertical-align: middle; } /* тихое «отметить» рядом с подписью */
 
+/* ── «Привычки»: серия и полоса текущей недели ─────────────── */
+
+.streak { font-size: 13px; color: var(--muted); white-space: nowrap; }
+
+.hrow .row { padding-bottom: 4px; min-height: 50px; } /* полоса ниже добирает высоту строки */
+.hweek {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  width: 100%;
+  padding: 0 0 12px 40px; /* под названием, мимо круга — как .miss-note */
+}
+.hstrip { display: flex; gap: 9px; }
+.hday { display: grid; justify-items: center; gap: 4px; }
+.hd { font-size: 10px; line-height: 1; color: var(--faint); } /* язык .g-head, компактнее */
+.hday.today .hd { color: var(--muted); font-weight: 650; }
+.hstrip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong); /* кружок .c — как в сетке разбора */
+}
+.hstrip i.on { background: var(--accent); border-color: var(--accent); }
+.hstrip i.today { box-shadow: 0 0 0 3px var(--accent-weak); } /* сегодняшняя выделена и пустой, и заполненной */
+.hstrip i.fut { opacity: .45; } /* будущие приглушены */
+.hcount { font-size: 13px; color: var(--muted); white-space: nowrap; margin-left: auto; }
+
+/* степпер нормы в форме привычки */
+.field.inline.norm { justify-content: space-between; }
+.field.inline.norm .btns { margin-top: 0; }
+.field.inline.norm b { font-weight: 650; }
+
 /* ── Недельный счётчик ─────────────────────────────────────── */
 
 .weekcount {

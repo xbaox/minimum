@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -78,7 +78,7 @@ function nextCalendarMonday(k) {
 /* Стартовая программа привычек — тот же посев идёт миграцией v5 */
 function seedHabits(today) {
   const habit = (name) => ({
-    id: uid(), name, value: null, unit: '', type: 'daily', area: 'habit',
+    id: uid(), name, value: null, unit: '', type: 'daily', area: 'habit', normPerWeek: 7,
     goal: null, note: '', group: '', active: true, addedAt: today, raiseAfter: 0, history: []
   });
   return [
@@ -178,6 +178,12 @@ function migrate(s) {
       it.pvalue = pv; // числовой порог может быть дробным — формы его не округляют
       it.pstep = Math.round(numOr(it.pstep, 0));
     }
+    if (it.type === 'daily' && it.area === 'habit') {
+      // норма недели (инвариант 11): целое 1–7, невалид — к ближайшему допустимому
+      it.normPerWeek = Math.max(1, Math.min(7, Math.round(numOr(it.normPerWeek, 7))));
+    } else {
+      delete it.normPerWeek; // норма — только у привычек
+    }
     const g = numOr(it.goal, null);
     it.goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : null;
     it.raiseAfter = Math.max(0, Math.round(numOr(it.raiseAfter, 0)));
@@ -261,6 +267,10 @@ function migrate(s) {
     }
     delete s.settings.hintShownForItemId;
   }
+
+  // v5 → v6: недельная норма привычек (normPerWeek = 7) — достраивается
+  // безусловной валидацией пунктов выше, отдельный шаг не нужен; миграция
+  // аддитивна: days{} и reviews[] не изменяются (решение владельца 19.07.2026)
   // рукотворный/битый calendarSince приводится тем же правилом; не-понедельник
   // нормализуется вперёд — недели существуют только целиком
   if (!isDayKey(s.settings.calendarSince)) {
@@ -654,13 +664,46 @@ function keepParam(itemId) {
   return true;
 }
 
-/* Информационная готовность: 2 закрытые недели каждая активная привычка ≥6/7 */
+/* ── Норма и серия привычки (инвариант 11) ──────────────────
+   Чистые функции от days{}, normPerWeek и календаря: разбор и
+   closeWeek на них не влияют, смена нормы ретроактивна. */
+
+/* Отметки привычки в календарной неделе с понедельником mon */
+function habitWeekCount(item, mon) {
+  let n = 0;
+  for (let i = 0; i < 7; i++) if (isMarked(addDays(mon, i), item.id)) n++;
+  return n;
+}
+
+/* Серия, считая назад от недели lastWeek включительно; недели существуют
+   только с calendarSince (инвариант 2). Неделя без нормы обрывает счёт,
+   поэтому цикл конечен: пустых недель норма (≥1) не набирает. */
+function habitStreakFrom(item, lastWeek) {
+  const since = store.settings.calendarSince;
+  if (!isDayKey(since)) return 0;
+  let n = 0;
+  for (let w = lastWeek; w >= since; w = addDays(w, -7)) {
+    if (habitWeekCount(item, w) < (item.normPerWeek || 7)) break;
+    n++;
+  }
+  return n;
+}
+
+/* Серия на сегодня: от последней завершённой недели; текущая не входит —
+   сегодняшние тапы серию не меняют */
+function habitStreak(item) {
+  const cur = currentWeekStart();
+  return cur ? habitStreakFrom(item, addDays(cur, -7)) : 0;
+}
+
+/* Информационная готовность: 2 закрытые недели каждая активная привычка
+   выполнила норму (≥ normPerWeek; норма ретроактивна — берётся текущая) */
 function habitsSteady() {
   const habits = store.items.filter(i => i.type === 'daily' && i.area === 'habit' && i.active);
   if (!habits.length || store.reviews.length < 2) return false;
   return store.reviews.slice(-2).every(r => habits.every(h => {
     const p = r.perItem && r.perItem[h.id];
-    return p && p.count >= 6;
+    return p && p.count >= (h.normPerWeek || 7);
   }));
 }
 
@@ -768,6 +811,7 @@ function importJSON(file) {
     // импорт заменил состояние целиком: черновики форм и дневное ui-состояние
     // не переносятся, граница дня могла смениться — таймер и день заново
     ui.editingId = null;
+    ui.editNorm = null;
     ui.addOpen = false;
     ui.formDraft = null;
     ui.missOpen = {};
@@ -795,6 +839,7 @@ const ui = {
   justClosed: false,
   addArea: 'min',       // область формы добавления: 'min' | 'habit'
   addPkind: 'time',     // вид параметра в форме добавления; после создания вид не меняется
+  editNorm: null,       // черновик нормы недели в открытой форме привычки (null — как у пункта)
   importNote: null,     // строка «Импортировано: …», исчезает при следующем действии
   renderedDayKey: null, // логический день, для которого отрисован интерфейс (инвариант 8)
   renderedTab: null,    // последняя отрисованная вкладка — скролл сбрасывается только при её смене
@@ -913,24 +958,47 @@ function renderToday() {
 }
 
 /* Строка ежедневного пункта: чекбокс, точка-маркер, ретро-отметка —
-   общая для «Сегодня» (area min) и «Привычек» (area habit) */
-function dailyRow(it, t) {
+   общая для «Сегодня» (area min) и «Привычек» (habit: true добавляет
+   серию у названия и полосу текущей недели под строкой) */
+function dailyRow(it, t, habit) {
   const on = isMarked(t, it.id);
   const miss = missedYesterday(it, t);
   const vu = valUnit(it);
+  const streak = habit ? habitStreak(it) : 0; // при нуле справка скрыта
   return `
-      <div class="rowwrap">
+      <div class="rowwrap${habit ? ' hrow' : ''}">
         <label class="row check${on ? ' on' : ''}">
           <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}>
           <span class="box" aria-hidden="true"></span>
           <span class="txt">
-            <span class="tname">${esc(it.name)}${vu ? ` <span class="val">${esc(vu)}</span>` : ''}</span>
+            <span class="tname">${esc(it.name)}${vu ? ` <span class="val">${esc(vu)}</span>` : ''}${streak ? ` <span class="streak">серия ${streak} нед</span>` : ''}</span>
             ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
           </span>
         </label>
         ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-label="вчера — пропуск"><i></i></button>` : ''}
         ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск<button type="button" class="undo" data-act="mark-yesterday" data-id="${esc(it.id)}" aria-label="отметить вчера: «${esc(it.name)}»">отметить</button></p>` : ''}
+        ${habit ? habitWeekRow(it, t) : ''}
       </div>`;
+}
+
+/* Полоса текущей недели привычки: визуальный язык сетки разбора (подписи
+   дней, кружки), пассивна — тапов не принимает; рядом «X из N». Сама
+   полоса скрыта от AT — счёт недели даёт видимый текст «X из N». */
+function habitWeekRow(it, t) {
+  const mon = weekStartOf(t);
+  const names = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+  let cells = '';
+  for (let i = 0; i < 7; i++) {
+    const k = addDays(mon, i);
+    const today = k === t;
+    cells += `<span class="hday${today ? ' today' : ''}"><span class="hd">${names[i]}</span>` +
+      `<i class="c${isMarked(k, it.id) ? ' on' : ''}${today ? ' today' : ''}${k > t ? ' fut' : ''}"></i></span>`;
+  }
+  return `
+        <div class="hweek">
+          <span class="hstrip" aria-hidden="true">${cells}</span>
+          <span class="hcount">${habitWeekCount(it, mon)} из ${it.normPerWeek || 7}</span>
+        </div>`;
 }
 
 /* Экран 2 — «Привычки»: только сегодняшний день программы роста */
@@ -957,10 +1025,10 @@ function renderHabits() {
     h += `
     <div class="dayline">
       <div class="bar"><i style="width:${pct}%"></i></div>
-      <p class="bar-note${allDone ? ' ok' : ''}" aria-live="polite">${allDone ? 'Все отмечены' : `<b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
+      <p class="bar-note${allDone ? ' ok' : ''}" aria-live="polite">${allDone ? 'Все отмечены' : `сегодня <b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
     </div>
     <div class="list">`;
-    for (const it of habits) h += dailyRow(it, t);
+    for (const it of habits) h += dailyRow(it, t, true);
     h += `</div>`;
   } else {
     h += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
@@ -1012,8 +1080,21 @@ function updateHabitsDayline() {
   const note = document.querySelector('#scr-habits .bar-note');
   if (note) {
     note.classList.toggle('ok', allDone);
-    note.innerHTML = allDone ? 'Все отмечены' : (total ? `<b>${done}</b>&nbsp;из&nbsp;${total}` : '');
+    note.innerHTML = allDone ? 'Все отмечены' : (total ? `сегодня <b>${done}</b>&nbsp;из&nbsp;${total}` : '');
   }
+}
+
+/* Точечное обновление полосы недели привычки: сегодняшняя ячейка и «X из N».
+   Серия не пересчитывается — текущая неделя в неё не входит (инвариант 11). */
+function updateHabitWeekRow(input) {
+  const wrap = input.closest('.rowwrap');
+  if (!wrap) return;
+  const t = todayKey();
+  const cell = wrap.querySelector('.hstrip i.today');
+  if (cell) cell.classList.toggle('on', isMarked(t, input.dataset.id));
+  const hc = wrap.querySelector('.hcount');
+  const it = store.items.find(x => x.id === input.dataset.id);
+  if (hc && it) hc.textContent = `${habitWeekCount(it, weekStartOf(t))} из ${it.normPerWeek || 7}`;
 }
 
 /* Точечная отметка: обновляется планка того экрана, где стоит чекбокс */
@@ -1023,7 +1104,7 @@ function updateTodayMark(input) {
   const label = input.closest('label.check');
   if (label) label.classList.toggle('on', on);
   const scr = input.closest('section.screen');
-  if (scr && scr.id === 'scr-habits') updateHabitsDayline();
+  if (scr && scr.id === 'scr-habits') { updateHabitsDayline(); updateHabitWeekRow(input); }
   else updateDayline();
 }
 
@@ -1153,6 +1234,15 @@ function renderReview() {
   h += `<h2>Привычки</h2>`;
   if (habitItems.length) {
     h += weekGrid(habitItems);
+    // норма и серия разбираемой недели: read-only справка, закрытие данных не меняет
+    for (const hb of habitItems) {
+      const x = habitWeekCount(hb, keys[0]);
+      const norm = hb.normPerWeek || 7;
+      let tail = '';
+      if (x >= norm) tail = ` · серия ${habitStreakFrom(hb, keys[0])} нед`;
+      else if (habitStreakFrom(hb, addDays(keys[0], -7)) > 0) tail = ' · серия прервана';
+      h += `<p class="muted">${esc(hb.name)}: ${x} из ${norm}${tail}</p>`;
+    }
     h += consist(habitItems);
   } else {
     h += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
@@ -1391,7 +1481,18 @@ function editForm(it) {
         : `<label class="field"><span>Порог</span><input id="e-ptime" type="time" value="${esc(fmtParam(it))}"></label>`}
       <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="e-pstep" value="${esc(it.pstep)}"></label>` + foot;
   }
-  if (it.area === 'habit') return head + foot; // привычка: только название и подпись
+  if (it.area === 'habit') {
+    // привычка: название, подпись и норма недели степпером (границы 1–7)
+    const n = ui.editNorm !== null ? ui.editNorm : (it.normPerWeek || 7);
+    return head + `
+      <div class="field inline norm">
+        <span>Норма в неделю: <b>${n}</b></span>
+        <span class="btns">
+          <button type="button" class="btn icon quiet" data-act="norm-dec" data-id="${esc(it.id)}"${n <= 1 ? ' disabled' : ''} aria-label="уменьшить норму">&minus;</button>
+          <button type="button" class="btn icon quiet" data-act="norm-inc" data-id="${esc(it.id)}"${n >= 7 ? ' disabled' : ''} aria-label="увеличить норму">+</button>
+        </span>
+      </div>` + foot;
+  }
   return head + `
       <div class="pair">
         <label class="field"><span>Значение</span><input class="num" type="text" inputmode="decimal" id="e-value" value="${esc(it.value)}"></label>
@@ -1574,8 +1675,24 @@ function onClick(e) {
       break;
     }
 
-    case 'edit-open': ui.editingId = id; ui.addOpen = false; renderItems(); break;
-    case 'edit-cancel': ui.editingId = null; renderItems(); break;
+    case 'edit-open': ui.editingId = id; ui.addOpen = false; ui.editNorm = null; renderItems(); break;
+    case 'edit-cancel': ui.editingId = null; ui.editNorm = null; renderItems(); break;
+
+    case 'norm-dec':
+    case 'norm-inc': {
+      if (!item) break;
+      const cur = ui.editNorm !== null ? ui.editNorm : (item.normPerWeek || 7);
+      const next = Math.max(1, Math.min(7, cur + (act === 'norm-inc' ? 1 : -1)));
+      if (next === cur) break;
+      ui.editNorm = next;
+      renderItems();
+      // вернуть фокус кнопке того же действия; на границе — парной (как у «выше/ниже»)
+      const find = a => [...el('scr-items').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.id === id);
+      let btn = find(act);
+      if (!btn || btn.disabled) btn = find(act === 'norm-inc' ? 'norm-dec' : 'norm-inc');
+      if (btn && !btn.disabled) btn.focus();
+      break;
+    }
     case 'edit-save': {
       if (!item) break;
       const name = el('e-name').value.trim();
@@ -1611,9 +1728,12 @@ function onClick(e) {
           const g = parsePositive(el('e-goal') ? el('e-goal').value : null);
           if (g !== null && Math.round(g) >= 1) item.goal = Math.round(g); // невалид — старая цель
         }
-      } // ежедневная привычка: только название и подпись
+      } else if (ui.editNorm !== null) {
+        item.normPerWeek = Math.max(1, Math.min(7, ui.editNorm)); // ежедневная привычка: норма недели
+      }
       save();
       ui.editingId = null;
+      ui.editNorm = null;
       renderItems();
       break;
     }
@@ -1657,7 +1777,7 @@ function onClick(e) {
       } else if (ui.addArea === 'habit') {
         item = {
           id: uid(), name, value: null, unit: '', note, group: '',
-          type: 'daily', area: 'habit',
+          type: 'daily', area: 'habit', normPerWeek: 7, // каноническая форма привычки (инвариант 11)
           goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, history: []
         };
       } else {
@@ -1798,6 +1918,7 @@ if (typeof module !== 'undefined' && module.exports) {
     reviewDue, windowKeys, currentOneChange, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, markYesterday, plural, parseNum,
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
+    habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, recordBar, parsePositive, isDayKey, load,
     mirrorRead, mirrorWrite, flushMirror
   };
