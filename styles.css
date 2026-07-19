@@ -112,7 +112,7 @@ h2 {
   height: 100%;
   border-radius: 2px;
   background: var(--accent);
-  transition: width .28s ease;
+  transition: width .18s ease-out;
 }
 .bar-note {
   margin-top: 8px;
@@ -243,6 +243,9 @@ h2 {
   height: 9px;
   border-radius: 50%;
   border: 1.5px solid var(--line-strong); /* кружок .c — как в сетке разбора */
+  /* заполнение сегодняшней ячейки как отклик на тап (движение, задача 12);
+     при первичном рендере ячейка создаётся в конечном состоянии — переход не играет */
+  transition: background-color .16s ease-out, border-color .16s ease-out;
 }
 .hstrip i.on { background: var(--accent); border-color: var(--accent); }
 .hstrip i.today { box-shadow: 0 0 0 3px var(--accent-weak); } /* сегодняшняя выделена и пустой, и заполненной */
@@ -550,6 +553,53 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   border: 0;
 }
 
+/* ── Движение (задача 12) ──────────────────────────────────────
+   Тихая функциональная обратная связь на действие. Все конечные
+   состояния (отмечено, карточка ушла, экран показан) достижимы и
+   без анимации — см. блок prefers-reduced-motion ниже. */
+
+/* Один разрешённый «автоматический» эффект: лёгкий fade содержимого
+   при показе экрана (переключение вкладок). Только opacity — без
+   сдвигов лэйаута и без задержки доступности контента. */
+@keyframes scr-fade { from { opacity: 0; } to { opacity: 1; } }
+.screen { animation: scr-fade .16s ease-out; }
+
+/* Уход карточки разбора после принятия решения (ease-in допустим).
+   Узел удаляется полной перерисовкой по завершении перехода или по
+   fallback-таймауту (см. motionLeave) — DOM реально очищается. */
+.card.leaving {
+  transition: opacity .16s ease-in, transform .16s ease-in;
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+}
+
+/* Тихое подтверждение сохранения формы: проявляется и гаснет само.
+   Переходы появления и ухода — в окне 120–200 мс; между ними короткое
+   удержание для читаемости (не переход движения). В покое (до и после,
+   fill-mode none) строка схлопнута — opacity:0, max-height:0, без полей:
+   ни следа в потоке, ни отложенного сдвига лэйаута. При reduced-motion
+   (animation:none) остаётся схлопнутой — данные уже сохранены. */
+@keyframes flash-note {
+  0%   { opacity: 0; max-height: 0;      margin-bottom: 0; }
+  15%  { opacity: 1; max-height: 1.6rem; margin-bottom: 6px; }   /* появление ~180 мс */
+  85%  { opacity: 1; max-height: 1.6rem; margin-bottom: 6px; }   /* удержание ~840 мс */
+  100% { opacity: 0; max-height: 0;      margin-bottom: 0; }     /* уход ~180 мс */
+}
+.flash {
+  opacity: 0;
+  max-height: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--muted);
+  animation: flash-note 1.2s ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition: none !important; }
+  *, *::before, *::after {
+    transition: none !important;
+    animation: none !important;   /* @keyframes отключены; конечные состояния остаются достижимыми */
+    scroll-behavior: auto !important;
+  }
 }

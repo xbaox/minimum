@@ -840,6 +840,7 @@ const ui = {
   addArea: 'min',       // область формы добавления: 'min' | 'habit'
   addPkind: 'time',     // вид параметра в форме добавления; после создания вид не меняется
   editNorm: null,       // черновик нормы недели в открытой форме привычки (null — как у пункта)
+  savedFlash: false,    // разовое тихое подтверждение сохранения формы (движение, задача 12)
   importNote: null,     // строка «Импортировано: …», исчезает при следующем действии
   renderedDayKey: null, // логический день, для которого отрисован интерфейс (инвариант 8)
   renderedTab: null,    // последняя отрисованная вкладка — скролл сбрасывается только при её смене
@@ -877,6 +878,34 @@ function valUnit(it) {
 }
 
 function el(id) { return document.getElementById(id); }
+
+/* ── Движение (задача 12): короткая функциональная обратная связь ──
+   Заполнение круга и ячейки полосы, fade экрана и flash сохранения —
+   на CSS (transition/@keyframes). Уходу карточки разбора нужен JS:
+   класс-триггер, затем удаление узла перерисовкой. */
+
+const MOTION_MS = 160;
+
+function prefersReducedMotion() {
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+  catch (e) { return false; }
+}
+
+/* Пометить узел уходящим, затем выполнить done() — перерисовку, реально
+   убирающую узел. Триггер — transitionend, но он ненадёжен (jsdom его не
+   шлёт, reduced-motion отключает переход), поэтому done гарантирован
+   fallback-таймаутом и вызывается ровно один раз. При reduced-motion —
+   сразу, без ожидания: конечное состояние достижимо мгновенно. */
+function motionLeave(node, done) {
+  if (!node || prefersReducedMotion()) { done(); return; }
+  node.classList.add('leaving');
+  let fired = false;
+  // done ровно один раз; если узел уже убран (напр. соседним решением,
+  // перерисовавшим весь разбор) — повторная перерисовка не нужна
+  const fin = () => { if (fired) return; fired = true; if (node.isConnected) done(); };
+  node.addEventListener('transitionend', fin, { once: true });
+  setTimeout(fin, MOTION_MS + 60);
+}
 
 function renderAll() {
   const map = { today: 'scr-today', habits: 'scr-habits', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
@@ -1365,6 +1394,10 @@ function restoreOpenForm() {
 function renderItems() {
   snapshotOpenForm();
   let h = `<header class="page"><p class="overline">Настройка блоков</p><h1>Пункты</h1></header>`;
+  if (ui.savedFlash) { // тихое подтверждение сохранения — гаснет само (CSS), показывается один раз
+    h += `<p class="flash" role="status">Сохранено</p>`;
+    ui.savedFlash = false;
+  }
 
   // две группы: минимум и привычки, у каждой своя кнопка добавления
   const groups = [
@@ -1641,7 +1674,7 @@ function onClick(e) {
 
     case 'raise-edit': ui.raiseEdit[id] = true; renderReview(); break;
     case 'raise-later':
-      if (item) { resetRaiseCount(item); delete ui.raiseEdit[id]; renderReview(); }
+      if (item) { resetRaiseCount(item); delete ui.raiseEdit[id]; motionLeave(b.closest('.card'), renderReview); }
       break;
     case 'raise-ok': {
       if (!item) break;
@@ -1650,12 +1683,12 @@ function onClick(e) {
       if (v === null) break; // осознанный тихий no-op: карточка остаётся
       acceptRaise(item, v);
       delete ui.raiseEdit[id];
-      renderReview();
+      motionLeave(b.closest('.card'), renderReview); // карточка уходит, затем перерисовка
       break;
     }
 
-    case 'param-step': if (applyParamStep(id)) renderReview(); break;
-    case 'param-keep': if (keepParam(id)) renderReview(); break;
+    case 'param-step': if (applyParamStep(id)) motionLeave(b.closest('.card'), renderReview); break;
+    case 'param-keep': if (keepParam(id)) motionLeave(b.closest('.card'), renderReview); break;
 
     case 'close-week':
       if (closeWeek()) ui.justClosed = true;
@@ -1734,6 +1767,7 @@ function onClick(e) {
       save();
       ui.editingId = null;
       ui.editNorm = null;
+      ui.savedFlash = true; // тихое подтверждение (движение, задача 12)
       renderItems();
       break;
     }
@@ -1801,6 +1835,7 @@ function onClick(e) {
       store.items.push(item);
       save();
       ui.addOpen = false;
+      ui.savedFlash = true; // тихое подтверждение (движение, задача 12)
       renderItems();
       break;
     }
