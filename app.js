@@ -1194,9 +1194,10 @@ function renderReview() {
     const cur = currentWeekStart();
     if (!cur) {
       // переходные дни скользящей эпохи: первый разбор — после первой целой календарной недели
-      h += `<p class="muted">Разбор откроется в понедельник, ${esc(fmtShort(addDays(store.settings.calendarSince, 7)))}.</p>`;
+      // fmtDay (полный месяц) — дата умещается целиком, без «сент..» (отделка, задача 13)
+      h += `<p class="muted">Разбор откроется в понедельник, ${esc(fmtDay(addDays(store.settings.calendarSince, 7)))}.</p>`;
     } else {
-      h += `<p class="muted">Идёт ${diffDays(todayKey(), cur) + 1}-й день недели. Разбор откроется в понедельник, ${esc(fmtShort(addDays(cur, 7)))}.</p>`;
+      h += `<p class="muted">Идёт ${diffDays(todayKey(), cur) + 1}-й день недели. Разбор откроется в понедельник, ${esc(fmtDay(addDays(cur, 7)))}.</p>`;
     }
     const ocWait = currentOneChange();
     if (ocWait) h += `<p class="muted">Изменение этой недели: „${esc(ocWait)}“</p>`;
@@ -1283,7 +1284,8 @@ function renderReview() {
       const norm = hb.normPerWeek || 7;
       let tail = '';
       if (x >= norm) tail = ` · серия ${habitStreakFrom(hb, keys[0])} нед`;
-      else if (habitStreakFrom(hb, addDays(keys[0], -7)) > 0) tail = ' · серия прервана';
+      // прерывание серии несёт приглушённый предупреждающий тон (отделка, задача 13)
+      else if (habitStreakFrom(hb, addDays(keys[0], -7)) > 0) tail = ` · <span class="broken">серия прервана</span>`;
       h += `<p class="muted">${esc(hb.name)}: ${x} из ${norm}${tail}</p>`;
     }
     h += consist(habitItems);

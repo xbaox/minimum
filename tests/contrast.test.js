@@ -43,6 +43,7 @@ function contrast(a, b) {
 const THRESHOLDS = [
   ['muted', 4.5],
   ['faint', 4.5],
+  ['warn', 4.5],   // «серия прервана» — текст, ≥4.5 в обеих темах (задача 13)
   ['dot', 3],
   ['control-border', 3]
 ];
