@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -68,6 +68,12 @@ const DEFAULT_GROUPS = {
   'Тренировка': 'Тело'
 };
 const TRAIN_NOTE = 'Полноценная тренировка, 40–50 минут';
+
+/* Понедельник дня k, если k — понедельник, иначе ближайший следующий */
+function nextCalendarMonday(k) {
+  const mon = weekStartOf(k);
+  return mon === k ? k : addDays(mon, 7);
+}
 
 function defaultStore() {
   const today = dateKeyShift(new Date(), 4);
@@ -94,7 +100,12 @@ function defaultStore() {
     pendingRaises: [], // принятые повышения, ещё не записанные в разбор
     draftOneChange: '',
     weekStart: today,  // логическая дата последнего закрытия (или первого запуска)
-    settings: { dayBoundary: 4, hintShownForItemId: null, exportedAt: null }
+    settings: {
+      dayBoundary: 4,
+      hintShownForItemId: null,
+      exportedAt: null,
+      calendarSince: nextCalendarMonday(today)
+    }
   };
 }
 
@@ -202,6 +213,17 @@ function migrate(s) {
   // v3 → v4: отметка последнего экспорта — мягкий дефолт
   if (s.schemaVersion < 4) {
     if (!('exportedAt' in s.settings)) s.settings.exportedAt = null;
+  }
+
+  // v4 → v5: календарные недели — понедельник дня миграции или ближайший следующий
+  if (s.schemaVersion < 5) {
+    if (!isDayKey(s.settings.calendarSince)) {
+      s.settings.calendarSince = nextCalendarMonday(dateKeyShift(new Date(), s.settings.dayBoundary));
+    }
+  }
+  // рукотворный/битый calendarSince приводится тем же правилом
+  if (!isDayKey(s.settings.calendarSince)) {
+    s.settings.calendarSince = nextCalendarMonday(dateKeyShift(new Date(), s.settings.dayBoundary));
   }
 
   s.schemaVersion = SCHEMA_VERSION;
@@ -336,6 +358,12 @@ function isDayKey(k) {
     dateKeyFromDate(keyToDate(k)) === k;
 }
 
+/* Понедельник календарной недели, которой принадлежит логический день */
+function weekStartOf(dayKey) {
+  const dow = (keyToDate(dayKey).getDay() + 6) % 7; // 0 — понедельник
+  return addDays(dayKey, -dow);
+}
+
 /* Миллисекунды до ближайшего момента границы дня */
 function msToNextBoundary() {
   const now = new Date();
@@ -424,8 +452,15 @@ function markYesterday(itemId) {
   return true;
 }
 
+/* Начало текущего периода счёта тренировок: календарная неделя, а в
+   переходные дни до calendarSince — прежняя скользящая отсечка weekStart */
+function trainSince() {
+  return currentWeekStart() || store.weekStart;
+}
+
 function trainCount(itemId) {
-  return store.weekLog.reduce((n, e) => n + (e.itemId === itemId ? 1 : 0), 0);
+  const since = trainSince();
+  return store.weekLog.reduce((n, e) => n + (e.itemId === itemId && e.date >= since ? 1 : 0), 0);
 }
 
 function incTrain(itemId) {
@@ -433,22 +468,44 @@ function incTrain(itemId) {
   save();
 }
 
+/* Отмена — только записей текущей недели (прошлое неизменяемо) */
 function undoTrain(itemId) {
+  const since = trainSince();
   for (let i = store.weekLog.length - 1; i >= 0; i--) {
-    if (store.weekLog[i].itemId === itemId) { store.weekLog.splice(i, 1); save(); return; }
+    const e = store.weekLog[i];
+    if (e.itemId === itemId && e.date >= since) { store.weekLog.splice(i, 1); save(); return; }
   }
 }
 
-/* Недели скользящие: разбор доступен, когда с последнего закрытия прошло ≥7 дней. */
-function reviewDue() {
-  return diffDays(todayKey(), store.weekStart) >= 7;
+/* Календарные недели (инвариант 2): понедельник–воскресенье в логических днях */
+function currentWeekStart() {
+  const t = todayKey();
+  const since = store.settings.calendarSince;
+  if (!isDayKey(since) || t < since) return null; // переходные дни до calendarSince
+  return weekStartOf(t);
 }
 
-/* Окно разбора — последние 7 логических дней, включая сегодня. */
+function previousWeekStart() {
+  const cur = currentWeekStart();
+  return cur ? addDays(cur, -7) : null;
+}
+
+/* Разбор предлагается только за последнюю завершённую календарную неделю.
+   Пропущенные недели тихо проходят; скользящие записи reviews (без week)
+   первый календарный разбор не блокируют. */
+function reviewDue() {
+  const prev = previousWeekStart();
+  if (!prev || prev < store.settings.calendarSince) return false;
+  const last = store.reviews[store.reviews.length - 1];
+  return !(last && last.week === prev);
+}
+
+/* Окно разбора — ровно последняя завершённая неделя; сегодня не входит */
 function windowKeys() {
-  const t = todayKey();
+  const prev = previousWeekStart();
   const keys = [];
-  for (let i = 6; i >= 0; i--) keys.push(addDays(t, -i));
+  if (!prev) return keys;
+  for (let i = 0; i < 7; i++) keys.push(addDays(prev, i));
   return keys;
 }
 
@@ -525,7 +582,8 @@ function moveItem(id, dir) {
 /* ── Закрытие недели ───────────────────────────────────────── */
 
 function closeWeek() {
-  if (!reviewDue()) return false; // guard: неделя не назрела — в т.ч. защита от повторного вызова
+  if (!reviewDue()) return false; // guard: завершённой неразобранной недели нет
+  const week = previousWeekStart();
   const keys = windowKeys();
   const perItem = {};
   for (const it of store.items) {
@@ -534,15 +592,16 @@ function closeWeek() {
     if (!it.active && !marks.some(Boolean)) continue; // выключенные без отметок в окне не попадают в срез
     perItem[it.id] = { name: it.name, marks, count: marks.filter(Boolean).length };
   }
+  const weekEnd = keys[6];
   const trainings = {};
   for (const w of store.items.filter(i => i.type === 'weekly')) {
-    const count = trainCount(w.id);
+    const count = store.weekLog.filter(e => e.itemId === w.id && e.date >= week && e.date <= weekEnd).length;
     if (!w.active && !count) continue; // как и в perItem: выключенные без счёта не попадают
     trainings[w.id] = { name: w.name, count, goal: w.goal };
   }
   store.reviews.push({
     closedAt: Date.now(),
-    weekStart: store.weekStart, // период счёта тренировок — вся открытая неделя (инвариант 3)
+    week, // понедельник разобранной недели
     keys,
     perItem,
     trainings,
@@ -551,8 +610,9 @@ function closeWeek() {
   });
   store.pendingRaises = [];
   store.draftOneChange = '';
-  store.weekLog = [];        // счётчик тренировок обнуляется
-  store.weekStart = todayKey(); // открывается новая неделя
+  // счётчик «Сегодня» обнуляется сменой недели, не закрытием: чистим только прошлое
+  const cur = currentWeekStart();
+  store.weekLog = store.weekLog.filter(e => e.date >= cur);
   save();
   return true;
 }
@@ -817,11 +877,14 @@ function renderReview() {
   let h = `<header class="page"><p class="overline">Раз в неделю</p><h1>Разбор недели</h1></header>`;
 
   if (!reviewDue()) {
-    const passed = diffDays(todayKey(), store.weekStart);
-    const left = 7 - passed;
     if (ui.justClosed) h += `<p class="lead" role="status">Неделя закрыта.</p>`;
-    h += `<p class="muted">Идёт ${passed + 1}-й день недели. Разбор откроется через ${left} ${plural(left, 'день', 'дня', 'дней')}.</p>`;
-    h += `<p class="muted">Неделя началась ${esc(fmtShort(store.weekStart))}.</p>`;
+    const cur = currentWeekStart();
+    if (!cur) {
+      // переходные дни скользящей эпохи
+      h += `<p class="muted">Календарные недели начнутся в понедельник, ${esc(fmtShort(store.settings.calendarSince))}.</p>`;
+    } else {
+      h += `<p class="muted">Идёт ${diffDays(todayKey(), cur) + 1}-й день недели. Разбор откроется в понедельник.</p>`;
+    }
     const ocWait = currentOneChange();
     if (ocWait) h += `<p class="muted">Изменение этой недели: „${esc(ocWait)}“</p>`;
     el('scr-review').innerHTML = h;
@@ -833,7 +896,7 @@ function renderReview() {
   const gridItems = store.items.filter(it =>
     it.type === 'daily' && (it.active || keys.some(k => isMarked(k, it.id))));
 
-  h += `<p class="muted">${esc(fmtShort(keys[0]))} — ${esc(fmtShort(keys[6]))}</p>`;
+  h += `<p class="muted">Неделя ${esc(fmtShort(keys[0]))} — ${esc(fmtShort(keys[6]))}</p>`;
   const oc = currentOneChange();
   if (oc) h += `<p class="muted">Изменение этой недели: „${esc(oc)}“</p>`;
 
@@ -841,7 +904,7 @@ function renderReview() {
   // с display:contents), итог строки — визуально скрытым счётчиком в имени
   h += `<div class="grid" style="--cols:${keys.length}">`;
   h += `<span class="g-vis" aria-hidden="true"><span class="g-head"></span>` +
-    keys.map(k => `<span class="g-head">${Number(k.slice(8))}</span>`).join('') + `</span>`;
+    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(d => `<span class="g-head">${d}</span>`).join('') + `</span>`;
   for (const it of gridItems) {
     const n = keys.filter(k => isMarked(k, it.id)).length;
     h += `<span class="g-name">${esc(it.name)}<span class="sr-only">, отмечено ${n} из 7</span></span>`;
@@ -1389,7 +1452,8 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     get store() { return store; }, set store(v) { store = v; },
     defaultStore, migrate, dateKeyShift, dateKeyFromDate, addDays, diffDays,
-    todayKey, msToNextBoundary, toggleMark, isMarked, incTrain, undoTrain, trainCount,
+    todayKey, msToNextBoundary, weekStartOf, currentWeekStart, previousWeekStart,
+    toggleMark, isMarked, incTrain, undoTrain, trainCount,
     reviewDue, windowKeys, currentOneChange, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, markYesterday, plural, parseNum,
     moveItem, recordBar, parsePositive, isDayKey, load,
