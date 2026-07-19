@@ -884,11 +884,21 @@ function el(id) { return document.getElementById(id); }
    на CSS (transition/@keyframes). Уходу карточки разбора нужен JS:
    класс-триггер, затем удаление узла перерисовкой. */
 
-const MOTION_MS = 160;
+const MOTION_MS = 240; // потолок движения (12.1); fallback ухода карточки — сверх него
 
 function prefersReducedMotion() {
   try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
   catch (e) { return false; }
+}
+
+/* Короткий scale-отклик на тап (класс-триггер .pop с рестартом анимации).
+   Только в горячих путях отметки — при первичном рендере класса нет.
+   При reduced-motion не навешивается (и CSS animation:none подстрахует). */
+function tapPop(node) {
+  if (!node || prefersReducedMotion()) return;
+  node.classList.remove('pop');
+  void node.offsetWidth; // рефлоу — чтобы повторный тап перезапустил анимацию
+  node.classList.add('pop');
 }
 
 /* Пометить узел уходящим, затем выполнить done() — перерисовку, реально
@@ -898,7 +908,11 @@ function prefersReducedMotion() {
    сразу, без ожидания: конечное состояние достижимо мгновенно. */
 function motionLeave(node, done) {
   if (!node || prefersReducedMotion()) { done(); return; }
+  // зафиксировать текущую высоту как старт схлопывания (в конце — max-height:0)
+  node.style.maxHeight = node.scrollHeight + 'px';
+  void node.offsetHeight; // рефлоу, чтобы стартовое значение применилось до перехода
   node.classList.add('leaving');
+  node.style.maxHeight = '0px';
   let fired = false;
   // done ровно один раз; если узел уже убран (напр. соседним решением,
   // перерисовавшим весь разбор) — повторная перерисовка не нужна
@@ -1120,7 +1134,7 @@ function updateHabitWeekRow(input) {
   if (!wrap) return;
   const t = todayKey();
   const cell = wrap.querySelector('.hstrip i.today');
-  if (cell) cell.classList.toggle('on', isMarked(t, input.dataset.id));
+  if (cell) { cell.classList.toggle('on', isMarked(t, input.dataset.id)); tapPop(cell); } // scale-отклик ячейки (12.1)
   const hc = wrap.querySelector('.hcount');
   const it = store.items.find(x => x.id === input.dataset.id);
   if (hc && it) hc.textContent = `${habitWeekCount(it, weekStartOf(t))} из ${it.normPerWeek || 7}`;
@@ -1131,7 +1145,7 @@ function updateTodayMark(input) {
   const on = isMarked(todayKey(), input.dataset.id);
   input.checked = on;
   const label = input.closest('label.check');
-  if (label) label.classList.toggle('on', on);
+  if (label) { label.classList.toggle('on', on); tapPop(label.querySelector('.box')); } // scale-отклик круга (12.1)
   const scr = input.closest('section.screen');
   if (scr && scr.id === 'scr-habits') { updateHabitsDayline(); updateHabitWeekRow(input); }
   else updateDayline();

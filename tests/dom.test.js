@@ -43,9 +43,9 @@ const curMonday = () => mondayOf(daysAgo(0));
 const prevMonday = () => addKey(curMonday(), -7);
 
 /* Уход карточки разбора отложен (motionLeave: класс-триггер + перерисовка
-   по fallback-таймауту ~MOTION_MS, т.к. jsdom не шлёт transitionend).
-   Ждём дольше таймаута, чтобы дождаться реальной перерисовки. */
-const settle = () => new Promise(r => setTimeout(r, 260));
+   по fallback-таймауту MOTION_MS+60, т.к. jsdom не шлёт transitionend).
+   Ждём дольше таймаута (12.1: MOTION_MS = 240), чтобы дождаться перерисовки. */
+const settle = () => new Promise(r => setTimeout(r, 400));
 
 /* app.js взводит таймер границы дня — окна нужно закрывать, иначе
    процесс node --test не завершится из-за живого setTimeout */
@@ -1074,7 +1074,9 @@ test('движение: карточка разбора уходит через 
   scr.querySelector('[data-act="param-step"]').click();
 
   // сразу после тапа: решение применено (данные), но карточка ещё в DOM с классом-триггером
-  assert.ok(scr.querySelector('.card.param.leaving'), 'карточка помечена уходящей');
+  const leaving = scr.querySelector('.card.param.leaving');
+  assert.ok(leaving, 'карточка помечена уходящей');
+  assert.equal(leaving.style.maxHeight, '0px', 'высота схлопывается (12.1: max-height → 0)');
   assert.ok(scr.querySelector('[data-act="param-step"]'), 'узел ещё не удалён');
 
   await settle(); // fallback-таймаут (jsdom не шлёт transitionend) выполняет перерисовку
@@ -1135,11 +1137,50 @@ test('движение: тихое подтверждение «Сохранен
 });
 
 test('движение: reduced-motion в CSS отключает transition и animation полностью', () => {
-  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ''); // убрать комментарии — сверяем только объявления
   const m = css.match(/@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\{([^}]*)\}/);
   assert.ok(m, 'блок prefers-reduced-motion присутствует');
+  // transform/scale/translateY доставляются через transition и animation — их
+  // отключение гасит и усиленные эффекты 12.1; статичные transform сохраняются
   assert.match(m[1], /transition:\s*none\s*!important/);
   assert.match(m[1], /animation:\s*none\s*!important/);
+  assert.doesNotMatch(m[1], /transform:\s*none/); // положение тумблера/галочки не обнуляется
+});
+
+test('движение 12.1: scale-отклик круга — класс .pop на тап, отсутствует при первичном рендере', async () => {
+  const { document } = await boot();
+  const cb = document.querySelector('#scr-today input[data-act="mark"]');
+  const box = cb.closest('label.check').querySelector('.box');
+  assert.equal(box.classList.contains('pop'), false, 'первичный рендер статичен — без .pop');
+
+  cb.click(); // горячий путь: тот же узел, добавляется класс-триггер
+  assert.equal(box.classList.contains('pop'), true, 'после тапа — scale-триггер');
+  assert.equal(cb.closest('label.check').classList.contains('on'), true, 'отметка поставлена');
+
+  cb.click(); // снятие — тоже отклик (узел не пересоздан)
+  assert.equal(box.classList.contains('pop'), true);
+  assert.equal(cb.closest('label.check').classList.contains('on'), false);
+});
+
+test('движение 12.1: scale-отклик сегодняшней ячейки полосы привычки на тап', async () => {
+  const { document } = await boot(); // дефолт: 2 привычки
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const scr = document.getElementById('scr-habits');
+  const cell = scr.querySelector('.hstrip i.today');
+  assert.equal(cell.classList.contains('pop'), false, 'полоса статична при рендере');
+  scr.querySelector('input[data-act="mark"]').click();
+  assert.equal(scr.querySelector('.hstrip i.today').classList.contains('pop'), true, 'ячейка получила scale-триггер');
+});
+
+test('движение 12.1: при reduced-motion scale-триггер не навешивается, отметка достижима', async () => {
+  const { document, window } = await boot();
+  window.matchMedia = () => ({ matches: true }); // prefers-reduced-motion: reduce
+  const cb = document.querySelector('#scr-today input[data-act="mark"]');
+  const box = cb.closest('label.check').querySelector('.box');
+  cb.click();
+  assert.equal(box.classList.contains('pop'), false, 'без анимации — без класса-триггера');
+  assert.equal(cb.closest('label.check').classList.contains('on'), true, 'конечное состояние достижимо');
 });
 
 /* Дата «17 июл.» — той же формулой, что fmtShort в app.js */

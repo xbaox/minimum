@@ -112,7 +112,7 @@ h2 {
   height: 100%;
   border-radius: 2px;
   background: var(--accent);
-  transition: width .18s ease-out;
+  transition: width .24s ease-out;
 }
 .bar-note {
   margin-top: 8px;
@@ -187,8 +187,11 @@ h2 {
   border: 1.5px solid var(--control-border);
   border-radius: 50%;
   position: relative;
-  transition: background .16s ease, border-color .16s ease;
+  transition: background .24s ease-out, border-color .24s ease-out; /* заливка — заметная (движение 12.1) */
 }
+/* scale-«просадка» круга как отклик на тап (класс-триггер .pop навешивается
+   только в горячем пути отметки — при первичном рендере его нет, загрузка статична) */
+.check .box.pop { animation: tap-pop .22s ease-out; }
 .check .box::after {
   content: "";
   position: absolute;
@@ -199,7 +202,7 @@ h2 {
   border: solid var(--on-accent);
   border-width: 0 2px 2px 0;
   transform: rotate(42deg) scale(0);
-  transition: transform .16s ease;
+  transition: transform .22s ease-out;
 }
 .check.on .box { background: var(--accent); border-color: var(--accent); }
 .check.on .box::after { transform: rotate(42deg) scale(1); }
@@ -243,10 +246,11 @@ h2 {
   height: 9px;
   border-radius: 50%;
   border: 1.5px solid var(--line-strong); /* кружок .c — как в сетке разбора */
-  /* заполнение сегодняшней ячейки как отклик на тап (движение, задача 12);
+  /* заполнение сегодняшней ячейки как отклик на тап (движение, задачи 12/12.1);
      при первичном рендере ячейка создаётся в конечном состоянии — переход не играет */
-  transition: background-color .16s ease-out, border-color .16s ease-out;
+  transition: background-color .24s ease-out, border-color .24s ease-out;
 }
+.hstrip i.pop { animation: tap-pop .22s ease-out; } /* scale-отклик сегодняшней ячейки на тап */
 .hstrip i.on { background: var(--accent); border-color: var(--accent); }
 .hstrip i.today { box-shadow: 0 0 0 3px var(--accent-weak); } /* сегодняшняя выделена и пустой, и заполненной */
 .hstrip i.fut { opacity: .45; } /* будущие приглушены */
@@ -363,7 +367,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   inset: 0;
   border-radius: 14px;
   background: var(--control-border); /* выключенный трек различим: ≥3:1 */
-  transition: background .16s ease;
+  transition: background .22s ease-out;
 }
 .switch span::after {
   content: "";
@@ -375,7 +379,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   border-radius: 50%;
   background: var(--surface);
   box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
-  transition: transform .16s ease;
+  transition: transform .22s ease-out;
 }
 .switch input:checked + span { background: var(--accent); }
 .switch input:checked + span::after { transform: translateX(18px); }
@@ -553,30 +557,43 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   border: 0;
 }
 
-/* ── Движение (задача 12) ──────────────────────────────────────
-   Тихая функциональная обратная связь на действие. Все конечные
+/* ── Движение (задачи 12, 12.1) ────────────────────────────────
+   Тихая функциональная обратная связь на действие, усиленная до
+   отчётливо заметной (12.1): диапазон 180–260 мс. Все конечные
    состояния (отмечено, карточка ушла, экран показан) достижимы и
    без анимации — см. блок prefers-reduced-motion ниже. */
 
-/* Один разрешённый «автоматический» эффект: лёгкий fade содержимого
-   при показе экрана (переключение вкладок). Только opacity — без
-   сдвигов лэйаута и без задержки доступности контента. */
-@keyframes scr-fade { from { opacity: 0; } to { opacity: 1; } }
-.screen { animation: scr-fade .16s ease-out; }
+/* Короткая scale-«просадка» — общий отклик круга отметки и ячейки
+   полосы на тап; проигрывается только по классу-триггеру .pop */
+@keyframes tap-pop { 0% { transform: scale(1); } 40% { transform: scale(.9); } 100% { transform: scale(1); } }
 
-/* Уход карточки разбора после принятия решения (ease-in допустим).
-   Узел удаляется полной перерисовкой по завершении перехода или по
-   fallback-таймауту (см. motionLeave) — DOM реально очищается. */
+/* Один разрешённый «автоматический» эффект: заметный fade содержимого
+   при показе экрана (переключение вкладок) — opacity + короткий подъём
+   translateY. Только вертикально, transform не вызывает reflow —
+   ни горизонтального слайда, ни сдвига лэйаута/скролла. */
+@keyframes scr-fade { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+.screen { animation: scr-fade .24s ease-out; }
+
+/* Уход карточки разбора после решения — отчётливое схлопывание
+   (opacity + translateY + высота/поля/паддинги в 0), ease-in.
+   max-height задаётся инлайном в motionLeave (от scrollHeight к 0).
+   Узел удаляется перерисовкой по transitionend или fallback-таймауту
+   (см. motionLeave) — DOM реально очищается. */
 .card.leaving {
-  transition: opacity .16s ease-in, transform .16s ease-in;
+  transition: max-height .24s ease-in, opacity .24s ease-in, transform .24s ease-in, margin .24s ease-in, padding .24s ease-in;
   opacity: 0;
-  transform: translateY(-6px);
+  transform: translateY(-8px);
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
   pointer-events: none;
 }
 
 /* Тихое подтверждение сохранения формы: проявляется и гаснет само.
-   Переходы появления и ухода — в окне 120–200 мс; между ними короткое
-   удержание для читаемости (не переход движения). В покое (до и после,
+   Переходы появления и ухода — в окне движения (≤260 мс); между ними
+   короткое удержание для читаемости (не переход движения). В покое (до и после,
    fill-mode none) строка схлопнута — opacity:0, max-height:0, без полей:
    ни следа в потоке, ни отложенного сдвига лэйаута. При reduced-motion
    (animation:none) остаётся схлопнутой — данные уже сохранены. */
@@ -598,8 +615,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
+    /* Всё движение доставляется через transition и animation, включая
+       усиленные scale/translateY/height (12.1): их отключение полностью
+       гасит и transform-эффекты. Конечные значения transform (положение
+       тумблера, галочка) сохраняются — их нельзя обнулять, поэтому
+       transform:none здесь не ставится. */
     transition: none !important;
-    animation: none !important;   /* @keyframes отключены; конечные состояния остаются достижимыми */
+    animation: none !important;
     scroll-behavior: auto !important;
   }
 }
