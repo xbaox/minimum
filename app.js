@@ -163,6 +163,7 @@ function migrate(s) {
     if (!isDayKey(it.addedAt)) it.addedAt = today;
     it.type = it.type === 'weekly' ? 'weekly' : (it.type === 'param' ? 'param' : 'daily');
     it.area = it.area === 'habit' ? 'habit' : 'min';
+    if (it.type === 'weekly') it.area = 'min'; // недельный счётчик принадлежит только минимуму (инвариант 10)
     if (typeof it.active !== 'boolean') it.active = true;
     if (typeof it.name !== 'string') it.name = '';
     if (typeof it.unit !== 'string') it.unit = '';
@@ -174,9 +175,9 @@ function migrate(s) {
       it.area = 'habit'; // параметры существуют только в области привычек
       it.value = null;   // и не несут планку минимума
       it.pkind = it.pkind === 'number' ? 'number' : 'time';
-      let pv = Math.round(numOr(it.pvalue, 0));
-      if (it.pkind === 'time') pv = ((pv % 1440) + 1440) % 1440; // минуты суток
-      it.pvalue = pv;
+      let pv = numOr(it.pvalue, 0);
+      if (it.pkind === 'time') pv = ((Math.round(pv) % 1440) + 1440) % 1440; // минуты суток
+      it.pvalue = pv; // числовой порог может быть дробным — формы его не округляют
       it.pstep = Math.round(numOr(it.pstep, 0));
     }
     const g = numOr(it.goal, null);
@@ -261,9 +262,12 @@ function migrate(s) {
       s.settings.habitSeeded = true;
     }
   }
-  // рукотворный/битый calendarSince приводится тем же правилом
+  // рукотворный/битый calendarSince приводится тем же правилом; не-понедельник
+  // нормализуется вперёд — недели существуют только целиком
   if (!isDayKey(s.settings.calendarSince)) {
     s.settings.calendarSince = nextCalendarMonday(dateKeyShift(new Date(), s.settings.dayBoundary));
+  } else if (weekStartOf(s.settings.calendarSince) !== s.settings.calendarSince) {
+    s.settings.calendarSince = nextCalendarMonday(s.settings.calendarSince);
   }
 
   s.schemaVersion = SCHEMA_VERSION;
@@ -937,6 +941,10 @@ function renderHabits() {
       <h1>Привычки</h1>
     </header>`;
 
+  if (saveFailed) {
+    h += `<p class="banner static" role="status">Хранилище недоступно — отметки сейчас не сохраняются</p>`;
+  }
+
   if (total) {
     h += `
     <div class="dayline">
@@ -1105,7 +1113,9 @@ function renderReview() {
   h += `<h2>Минимум</h2>`;
   h += weekGrid(minItems);
   for (const w of store.items.filter(i => i.type === 'weekly' && i.active)) {
-    h += `<p class="line">${esc(w.name)}: ${trainCount(w.id)} из ${w.goal || 0}</p>`;
+    // счёт разбираемой недели — тот же интервал, что уйдёт в срез closeWeek
+    const n = store.weekLog.filter(e => e.itemId === w.id && e.date >= keys[0] && e.date <= keys[6]).length;
+    h += `<p class="line">${esc(w.name)}: ${n} из ${w.goal || 0}</p>`;
   }
   h += `<h2>Три закрытые недели</h2>`;
   h += consist(minItems);
@@ -1375,7 +1385,7 @@ function editForm(it) {
             <label class="field"><span>Порог</span><input class="num" type="text" inputmode="decimal" id="e-pvalue" value="${esc(it.pvalue)}"></label>
             <label class="field"><span>Единица</span><input type="text" id="e-punit" value="${esc(it.unit || '')}"></label>
           </div>`
-        : `<label class="field"><span>Порог</span><input id="e-ptime" type="time" value="${esc(fmtParam(it, it.pkind === 'time' ? it.pvalue : 0))}"></label>`}
+        : `<label class="field"><span>Порог</span><input id="e-ptime" type="time" value="${esc(it.pkind === 'time' ? fmtParam(it) : '00:00')}"></label>`}
       <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="e-pstep" value="${esc(it.pstep)}"></label>` + foot;
   }
   if (it.area === 'habit') return head + foot; // привычка: только название и подпись

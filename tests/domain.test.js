@@ -775,6 +775,11 @@ test('З9: миграция v4→v5 — calendarSince: понедельник о
   advanceDays(30);
   const twice = app.migrate(JSON.parse(JSON.stringify(once)));
   assert.equal(twice.settings.calendarSince, once.settings.calendarSince);
+  // рукотворный не-понедельник нормализуется вперёд к понедельнику
+  const odd = v4();
+  odd.schemaVersion = 5;
+  odd.settings.calendarSince = '2026-01-07'; // среда
+  assert.equal(app.migrate(odd).settings.calendarSince, '2026-01-12');
 });
 
 test('З9: переходные дни — разбор недоступен, счётчик доживает от weekStart', () => {
