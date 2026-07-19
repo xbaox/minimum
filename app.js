@@ -654,11 +654,13 @@ function habitsSteady() {
   }));
 }
 
-/* Перестановка пункта в списке (универсальная настройка блоков) */
+/* Перестановка пункта в пределах своей области (группы экрана «Пункты») */
 function moveItem(id, dir) {
   const i = store.items.findIndex(x => x.id === id);
   if (i < 0) return false;
-  const j = i + (dir === 'up' ? -1 : 1);
+  const step = dir === 'up' ? -1 : 1;
+  let j = i + step;
+  while (j >= 0 && j < store.items.length && store.items[j].area !== store.items[i].area) j += step;
   if (j < 0 || j >= store.items.length) return false;
   const t = store.items[i];
   store.items[i] = store.items[j];
@@ -778,6 +780,9 @@ const ui = {
   raiseEdit: {},   // itemId -> true, когда открыт ввод своего значения
   missOpen: {},    // itemId -> true, когда показана подпись «вчера — пропуск»
   justClosed: false,
+  addArea: 'min',       // область формы добавления: 'min' | 'habit'
+  addPkind: 'time',     // вид параметра в форме добавления
+  editPkind: null,      // переключённый вид в форме правки параметра (null — как у пункта)
   importNote: null,     // строка «Импортировано: …», исчезает при следующем действии
   renderedDayKey: null, // логический день, для которого отрисован интерфейс (инвариант 8)
   renderedTab: null,    // последняя отрисованная вкладка — скролл сбрасывается только при её смене
@@ -817,13 +822,14 @@ function valUnit(it) {
 function el(id) { return document.getElementById(id); }
 
 function renderAll() {
-  const map = { today: 'scr-today', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
+  const map = { today: 'scr-today', habits: 'scr-habits', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
   for (const [tab, id] of Object.entries(map)) el(id).hidden = tab !== ui.tab;
   document.querySelectorAll('#tabs button').forEach(b => {
     if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
   if (ui.tab === 'today') renderToday();
+  if (ui.tab === 'habits') renderHabits();
   if (ui.tab === 'review') renderReview();
   if (ui.tab === 'items') renderItems();
   if (ui.tab === 'system') renderSystem();
@@ -869,22 +875,7 @@ function renderToday() {
       if (g) h += `<p class="g-label">${esc(g)}</p>`;
       curGroup = g;
     }
-    const on = isMarked(t, it.id);
-    const miss = missedYesterday(it, t);
-    const vu = valUnit(it);
-    h += `
-      <div class="rowwrap">
-        <label class="row check${on ? ' on' : ''}">
-          <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}>
-          <span class="box" aria-hidden="true"></span>
-          <span class="txt">
-            <span class="tname">${esc(it.name)}${vu ? ` <span class="val">${esc(vu)}</span>` : ''}</span>
-            ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
-          </span>
-        </label>
-        ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-label="вчера — пропуск"><i></i></button>` : ''}
-        ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск<button type="button" class="undo" data-act="mark-yesterday" data-id="${esc(it.id)}" aria-label="отметить вчера: «${esc(it.name)}»">отметить</button></p>` : ''}
-      </div>`;
+    h += dailyRow(it, t);
   }
   h += `</div>`;
 
@@ -909,10 +900,73 @@ function renderToday() {
   el('scr-today').innerHTML = h;
 }
 
-/* ── Точечные обновления «Сегодня» (горячие пути) ──────────────
+/* Строка ежедневного пункта: чекбокс, точка-маркер, ретро-отметка —
+   общая для «Сегодня» (area min) и «Привычек» (area habit) */
+function dailyRow(it, t) {
+  const on = isMarked(t, it.id);
+  const miss = missedYesterday(it, t);
+  const vu = valUnit(it);
+  return `
+      <div class="rowwrap">
+        <label class="row check${on ? ' on' : ''}">
+          <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}>
+          <span class="box" aria-hidden="true"></span>
+          <span class="txt">
+            <span class="tname">${esc(it.name)}${vu ? ` <span class="val">${esc(vu)}</span>` : ''}</span>
+            ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
+          </span>
+        </label>
+        ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-label="вчера — пропуск"><i></i></button>` : ''}
+        ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск<button type="button" class="undo" data-act="mark-yesterday" data-id="${esc(it.id)}" aria-label="отметить вчера: «${esc(it.name)}»">отметить</button></p>` : ''}
+      </div>`;
+}
+
+/* Экран 2 — «Привычки»: только сегодняшний день программы роста */
+function renderHabits() {
+  const t = todayKey();
+  ui.renderedDayKey = t;
+  const habits = activeDaily().filter(i => i.area === 'habit');
+  const done = habits.filter(i => isMarked(t, i.id)).length;
+  const total = habits.length;
+  const pct = total ? Math.round(done / total * 100) : 0;
+  const allDone = total > 0 && done === total;
+
+  let h = `
+    <header class="page">
+      <p class="overline">Программа роста</p>
+      <h1>Привычки</h1>
+    </header>`;
+
+  if (total) {
+    h += `
+    <div class="dayline">
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <p class="bar-note${allDone ? ' ok' : ''}" aria-live="polite">${allDone ? 'Все отмечены' : `<b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
+    </div>
+    <div class="list">`;
+    for (const it of habits) h += dailyRow(it, t);
+    h += `</div>`;
+  } else {
+    h += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
+  }
+
+  const params = store.items.filter(i => i.type === 'param' && i.active);
+  if (params.length) {
+    h += `<p class="g-label">Порог недели</p>`;
+    for (const p of params) {
+      h += `<p class="line muted">${esc(p.name)} · ${esc(fmtParam(p))}</p>`;
+    }
+  }
+
+  h += `<p class="creed">Не спеши — доверься накопительному эффекту.</p>`;
+
+  el('scr-habits').innerHTML = h;
+}
+
+/* ── Точечные обновления «Сегодня» и «Привычек» (горячие пути) ──
    Существующие узлы не пересоздаются — CSS-переходы чекбокса и
    планки дня реально проигрываются. Структурные изменения идут
-   через renderToday(). */
+   через полную перерисовку экрана. */
 
 function updateDayline() {
   const t = todayKey();
@@ -930,12 +984,41 @@ function updateDayline() {
   }
 }
 
+function updateHabitsDayline() {
+  const t = todayKey();
+  const habits = activeDaily().filter(i => i.area === 'habit');
+  const done = habits.filter(i => isMarked(t, i.id)).length;
+  const total = habits.length;
+  const pct = total ? Math.round(done / total * 100) : 0;
+  const allDone = total > 0 && done === total;
+  const bar = document.querySelector('#scr-habits .bar i');
+  if (bar) bar.style.width = pct + '%';
+  const note = document.querySelector('#scr-habits .bar-note');
+  if (note) {
+    note.classList.toggle('ok', allDone);
+    note.innerHTML = allDone ? 'Все отмечены' : (total ? `<b>${done}</b>&nbsp;из&nbsp;${total}` : '');
+  }
+}
+
+/* Точечная отметка: обновляется планка того экрана, где стоит чекбокс */
 function updateTodayMark(input) {
   const on = isMarked(todayKey(), input.dataset.id);
   input.checked = on;
   const label = input.closest('label.check');
   if (label) label.classList.toggle('on', on);
-  updateDayline();
+  const scr = input.closest('section.screen');
+  if (scr && scr.id === 'scr-habits') updateHabitsDayline();
+  else updateDayline();
+}
+
+/* Дневные экраны: перерисовка и контейнер по активной вкладке */
+function renderDayScreen() {
+  if (ui.tab === 'habits') renderHabits();
+  else renderToday();
+}
+
+function dayScreenEl() {
+  return el(ui.tab === 'habits' ? 'scr-habits' : 'scr-today');
 }
 
 function updateWeekCount(id) {
@@ -983,8 +1066,9 @@ function renderReview() {
   }
 
   const keys = windowKeys();
-  const gridItems = store.items.filter(it =>
-    it.type === 'daily' && (it.active || keys.some(k => isMarked(k, it.id))));
+  const inWeek = it => it.active || keys.some(k => isMarked(k, it.id));
+  const minItems = store.items.filter(it => it.type === 'daily' && it.area === 'min' && inWeek(it));
+  const habitItems = store.items.filter(it => it.type === 'daily' && it.area === 'habit' && inWeek(it));
 
   h += `<p class="muted">Неделя ${esc(fmtShort(keys[0]))} — ${esc(fmtShort(keys[6]))}</p>`;
   const oc = currentOneChange();
@@ -992,38 +1076,41 @@ function renderReview() {
 
   // Сетка 7 дней × пункты: кружки и числа скрыты от AT (aria-hidden-обёртки
   // с display:contents), итог строки — визуально скрытым счётчиком в имени
-  h += `<div class="grid" style="--cols:${keys.length}">`;
-  h += `<span class="g-vis" aria-hidden="true"><span class="g-head"></span>` +
-    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(d => `<span class="g-head">${d}</span>`).join('') + `</span>`;
-  for (const it of gridItems) {
-    const n = keys.filter(k => isMarked(k, it.id)).length;
-    h += `<span class="g-name">${esc(it.name)}<span class="sr-only">, отмечено ${n} из 7</span></span>`;
-    h += `<span class="g-vis" aria-hidden="true">` +
-      keys.map(k => `<i class="c${isMarked(k, it.id) ? ' on' : ''}"></i>`).join('') + `</span>`;
-  }
-  h += `</div>`;
+  const weekGrid = (items) => {
+    let g = `<div class="grid" style="--cols:${keys.length}">`;
+    g += `<span class="g-vis" aria-hidden="true"><span class="g-head"></span>` +
+      ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(d => `<span class="g-head">${d}</span>`).join('') + `</span>`;
+    for (const it of items) {
+      const n = keys.filter(k => isMarked(k, it.id)).length;
+      g += `<span class="g-name">${esc(it.name)}<span class="sr-only">, отмечено ${n} из 7</span></span>`;
+      g += `<span class="g-vis" aria-hidden="true">` +
+        keys.map(k => `<i class="c${isMarked(k, it.id) ? ' on' : ''}"></i>`).join('') + `</span>`;
+    }
+    return g + `</div>`;
+  };
 
-  // Итог тренировок
+  // Консистентность за 3 последних закрытых недели
+  const consist = (items) => {
+    if (!store.reviews.length) return `<p class="muted">Закрытых недель пока нет.</p>`;
+    const last3 = store.reviews.slice(-3);
+    let c = `<div class="consist">`;
+    for (const it of items) {
+      const counts = last3.map(r => (r.perItem && r.perItem[it.id]) ? r.perItem[it.id].count : '—');
+      c += `<span class="c-name">${esc(it.name)}</span><span class="c-val">${counts.map(x => esc(x)).join(' · ')} из 7</span>`;
+    }
+    return c + `</div>`;
+  };
+
+  // Секция «Минимум»: сетка, тренировки, консистентность, повышения
+  h += `<h2>Минимум</h2>`;
+  h += weekGrid(minItems);
   for (const w of store.items.filter(i => i.type === 'weekly' && i.active)) {
     h += `<p class="line">${esc(w.name)}: ${trainCount(w.id)} из ${w.goal || 0}</p>`;
   }
-
-  // Консистентность за 3 последних закрытых недели
   h += `<h2>Три закрытые недели</h2>`;
-  if (!store.reviews.length) {
-    h += `<p class="muted">Закрытых недель пока нет.</p>`;
-  } else {
-    const last3 = store.reviews.slice(-3);
-    h += `<div class="consist">`;
-    for (const it of gridItems) {
-      const counts = last3.map(r => (r.perItem && r.perItem[it.id]) ? r.perItem[it.id].count : '—');
-      h += `<span class="c-name">${esc(it.name)}</span><span class="c-val">${counts.map(c => esc(c)).join(' · ')} из 7</span>`;
-    }
-    h += `</div>`;
-  }
+  h += consist(minItems);
 
-  // Предложения повышения
-  for (const it of gridItems) {
+  for (const it of minItems) {
     if (!raiseEligible(it)) continue;
     const sug = raiseSuggest(it.value);
     const editing = ui.raiseEdit[it.id];
@@ -1035,12 +1122,44 @@ function renderReview() {
             ? `<input class="num" id="raise-${esc(it.id)}" type="text" inputmode="decimal" value="${esc(String(sug))}">`
             : `<b>${esc(String(sug))}</b>`}
           ${it.unit ? esc(it.unit) : ''}?</p>
+        <p class="muted">Только если стало легко</p>
         <div class="btns">
           <button class="btn" data-act="raise-ok" data-id="${esc(it.id)}">Принять</button>
           ${editing ? '' : `<button class="btn quiet" data-act="raise-edit" data-id="${esc(it.id)}">Изменить</button>`}
           <button class="btn quiet" data-act="raise-later" data-id="${esc(it.id)}">Не сейчас</button>
         </div>
       </div>`;
+  }
+
+  // Секция «Привычки»: сетка той же недели, консистентность, параметры, готовность
+  h += `<h2>Привычки</h2>`;
+  if (habitItems.length) {
+    h += weekGrid(habitItems);
+    h += consist(habitItems);
+  } else {
+    h += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
+  }
+
+  for (const p of store.items.filter(i => i.type === 'param' && i.active)) {
+    const decided = store.paramDecided[p.id];
+    if (decided) {
+      h += `<p class="muted">${esc(p.name)}: ${decided.to === null
+        ? `${esc(fmtParam(p, decided.from))}, без шага`
+        : `${esc(fmtParam(p, decided.from))} → ${esc(fmtParam(p, decided.to))}`}</p>`;
+    } else {
+      h += `
+      <div class="card param">
+        <p>«${esc(p.name)} · ${esc(fmtParam(p))}» — как прошла неделя?</p>
+        <div class="btns">
+          <button class="btn" data-act="param-step" data-id="${esc(p.id)}">Шаг: → ${esc(fmtParam(p, paramStepTarget(p)))}</button>
+          <button class="btn quiet" data-act="param-keep" data-id="${esc(p.id)}">Оставить</button>
+        </div>
+      </div>`;
+    }
+  }
+
+  if (habitsSteady()) {
+    h += `<p class="muted">Привычки устойчивы 2 недели — можно добавить новую</p>`;
   }
 
   // Одно изменение
@@ -1073,6 +1192,15 @@ function barHistory(it) {
   const shown = vals.length > 6 ? ['…'].concat(vals.slice(-6)) : vals;
   const last = it.history[it.history.length - 1];
   return `<span class="hist">Планка: ${shown.map(esc).join(' → ')}${it.unit ? ' ' + esc(it.unit) : ''} · с ${esc(fmtShort(last.date))}</span>`;
+}
+
+/* История порога параметра: «Отбой: 00:00 → 23:45 · с <дата>» */
+function paramHistory(it) {
+  if (!Array.isArray(it.history) || it.history.length < 2) return '';
+  const last = it.history[it.history.length - 1];
+  const vals = it.history.map(x => fmtParam(it, x.value));
+  const shown = vals.length > 6 ? ['…'].concat(vals.slice(-6)) : vals;
+  return `<span class="hist">${esc(it.name)}: ${shown.map(esc).join(' → ')} · с ${esc(fmtShort(last.date))}</span>`;
 }
 
 /* Черновик открытой формы «Пунктов»: значения всех полей (сливаются
@@ -1130,23 +1258,31 @@ function renderItems() {
   snapshotOpenForm();
   let h = `<header class="page"><p class="overline">Настройка блоков</p><h1>Пункты</h1></header>`;
 
-  h += `<div class="list">`;
-  store.items.forEach((it, idx) => {
-    const vu = valUnit(it);
-    const meta = [vu, it.type === 'weekly' ? `цель ${it.goal || 0} / нед.` : '', (it.group || '').trim()]
-      .filter(Boolean).join(' · ');
-    h += `
+  // две группы: минимум и привычки, у каждой своя кнопка добавления
+  const groups = [
+    ['Минимум', 'min', 'Добавить пункт'],
+    ['Привычки', 'habit', 'Добавить привычку']
+  ];
+  for (const [title, area, addLabel] of groups) {
+    const items = store.items.filter(i => i.area === area);
+    h += `<h2>${title}</h2>`;
+    h += `<div class="list">`;
+    items.forEach((it, gi) => {
+      const vu = it.type === 'param' ? `порог ${fmtParam(it)}` : valUnit(it);
+      const meta = [vu, it.type === 'weekly' ? `цель ${it.goal || 0} / нед.` : '', (it.group || '').trim()]
+        .filter(Boolean).join(' · ');
+      h += `
       <div class="rowwrap${it.active ? '' : ' off'}">
         <div class="row item">
           <button class="itxt" data-act="edit-open" data-id="${esc(it.id)}" aria-label="изменить «${esc(it.name)}»">
             <span class="tname">${esc(it.name)}</span>
             ${meta ? `<span class="meta">${esc(meta)}</span>` : ''}
             ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
-            ${barHistory(it)}
+            ${it.type === 'param' ? paramHistory(it) : barHistory(it)}
           </button>
           <span class="ictl">
-            <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${idx === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
-            <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${idx === store.items.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
+            <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${gi === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
+            <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${gi === items.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
             <label class="switch" aria-label="включён: «${esc(it.name)}»">
               <input type="checkbox" data-act="toggle-active" data-id="${esc(it.id)}"${it.active ? ' checked' : ''}>
               <span></span>
@@ -1155,10 +1291,12 @@ function renderItems() {
         </div>
         ${ui.editingId === it.id ? editForm(it) : ''}
       </div>`;
-  });
-  h += `</div>`;
-
-  h += ui.addOpen ? addForm() : `<button class="btn wide" data-act="add-open">Добавить пункт</button>`;
+    });
+    h += `</div>`;
+    h += (ui.addOpen && ui.addArea === area)
+      ? addForm()
+      : `<button class="btn wide" data-act="add-open" data-area="${area}">${addLabel}</button>`;
+  }
 
   const hours = [];
   for (let i = 0; i <= 8; i++) hours.push(`<option value="${i}"${store.settings.dayBoundary === i ? ' selected' : ''}>${pad2(i)}:00</option>`);
@@ -1213,32 +1351,83 @@ function groupField(idPrefix, value) {
 }
 
 function editForm(it) {
-  return `
+  const head = `
     <div class="card form" data-form="edit" data-id="${esc(it.id)}">
       <label class="field"><span>Название</span><input type="text" id="e-name" value="${esc(it.name)}"></label>
-      <label class="field"><span>Подпись</span><input type="text" id="e-note" value="${esc(it.note || '')}" placeholder="необязательная строка под названием"></label>
-      <div class="pair">
-        <label class="field"><span>Значение</span><input class="num" type="text" inputmode="decimal" id="e-value" value="${esc(it.value)}"></label>
-        <label class="field"><span>Единица</span><input type="text" id="e-unit" value="${esc(it.unit || '')}"></label>
-      </div>
-      ${groupField('e', it.group)}
-      ${it.type === 'weekly' ? `<label class="field"><span>Цель за неделю</span><input class="num" type="text" inputmode="numeric" id="e-goal" value="${esc(it.goal)}"></label>` : ''}
+      <label class="field"><span>Подпись</span><input type="text" id="e-note" value="${esc(it.note || '')}" placeholder="необязательная строка под названием"></label>`;
+  const foot = `
       <div class="btns">
         <button class="btn primary" data-act="edit-save" data-id="${esc(it.id)}">Сохранить</button>
         <button class="btn quiet" data-act="edit-cancel">Отмена</button>
       </div>
     </div>`;
+  if (it.type === 'param') {
+    const kind = ui.editPkind || it.pkind;
+    return head + `
+      <label class="field"><span>Вид</span>
+        <select id="e-pkind" data-act="edit-pkind">
+          <option value="time"${kind !== 'number' ? ' selected' : ''}>время</option>
+          <option value="number"${kind === 'number' ? ' selected' : ''}>число</option>
+        </select>
+      </label>
+      ${kind === 'number'
+        ? `<div class="pair">
+            <label class="field"><span>Порог</span><input class="num" type="text" inputmode="decimal" id="e-pvalue" value="${esc(it.pvalue)}"></label>
+            <label class="field"><span>Единица</span><input type="text" id="e-punit" value="${esc(it.unit || '')}"></label>
+          </div>`
+        : `<label class="field"><span>Порог</span><input id="e-ptime" type="time" value="${esc(fmtParam(it, it.pkind === 'time' ? it.pvalue : 0))}"></label>`}
+      <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="e-pstep" value="${esc(it.pstep)}"></label>` + foot;
+  }
+  if (it.area === 'habit') return head + foot; // привычка: только название и подпись
+  return head + `
+      <div class="pair">
+        <label class="field"><span>Значение</span><input class="num" type="text" inputmode="decimal" id="e-value" value="${esc(it.value)}"></label>
+        <label class="field"><span>Единица</span><input type="text" id="e-unit" value="${esc(it.unit || '')}"></label>
+      </div>
+      ${groupField('e', it.group)}
+      ${it.type === 'weekly' ? `<label class="field"><span>Цель за неделю</span><input class="num" type="text" inputmode="numeric" id="e-goal" value="${esc(it.goal)}"></label>` : ''}` + foot;
 }
 
 function addForm() {
   const hint = ui.addHint
     ? `<p class="hint">Правило системы: одна новая привычка за раз. Последний пункт добавлен меньше 14 дней назад.</p>`
     : '';
-  return `
+  const head = `
     <div class="card form" data-form="add">
       ${hint}
       <label class="field"><span>Название</span><input type="text" id="f-name" placeholder="Например: чтение"></label>
-      <label class="field"><span>Подпись</span><input type="text" id="f-note" placeholder="необязательная строка под названием"></label>
+      <label class="field"><span>Подпись</span><input type="text" id="f-note" placeholder="необязательная строка под названием"></label>`;
+  const foot = `
+      <div class="btns">
+        <button class="btn primary" data-act="add-save">Добавить</button>
+        <button class="btn quiet" data-act="add-cancel">Отмена</button>
+      </div>
+    </div>`;
+  if (ui.addArea === 'habit') {
+    const isParam = ui.addType === 'param';
+    return head + `
+      <label class="field"><span>Тип</span>
+        <select id="f-type" data-act="add-type">
+          <option value="daily"${isParam ? '' : ' selected'}>привычка (ежедневная)</option>
+          <option value="param"${isParam ? ' selected' : ''}>параметр (порог недели)</option>
+        </select>
+      </label>
+      ${isParam ? `
+      <label class="field"><span>Вид</span>
+        <select id="f-pkind" data-act="add-pkind">
+          <option value="time"${ui.addPkind === 'number' ? '' : ' selected'}>время</option>
+          <option value="number"${ui.addPkind === 'number' ? ' selected' : ''}>число</option>
+        </select>
+      </label>
+      ${ui.addPkind === 'number'
+        ? `<div class="pair">
+            <label class="field"><span>Порог</span><input class="num" type="text" inputmode="decimal" id="f-pvalue" placeholder="4000"></label>
+            <label class="field"><span>Единица</span><input type="text" id="f-punit" placeholder="шаг."></label>
+          </div>`
+        : `<label class="field"><span>Порог</span><input id="f-ptime" type="time" value="00:00"></label>`}
+      <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="f-pstep" placeholder="-15"></label>` : ''}` + foot;
+  }
+  return head + `
       <div class="pair">
         <label class="field"><span>Значение</span><input class="num" type="text" inputmode="decimal" id="f-value" placeholder="10"></label>
         <label class="field"><span>Единица</span><input type="text" id="f-unit" placeholder="мин"></label>
@@ -1246,16 +1435,11 @@ function addForm() {
       ${groupField('f', '')}
       <label class="field"><span>Тип</span>
         <select id="f-type" data-act="add-type">
-          <option value="daily"${ui.addType === 'daily' ? ' selected' : ''}>ежедневный чекбокс</option>
+          <option value="daily"${ui.addType === 'weekly' ? '' : ' selected'}>ежедневный чекбокс</option>
           <option value="weekly"${ui.addType === 'weekly' ? ' selected' : ''}>недельный счётчик с целью</option>
         </select>
       </label>
-      ${ui.addType === 'weekly' ? `<label class="field"><span>Цель за неделю</span><input class="num" type="text" inputmode="numeric" id="f-goal" value="3"></label>` : ''}
-      <div class="btns">
-        <button class="btn primary" data-act="add-save">Добавить</button>
-        <button class="btn quiet" data-act="add-cancel">Отмена</button>
-      </div>
-    </div>`;
+      ${ui.addType === 'weekly' ? `<label class="field"><span>Цель за неделю</span><input class="num" type="text" inputmode="numeric" id="f-goal" value="3"></label>` : ''}` + foot;
 }
 
 /* Экран 4 — «Система» */
@@ -1310,9 +1494,9 @@ function onClick(e) {
 
     case 'miss-note': {
       ui.missOpen[id] = !ui.missOpen[id];
-      renderToday();
+      renderDayScreen();
       // вернуть фокус пересозданной кнопке — disclosure-паттерн остаётся рабочим для AT
-      const dot = [...el('scr-today').querySelectorAll('[data-act="miss-note"]')].find(d => d.dataset.id === id);
+      const dot = [...dayScreenEl().querySelectorAll('[data-act="miss-note"]')].find(d => d.dataset.id === id);
       if (dot) dot.focus();
       break;
     }
@@ -1320,8 +1504,8 @@ function onClick(e) {
     case 'mark-yesterday': {
       markYesterday(id); // guard'ы внутри; «вчера» актуален — stale-guard уже отработал
       delete ui.missOpen[id];
-      renderToday(); // структурный путь: точка исчезает
-      const cb = [...el('scr-today').querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
+      renderDayScreen(); // структурный путь: точка исчезает
+      const cb = [...dayScreenEl().querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
       if (cb) cb.focus();
       break;
     }
@@ -1356,6 +1540,9 @@ function onClick(e) {
       break;
     }
 
+    case 'param-step': if (applyParamStep(id)) renderReview(); break;
+    case 'param-keep': if (keepParam(id)) renderReview(); break;
+
     case 'close-week':
       if (closeWeek()) ui.justClosed = true;
       renderReview();
@@ -1374,40 +1561,60 @@ function onClick(e) {
       break;
     }
 
-    case 'edit-open': ui.editingId = id; ui.addOpen = false; renderItems(); break;
-    case 'edit-cancel': ui.editingId = null; renderItems(); break;
+    case 'edit-open': ui.editingId = id; ui.addOpen = false; ui.editPkind = null; renderItems(); break;
+    case 'edit-cancel': ui.editingId = null; ui.editPkind = null; renderItems(); break;
     case 'edit-save': {
       if (!item) break;
       const name = el('e-name').value.trim();
       if (name) item.name = name;
-      const rawValue = el('e-value').value;
-      if (!String(rawValue).trim()) {
-        item.value = null; // осознанная очистка: пункт остаётся чекбоксом без числа, история не трогается
-      } else {
-        const v = parsePositive(rawValue);
-        if (v !== null && v !== item.value) { item.value = v; recordBar(item, v); }
-        // невалидный ввод — старое значение сохраняется
-      }
-      item.unit = el('e-unit').value.trim();
       item.note = el('e-note').value.trim();
-      item.group = el('e-group').value.trim();
-      if (item.type === 'weekly') {
-        const g = parsePositive(el('e-goal') ? el('e-goal').value : null);
-        if (g !== null && Math.round(g) >= 1) item.goal = Math.round(g); // невалид — старая цель
-      }
+      if (item.type === 'param') {
+        const kind = el('e-pkind') && el('e-pkind').value === 'number' ? 'number' : 'time';
+        item.pkind = kind;
+        const oldPv = item.pvalue;
+        let pv = oldPv;
+        if (kind === 'time') {
+          const m = /^(\d{1,2}):(\d{2})$/.exec((el('e-ptime') ? el('e-ptime').value : '') || '');
+          if (m) pv = Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]);
+          item.unit = '';
+        } else {
+          const n = parseNum(el('e-pvalue') ? el('e-pvalue').value : '');
+          if (n !== null) pv = n; // невалид — старый порог
+          if (el('e-punit')) item.unit = el('e-punit').value.trim();
+        }
+        if (pv !== oldPv) { item.pvalue = pv; recordBar(item, pv); } // история — по общим правилам
+        const st = parseNum(el('e-pstep') ? el('e-pstep').value : '');
+        if (st !== null) item.pstep = Math.round(st);
+      } else if (item.area !== 'habit') {
+        const rawValue = el('e-value').value;
+        if (!String(rawValue).trim()) {
+          item.value = null; // осознанная очистка: пункт остаётся чекбоксом без числа, история не трогается
+        } else {
+          const v = parsePositive(rawValue);
+          if (v !== null && v !== item.value) { item.value = v; recordBar(item, v); }
+          // невалидный ввод — старое значение сохраняется
+        }
+        item.unit = el('e-unit').value.trim();
+        item.group = el('e-group').value.trim();
+        if (item.type === 'weekly') {
+          const g = parsePositive(el('e-goal') ? el('e-goal').value : null);
+          if (g !== null && Math.round(g) >= 1) item.goal = Math.round(g); // невалид — старая цель
+        }
+      } // ежедневная привычка: только название и подпись
       save();
       ui.editingId = null;
+      ui.editPkind = null;
       renderItems();
       break;
     }
 
     case 'add-open': {
       ui.addOpen = true; ui.editingId = null; ui.addType = 'daily';
-      // Подсказка «одна новая привычка за раз» — один раз, если последний пункт моложе 14 дней
-      const newest = store.items.reduce((a, b) => (!a || b.addedAt > a.addedAt) ? b : a, null);
-      ui.addHint = !!(newest && diffDays(todayKey(), newest.addedAt) < 14 &&
-        store.settings.hintShownForItemId !== newest.id);
-      if (ui.addHint) { store.settings.hintShownForItemId = newest.id; save(); }
+      ui.addArea = b.dataset.area === 'habit' ? 'habit' : 'min';
+      ui.addPkind = 'time';
+      // Подсказка «одна новая привычка за раз» видима все 14 дней после добавления пункта
+      const newest = store.items.reduce((a, x) => (!a || x.addedAt > a.addedAt) ? x : a, null);
+      ui.addHint = !!(newest && diffDays(todayKey(), newest.addedAt) < 14);
       renderItems();
       break;
     }
@@ -1415,22 +1622,53 @@ function onClick(e) {
     case 'add-save': {
       const name = el('f-name').value.trim();
       if (!name) { el('f-name').focus(); break; }
-      const type = el('f-type').value === 'weekly' ? 'weekly' : 'daily';
-      let goal = null;
-      if (type === 'weekly') {
-        const g = parsePositive(el('f-goal') ? el('f-goal').value : null);
-        goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : 3; // невалид — цель по умолчанию
+      const note = el('f-note').value.trim();
+      let item;
+      if (ui.addArea === 'habit' && ui.addType === 'param') {
+        const pkind = el('f-pkind') && el('f-pkind').value === 'number' ? 'number' : 'time';
+        let pvalue = 0;
+        if (pkind === 'time') {
+          const m = /^(\d{1,2}):(\d{2})$/.exec((el('f-ptime') ? el('f-ptime').value : '') || '');
+          if (m) pvalue = Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]);
+        } else {
+          const n = parseNum(el('f-pvalue') ? el('f-pvalue').value : '');
+          if (n !== null) pvalue = n;
+        }
+        const st = parseNum(el('f-pstep') ? el('f-pstep').value : '');
+        item = {
+          id: uid(), name, value: null,
+          unit: pkind === 'number' && el('f-punit') ? el('f-punit').value.trim() : '',
+          note, group: '',
+          type: 'param', area: 'habit', pkind, pvalue,
+          pstep: st !== null ? Math.round(st) : 0,
+          goal: null, active: true, addedAt: todayKey(), raiseAfter: 0,
+          history: [{ date: todayKey(), value: pvalue }]
+        };
+      } else if (ui.addArea === 'habit') {
+        item = {
+          id: uid(), name, value: null, unit: '', note, group: '',
+          type: 'daily', area: 'habit',
+          goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, history: []
+        };
+      } else {
+        const type = el('f-type').value === 'weekly' ? 'weekly' : 'daily';
+        let goal = null;
+        if (type === 'weekly') {
+          const g = parsePositive(el('f-goal') ? el('f-goal').value : null);
+          goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : 3; // невалид — цель по умолчанию
+        }
+        const value = parsePositive(el('f-value').value); // невалид/пусто — пункт без числа
+        item = {
+          id: uid(), name, value,
+          unit: el('f-unit').value.trim(),
+          note,
+          group: el('f-group').value.trim(),
+          type, area: 'min', goal,
+          active: true, addedAt: todayKey(), raiseAfter: 0,
+          history: (typeof value === 'number') ? [{ date: todayKey(), value }] : []
+        };
       }
-      const value = parsePositive(el('f-value').value); // невалид/пусто — пункт без числа
-      store.items.push({
-        id: uid(), name, value,
-        unit: el('f-unit').value.trim(),
-        note: el('f-note').value.trim(),
-        group: el('f-group').value.trim(),
-        type, goal,
-        active: true, addedAt: todayKey(), raiseAfter: 0,
-        history: (typeof value === 'number') ? [{ date: todayKey(), value }] : []
-      });
+      store.items.push(item);
       save();
       ui.addOpen = false;
       renderItems();
@@ -1456,7 +1694,7 @@ function onChange(e) {
   if (act === 'mark') {
     const hadFail = saveFailed;
     toggleMark(todayKey(), t.dataset.id);
-    if (saveFailed !== hadFail) renderToday(); // баннер хранилища — редкий структурный путь
+    if (saveFailed !== hadFail) renderAll(); // баннер хранилища — редкий структурный путь
     else updateTodayMark(t);
   } else if (act === 'toggle-active') {
     const item = store.items.find(i => i.id === t.dataset.id);
@@ -1480,6 +1718,12 @@ function onChange(e) {
   } else if (act === 'add-type') {
     ui.addType = t.value;
     renderItems(); // снимок/восстановление формы — внутри renderItems, цель не сбрасывается
+  } else if (act === 'add-pkind') {
+    ui.addPkind = t.value === 'number' ? 'number' : 'time';
+    renderItems();
+  } else if (act === 'edit-pkind') {
+    ui.editPkind = t.value === 'number' ? 'number' : 'time';
+    renderItems();
   } else if (t.id === 'import-file') {
     if (t.files && t.files[0]) importJSON(t.files[0]);
     t.value = '';
