@@ -679,10 +679,12 @@ test('доступность: имена тумблера и кнопок нед
   const undo = document.querySelector('[data-act="train-undo"]');
   assert.match(undo.getAttribute('aria-label'), /Тренировка/);
 
-  // тумблер активности
+  // тумблер активности пункта (в редакторе групп выше — свой тумблер «Цепочка»)
   document.querySelector('#tabs button[data-tab="items"]').click();
-  const sw = document.querySelector('label.switch');
+  const sw = document.querySelector('.row.item label.switch');
   assert.match(sw.getAttribute('aria-label'), /включён: «Умыться»/);
+  const gsw = document.querySelector('.gline label.switch');
+  assert.match(gsw.getAttribute('aria-label'), /^цепочка: «/);
 });
 
 test('доступность: сетка разбора скрыта от AT, счётчики строк — в sr-only', async () => {
@@ -1366,7 +1368,7 @@ test('привычка: степпер нормы — границы 1 и 7, с�
   assert.match(hrow.querySelector('.hcount').textContent, /из 2$/);
 });
 
-test('разбор: строки привычек — «X из N · серия M нед», «серия прервана», просто «X из N»', async () => {
+test('разбор: строки привычек — «X из N · серия M нед» либо просто «X из N»', async () => {
   const seed = dueSeed();
   const prev = prevMonday();
   const mkHabit = (id, name, norm) => ({ id, name, value: null, unit: '', type: 'daily', area: 'habit',
@@ -1382,15 +1384,15 @@ test('разбор: строки привычек — «X из N · серия M
   const scr = document.getElementById('scr-review');
   const text = scr.textContent;
   assert.match(text, /Выполненная: 5 из 5 · серия 2 нед/);
-  assert.match(text, /Прерванная: 2 из 7 · серия прервана/);
   assert.match(text, /Нулевая: 1 из 7/);
   assert.doesNotMatch(text, /Нулевая: 1 из 7 ·/); // без хвоста при нулевой серии до
 
-  // семантический тон (задача 13): «серия прервана» несёт класс .broken; выполненная/нулевая — нет
-  const broken = [...scr.querySelectorAll('.broken')];
-  assert.equal(broken.length, 1, 'ровно одна прерванная серия помечена');
-  assert.equal(broken[0].textContent, 'серия прервана');
-  assert.ok(broken[0].closest('p').textContent.startsWith('Прерванная'), '.broken именно у прерванной привычки');
+  // задача 15: строка прерывания серии упразднена вместе с тоном --warn —
+  // невыполненная неделя сообщается счётом и молчанием
+  assert.match(text, /Прерванная: 2 из 7/);
+  assert.doesNotMatch(text, /Прерванная: 2 из 7 ·/);
+  assert.doesNotMatch(text, /прервана/);
+  assert.equal(scr.querySelector('.broken'), null);
 });
 
 test('разбор: готовность к новой привычке при норме < 7', async () => {
@@ -1421,7 +1423,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 8);
+  assert.equal(snap.schemaVersion, 9);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1497,7 +1499,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 8);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, 9);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1672,7 +1674,7 @@ test('«Пункты»: кнопка листа есть в форме daily, н
   // ни в одной строке списка кнопки листа нет
   document.querySelector('[data-act="edit-cancel"]').click();
   assert.equal(document.querySelectorAll('#scr-items .row.item [data-act="item-detail"]').length, 0);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 8);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 9);
 });
 
 test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
@@ -1850,6 +1852,226 @@ test('лист детали: форма лестницы — предзапол�
   a = saved.items.find(i => i.id === idA);
   assert.equal(a.ladder, null);
   assert.equal(document.getElementById('scr-detail').querySelector('.ladder'), null);
+});
+
+/* ── Задача 15. Цепочки ────────────────────────────────────── */
+
+/* Сид с группой-цепочкой из трёх пунктов минимума */
+function chainSeed() {
+  const seed = dueSeed();
+  seed.schemaVersion = 9;
+  seed.groups = [{ name: 'Вечер', chain: true }, { name: 'Утро', chain: false }];
+  const mk = (id, name, group) => ({
+    id, name, value: null, unit: '', type: 'daily', area: 'min', goal: null, note: '', group,
+    active: true, addedAt: addKey(prevMonday(), -14), raiseAfter: 0, history: [],
+    formula: null, ladder: null, ladderLog: []
+  });
+  seed.items = [mk('c1', 'Свет', 'Вечер'), mk('c2', 'Душ', 'Вечер'), mk('c3', 'Книга', 'Вечер'),
+    mk('s1', 'Один', 'Утро'), mk('n1', 'Без группы', '')];
+  seed.days = {};
+  return seed;
+}
+
+test('цепочка: сегменты красятся при двух отметках, порядок выполнения безразличен', async () => {
+  const { document, window } = await boot({ seed: chainSeed() });
+  const scr = document.getElementById('scr-today');
+  const cb = id => [...scr.querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
+  const segs = id => [...scr.querySelectorAll('.cseg')].filter(e => e.dataset.seg === id);
+  const segOn = id => segs(id).every(e => e.classList.contains('on'));
+
+  // три пункта цепочки дают два сегмента, каждый из двух половин
+  assert.equal(scr.querySelectorAll('.chain').length, 1);
+  assert.equal(segs('c1').length, 2, 'сегмент c1→c2: низ у c1, верх у c2');
+  assert.equal(segs('c2').length, 2);
+  assert.equal(segs('c3').length, 0, 'за последним пунктом линии нет');
+  assert.equal(scr.querySelectorAll('.cseg.on').length, 0);
+
+  // одна отметка сегмент не красит
+  cb('c2').click();
+  assert.equal(segOn('c1'), false);
+  assert.equal(segOn('c2'), false);
+
+  // вторая — красит только смежный сегмент
+  cb('c1').click();
+  assert.equal(segOn('c1'), true, 'c1—c2 связаны');
+  assert.equal(segOn('c2'), false, 'c2—c3 ещё нет');
+
+  // снятие гасит
+  cb('c1').click();
+  assert.equal(segOn('c1'), false);
+
+  // порядок снизу вверх даёт тот же результат
+  cb('c3').click();
+  assert.equal(segOn('c2'), true);
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(Object.keys(saved.days[daysAgo(0)]).length, 2);
+});
+
+test('цепочка: точечное обновление не перерисовывает экран, одиночная группа линии не рисует', async () => {
+  const { document } = await boot({ seed: chainSeed() });
+  const scr = document.getElementById('scr-today');
+  const rows = [...scr.querySelectorAll('.rowwrap')];
+  const cb = id => [...scr.querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
+  const seg = [...scr.querySelectorAll('.cseg')].find(e => e.dataset.seg === 'c1');
+  const bar = scr.querySelector('.bar i');
+
+  cb('c1').click();
+  cb('c2').click();
+
+  // узлы те же — экран не перерисовывался (горячий путь, 4.4)
+  assert.equal([...scr.querySelectorAll('.rowwrap')][0], rows[0]);
+  assert.equal([...scr.querySelectorAll('.cseg')].find(e => e.dataset.seg === 'c1'), seg);
+  assert.equal(scr.querySelector('.bar i'), bar);
+  assert.equal(seg.classList.contains('on'), true);
+
+  // группа «Утро» из одного активного пункта линии не рисует
+  const soloRow = rows.find(r => r.textContent.includes('Один'));
+  assert.equal(soloRow.querySelector('.cseg'), null);
+  assert.equal(soloRow.closest('.chain'), null);
+  // пункт без группы — тоже без линии
+  const looseRow = rows.find(r => r.textContent.includes('Без группы'));
+  assert.equal(looseRow.querySelector('.cseg'), null);
+});
+
+test('цепочка: порядок групп следует store.groups, безгруппные — последними', async () => {
+  const seed = chainSeed();
+  seed.groups = [{ name: 'Утро', chain: false }, { name: 'Вечер', chain: true }]; // обратный порядок
+  const { document } = await boot({ seed });
+  const scr = document.getElementById('scr-today');
+  const labels = [...scr.querySelectorAll('.g-label')].map(x => x.textContent);
+  assert.deepEqual(labels, ['Утро', 'Вечер']);
+  const names = [...scr.querySelectorAll('.rowwrap .tname')].map(x => x.textContent.trim());
+  assert.deepEqual(names, ['Один', 'Свет', 'Душ', 'Книга', 'Без группы']); // безгруппный последним
+  // у безгруппного заголовка нет
+  const last = [...scr.querySelectorAll('.rowwrap')].pop();
+  assert.equal(last.previousElementSibling.classList.contains('g-label'), false);
+});
+
+test('цепочка: «Привычки» и «Сегодня» рендерятся с цепочкой и без неё без исключений', async () => {
+  const seed = chainSeed();
+  seed.items.push({
+    id: 'h1', name: 'Привычка', value: null, unit: '', type: 'daily', area: 'habit', normPerWeek: 7,
+    goal: null, note: '', group: 'Вечер', active: true, addedAt: addKey(prevMonday(), -14),
+    raiseAfter: 0, history: [], formula: null, ladder: null, ladderLog: []
+  });
+  const { document } = await boot({ seed });
+  for (const tab of ['today', 'habits', 'review', 'items', 'system']) {
+    document.querySelector(`#tabs button[data-tab="${tab}"]`).click();
+    assert.ok(document.getElementById('scr-' + tab).innerHTML.length > 0, tab);
+  }
+  // одинокая привычка в группе-цепочке линии не получает (4.6)
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  assert.equal(document.querySelectorAll('#scr-habits .cseg').length, 0);
+  assert.match(document.getElementById('scr-habits').textContent, /Вечер/);
+});
+
+test('редактор групп: цепочка, порядок, переименование, удаление, добавление', async () => {
+  const { document, window } = await boot({ seed: chainSeed() });
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const rowOf = name => [...document.querySelectorAll('#scr-items .grow')]
+    .find(r => r.textContent.includes(name));
+
+  // список в порядке store.groups
+  assert.deepEqual([...document.querySelectorAll('#scr-items .grow .tname')].map(x => x.textContent), ['Вечер', 'Утро']);
+
+  // тумблер цепочки
+  rowOf('Утро').querySelector('input[data-act="group-chain"]').click();
+  assert.equal(saved().groups.find(g => g.name === 'Утро').chain, true);
+
+  // порядок
+  rowOf('Утро').querySelector('[data-act="group-up"]').click();
+  assert.deepEqual(saved().groups.map(g => g.name), ['Утро', 'Вечер']);
+  assert.equal(document.querySelector('#scr-items .grow [data-act="group-up"]').disabled, true, 'первая — вверх некуда');
+
+  // переименование переписывает item.group у всех пунктов группы
+  rowOf('Вечер').querySelector('[data-act="group-rename"]').click();
+  document.getElementById('g-name').value = 'Ночь';
+  document.querySelector('[data-act="group-rename-save"]').click();
+  let s = saved();
+  assert.deepEqual(s.groups.map(g => g.name), ['Утро', 'Ночь']);
+  assert.deepEqual(s.items.filter(i => i.group === 'Ночь').map(i => i.id), ['c1', 'c2', 'c3']);
+  assert.equal(s.items.find(i => i.id === 's1').group, 'Утро'); // чужой не тронут
+
+  // пустое имя не сохраняется
+  rowOf('Ночь').querySelector('[data-act="group-rename"]').click();
+  document.getElementById('g-name').value = '   ';
+  document.querySelector('[data-act="group-rename-save"]').click();
+  assert.ok(saved().groups.find(g => g.name === 'Ночь'));
+
+  // добавление в конец
+  document.querySelector('[data-act="group-add-open"]').click();
+  document.getElementById('g-add').value = 'День';
+  document.querySelector('[data-act="group-add-save"]').click();
+  assert.deepEqual(saved().groups.map(g => g.name), ['Утро', 'Ночь', 'День']);
+
+  // удаление — вторым тапом; пункты и отметки остаются
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  [...document.querySelectorAll('#scr-today input[data-act="mark"]')].find(i => i.dataset.id === 'c1').click();
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const del = () => rowOf('Ночь').querySelector('[data-act="group-del"]');
+  assert.match(del().textContent, /^Удалить$/);
+  del().click();
+  assert.match(del().textContent, /Подтвердить удаление/);
+  assert.ok(saved().groups.find(g => g.name === 'Ночь'), 'первый тап не удаляет');
+  del().click();
+  s = saved();
+  assert.equal(s.groups.find(g => g.name === 'Ночь'), undefined);
+  assert.equal(s.items.length, 5, 'пункты остались');
+  assert.equal(s.items.filter(i => i.group === '').length, 4); // c1..c3 плюс исходный безгруппный
+  assert.equal(s.days[daysAgo(0)].c1, true, 'отметка не тронута');
+});
+
+test('поле «Модуль»: datalist из store.groups, новое имя заводит группу в конце', async () => {
+  const { document, window } = await boot({ seed: chainSeed() });
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+
+  [...document.querySelectorAll('#scr-items .row.item [data-act="edit-open"]')]
+    .find(b => b.querySelector('.tname').textContent === 'Свет').click();
+  const opts = [...document.querySelectorAll('#groups-dl option')].map(o => o.value);
+  assert.deepEqual(opts, ['Вечер', 'Утро']); // подсказки — из store.groups
+
+  document.getElementById('e-group').value = '  Ритуал  ';
+  document.querySelector('[data-act="edit-save"]').click();
+  const s = saved();
+  assert.equal(s.items.find(i => i.id === 'c1').group, 'Ритуал');
+  assert.deepEqual(s.groups.map(g => g.name), ['Вечер', 'Утро', 'Ритуал']); // заведена в конце
+  assert.equal(s.groups[2].chain, false);
+});
+
+test('черновик правки переживает уход в лист детали и возврат (14.2, вопрос 2)', async () => {
+  const { document } = await boot();
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  [...document.querySelectorAll('#scr-items .row.item [data-act="edit-open"]')]
+    .find(b => b.querySelector('.tname').textContent === 'Умыться').click();
+  document.getElementById('e-name').value = 'Новое имя';
+  document.getElementById('e-note').value = 'черновик подписи';
+
+  document.querySelector('#scr-items .card.form [data-act="item-detail"]').click();
+  assert.equal(document.getElementById('scr-detail').hidden, false);
+  // в листе своя форма — её черновик не смешивается с черновиком «Пунктов»
+  document.querySelector('[data-act="formula-open"]').click();
+  document.getElementById('fx-anchor').value = 'после зарядки';
+  document.querySelector('[data-act="formula-cancel"]').click();
+  document.querySelector('[data-act="detail-done"]').click();
+
+  assert.equal(document.getElementById('e-name').value, 'Новое имя', 'начатая правка на месте');
+  assert.equal(document.getElementById('e-note').value, 'черновик подписи');
+});
+
+test('источники: ни одного вхождения --warn и .broken', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  const js = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  for (const [name, src] of [['styles.css', css], ['app.js', js]]) {
+    assert.doesNotMatch(src, /--warn\b/, `--warn в ${name}`);
+    assert.doesNotMatch(src, /\bbroken\b/, `.broken в ${name}`);
+    assert.doesNotMatch(src, /серия прервана/, `строка «серия прервана» в ${name}`);
+  }
+  // токен цепочки на месте в обеих темах и текстом не используется
+  assert.equal((css.match(/--chain:/g) || []).length, 2);
+  assert.doesNotMatch(css, /color:\s*var\(--chain\)/, '--chain не красит текст');
+  assert.match(css, /\.cseg\.on\s*\{[^}]*background:\s*var\(--chain\)/);
 });
 
 test('баннер хранилища: появляется при сбое save и снимается первым успешным', async () => {

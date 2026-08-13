@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -113,6 +113,8 @@ function defaultStore() {
       mk('Тренировка', null, '', 'weekly', 3, TRAIN_NOTE),
       ...seedHabits(today)
     ],
+    // порядок групп на экранах; chain — связывать пункты линией (инвариант 13)
+    groups: [...new Set(Object.values(DEFAULT_GROUPS))].map(name => ({ name, chain: false })),
     days: {},          // "YYYY-MM-DD" -> { itemId: true }
     weekLog: [],       // инкременты недельных счётчиков текущей календарной недели
     reviews: [],       // закрытые недели
@@ -296,6 +298,22 @@ function migrate(s) {
     if (!ok) delete s.days[k];
   }
 
+  // группы (инвариант 13): имена уникальны и непусты, дубликаты схлопываются
+  // в первый; порядок массива — это порядок групп на экранах
+  if (!Array.isArray(s.groups)) s.groups = [];
+  {
+    const out = [];
+    const seen = new Set();
+    for (const g of s.groups) {
+      if (!g || typeof g !== 'object' || Array.isArray(g)) continue;
+      const name = typeof g.name === 'string' ? g.name.trim() : '';
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push({ name, chain: g.chain === true });
+    }
+    s.groups = out;
+  }
+
   if (!Array.isArray(s.weekLog)) s.weekLog = [];
   s.weekLog = s.weekLog.filter(e => e && typeof e === 'object' && !Array.isArray(e));
   if (!Array.isArray(s.reviews)) s.reviews = [];
@@ -359,6 +377,19 @@ function migrate(s) {
       s.settings.habitSeeded = true;
     }
     delete s.settings.hintShownForItemId;
+  }
+
+  // v8 → v9: список групп собирается из item.group в порядке первого появления
+  // в items[]. Существующий store.groups не перезаписывается; items[], days{}
+  // и reviews[] не изменяются — группа остаётся именем в пункте (инвариант 13)
+  if (s.schemaVersion < 9) {
+    const seen = new Set(s.groups.map(g => g.name));
+    for (const it of s.items) {
+      const name = (it.group || '').trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      s.groups.push({ name, chain: false });
+    }
   }
 
   // v5 → v6: недельная норма привычек (normPerWeek = 7) — достраивается
@@ -954,6 +985,111 @@ function setFormula(itemId, values) {
   return true;
 }
 
+/* ── Группы и цепочки (инвариант 13) ────────────────────────
+   Группа — запись в store.groups: имя плюс признак цепочки. Пункт хранит
+   имя группы строкой; неизвестное имя не ошибка — такой пункт просто идёт
+   без заголовка последним. */
+
+const groupNameOf = it => (it.group || '').trim();
+
+function findGroup(name) {
+  const n = String(name ?? '').trim();
+  return store.groups.find(g => g.name === n) || null;
+}
+
+/* Группа пункта или null, если имя пустое либо не заведено */
+function groupOf(it) {
+  const n = groupNameOf(it);
+  return n ? findGroup(n) : null;
+}
+
+function addGroup(name) {
+  const n = String(name ?? '').trim();
+  if (!n || findGroup(n)) return false;
+  store.groups.push({ name: n, chain: false });
+  save();
+  return true;
+}
+
+function setGroupChain(name, chain) {
+  const g = findGroup(name);
+  if (!g) return false;
+  g.chain = !!chain;
+  save();
+  return true;
+}
+
+function moveGroup(name, dir) {
+  const i = store.groups.findIndex(g => g.name === String(name ?? '').trim());
+  const j = i + (dir === 'up' ? -1 : 1);
+  if (i < 0 || j < 0 || j >= store.groups.length) return false;
+  const t = store.groups[i];
+  store.groups[i] = store.groups[j];
+  store.groups[j] = t;
+  save();
+  return true;
+}
+
+/* Переименование атомарно: имя в списке и item.group всех пунктов группы
+   меняются вместе. Пустое имя и столкновение с чужим именем не проходят. */
+function renameGroup(oldName, newName) {
+  const from = String(oldName ?? '').trim();
+  const to = String(newName ?? '').trim();
+  const g = findGroup(from);
+  if (!g || !to) return false;
+  if (to !== from && findGroup(to)) return false; // имена уникальны
+  g.name = to;
+  for (const it of store.items) if (groupNameOf(it) === from) it.group = to;
+  save();
+  return true;
+}
+
+/* Удаление группы: пункты остаются и отметки не трогаются — очищается
+   только имя группы у них */
+function deleteGroup(name) {
+  const n = String(name ?? '').trim();
+  const i = store.groups.findIndex(g => g.name === n);
+  if (i < 0) return false;
+  store.groups.splice(i, 1);
+  for (const it of store.items) if (groupNameOf(it) === n) it.group = '';
+  save();
+  return true;
+}
+
+/* Раскладка дневного экрана: сначала группы в порядке store.groups, затем
+   пункты без группы или с неизвестной — одной секцией без заголовка */
+function groupedItems(items) {
+  const out = [];
+  const known = new Set();
+  for (const g of store.groups) {
+    known.add(g.name);
+    const inGroup = items.filter(it => groupNameOf(it) === g.name);
+    if (inGroup.length) out.push({ group: g, items: inGroup });
+  }
+  const loose = items.filter(it => !known.has(groupNameOf(it)));
+  if (loose.length) out.push({ group: null, items: loose });
+  return out;
+}
+
+/* Соседи пункта по цепочке — для точечного пересчёта сегментов (4.4).
+   Цепочка живёт в пределах одного дневного экрана: та же область и тот же
+   набор активных ежедневных пунктов, что и на рендере. */
+function chainNeighbours(it) {
+  const g = groupOf(it);
+  if (!g || !g.chain) return null;
+  const list = activeDaily().filter(x => x.area === it.area && groupNameOf(x) === g.name);
+  if (list.length < 2) return null; // из одного пункта цепочки не выходит
+  const i = list.findIndex(x => x.id === it.id);
+  if (i < 0) return null;
+  return { prev: list[i - 1] || null, next: list[i + 1] || null };
+}
+
+/* Сегмент между двумя соседями окрашен, когда оба отмечены за этот день.
+   Порядок выполнения безразличен — важен только факт двух отметок. */
+function segmentOn(a, b, t) {
+  return !!(a && b && isMarked(t, a.id) && isMarked(t, b.id));
+}
+
 /* Перестановка пункта в пределах своей области (группы экрана «Пункты») */
 function moveItem(id, dir) {
   const i = store.items.findIndex(x => x.id === id);
@@ -1063,7 +1199,10 @@ function importJSON(file) {
     ui.formDraft = null;
     ui.missOpen = {};
     ui.raiseEdit = {};
-    closeDetail(); // лист детали принадлежал прежним данным
+    ui.groupRename = null;
+    ui.groupDelete = null;
+    ui.groupAdd = false;
+    closeDetail(); // лист детали принадлежал прежним данным (и чистит свой черновик)
     ui.renderedDayKey = todayKey();
     armDayTimer();
     const n = store.items.length;
@@ -1096,7 +1235,11 @@ const ui = {
   detailId: null,       // открытый лист детали пункта (поверх вкладки)
   detailForm: null,     // форма в листе: 'formula' | 'ladder' | null
   detailScroll: 0,      // позиция скролла вкладки, с которой открыт лист
-  ladderConfirm: false  // «Снять лестницу» ждёт подтверждения вторым тапом
+  ladderConfirm: false, // «Снять лестницу» ждёт подтверждения вторым тапом
+  detailDraft: null,    // черновик формы листа — отдельный слот от «Пунктов» (14.2, вопрос 2)
+  groupRename: null,    // имя группы с открытым инлайн-полем переименования
+  groupDelete: null,    // группа ждёт подтверждения удаления вторым тапом
+  groupAdd: false       // открыто поле «Добавить группу»
 };
 
 let dayTimer = null; // таймер на ближайшую границу дня
@@ -1228,17 +1371,7 @@ function renderToday() {
       <p class="bar-note${closed ? ' ok' : ''}" aria-live="polite">${closed ? 'День закрыт' : (total ? `<b>${done}</b>&nbsp;из&nbsp;${total}` : 'Нет активных пунктов')}</p>
     </div>`;
 
-  h += `<div class="list">`;
-  let curGroup = null;
-  for (const it of items) {
-    const g = (it.group || '').trim();
-    if (g !== curGroup) {
-      if (g) h += `<p class="g-label">${esc(g)}</p>`;
-      curGroup = g;
-    }
-    h += dailyRow(it, t);
-  }
-  h += `</div>`;
+  h += `<div class="list">` + groupSections(items, t, false) + `</div>`;
 
   for (const w of activeWeekly().filter(i => i.area === 'min')) {
     const n = trainCount(w.id);
@@ -1261,6 +1394,23 @@ function renderToday() {
   el('scr-today').innerHTML = h;
 }
 
+/* Секции дневного экрана: заголовок группы плюс её строки. У группы-цепочки
+   строки заворачиваются в .chain и несут сегменты линии; группа из одного
+   активного пункта линии не рисует (инвариант 13). */
+function groupSections(items, t, habit) {
+  let h = '';
+  for (const sec of groupedItems(items)) {
+    if (sec.group) h += `<p class="g-label">${esc(sec.group.name)}</p>`;
+    const chained = !!(sec.group && sec.group.chain) && sec.items.length > 1;
+    if (chained) h += `<div class="chain">`;
+    sec.items.forEach((it, i) => {
+      h += dailyRow(it, t, habit, chained ? { prev: sec.items[i - 1] || null, next: sec.items[i + 1] || null } : null);
+    });
+    if (chained) h += `</div>`;
+  }
+  return h;
+}
+
 /* Строка ежедневного пункта: чекбокс, точка-маркер, ретро-отметка —
    общая для «Сегодня» (area min) и «Привычек» (habit: true добавляет
    серию у названия и полосу текущей недели под строкой). У пункта с
@@ -1270,15 +1420,26 @@ function renderToday() {
    есть только у пунктов с лестницей или формулой, поэтому строка
    обычного пункта совпадает с версией до задачи 14 попиксельно.
    Имя чекбоксу даёт содержимое label — aria-label его только затёр бы. */
-function dailyRow(it, t, habit) {
+function dailyRow(it, t, habit, chain) {
   const on = isMarked(t, it.id);
   const miss = missedYesterday(it, t);
   const vu = valUnit(it);
   const streak = habit ? habitStreak(it) : 0; // при нуле справка скрыта
   const L = it.ladder;
   const sub = L ? L.steps[L.step] : it.note;  // ступень вместо подписи
+  // половинки сегментов цепочки: верхняя принадлежит паре (предыдущий, этот),
+  // нижняя — паре (этот, следующий); обе несут id верхнего пункта пары.
+  // Идут первыми в разметке — круг отметки закрывает линию собой.
+  let segs = '';
+  if (chain && chain.prev) {
+    segs += `<span class="cseg up${segmentOn(chain.prev, it, t) ? ' on' : ''}" data-seg="${esc(chain.prev.id)}" aria-hidden="true"></span>`;
+  }
+  if (chain && chain.next) {
+    segs += `<span class="cseg down${segmentOn(it, chain.next, t) ? ' on' : ''}" data-seg="${esc(it.id)}" aria-hidden="true"></span>`;
+  }
   return `
       <div class="rowwrap${habit ? ' hrow' : ''}">
+        ${segs}
         <label class="row check${on ? ' on' : ''}">
           <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}>
           <span class="box" aria-hidden="true"></span>
@@ -1352,9 +1513,7 @@ function renderHabits() {
       <div class="bar"><i style="width:${pct}%"></i></div>
       <p class="bar-note${allDone ? ' ok' : ''}" aria-live="polite">${allDone ? 'Все отмечены' : `сегодня <b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
     </div>
-    <div class="list">`;
-    for (const it of habits) h += dailyRow(it, t, true);
-    h += `</div>`;
+    <div class="list">` + groupSections(habits, t, true) + `</div>`;
   } else {
     h += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
   }
@@ -1422,6 +1581,24 @@ function updateHabitWeekRow(input) {
   if (hc && it) hc.textContent = `${habitWeekCount(it, weekStartOf(t))} из ${it.normPerWeek || 7}`;
 }
 
+/* Точечный пересчёт цепочки: отметка меняет ровно два смежных сегмента —
+   с предыдущим и со следующим соседом, экран не перерисовывается (4.4).
+   Узлы ищутся перебором с сверкой dataset — id пункта произволен. */
+function updateChainSegments(item, scr) {
+  const nb = chainNeighbours(item);
+  if (!nb || !scr) return;
+  const t = todayKey();
+  const paint = (upper, lower) => {
+    if (!upper || !lower) return;
+    const on = segmentOn(upper, lower, t);
+    for (const e of scr.querySelectorAll('.cseg')) {
+      if (e.dataset.seg === upper.id) e.classList.toggle('on', on);
+    }
+  };
+  paint(nb.prev, item);
+  paint(item, nb.next);
+}
+
 /* Точечная отметка: обновляется планка того экрана, где стоит чекбокс */
 function updateTodayMark(input) {
   const on = isMarked(todayKey(), input.dataset.id);
@@ -1429,6 +1606,8 @@ function updateTodayMark(input) {
   const label = input.closest('label.check');
   if (label) { label.classList.toggle('on', on); tapPop(label.querySelector('.box')); } // scale-отклик круга (12.1)
   const scr = input.closest('section.screen');
+  const item = store.items.find(i => i.id === input.dataset.id);
+  if (item) updateChainSegments(item, scr);
   if (scr && scr.id === 'scr-habits') { updateHabitsDayline(); updateHabitWeekRow(input); }
   else updateDayline();
 }
@@ -1692,10 +1871,9 @@ function renderReview() {
     for (const hb of habitItems) {
       const x = habitWeekCount(hb, keys[0]);
       const norm = hb.normPerWeek || 7;
-      let tail = '';
-      if (x >= norm) tail = ` · серия ${habitStreakFrom(hb, keys[0])} нед`;
-      // прерывание серии несёт приглушённый предупреждающий тон (отделка, задача 13)
-      else if (habitStreakFrom(hb, addDays(keys[0], -7)) > 0) tail = ` · <span class="broken">серия прервана</span>`;
+      // строка прерывания серии упразднена (задача 15): невыполненная неделя
+      // сообщается счётом «x из normPerWeek» и молчанием, без тона и оценки
+      const tail = x >= norm ? ` · серия ${habitStreakFrom(hb, keys[0])} нед` : '';
       h += `<p class="muted">${esc(hb.name)}: ${x} из ${norm}${tail}</p>`;
     }
     h += consist(habitItems);
@@ -1737,15 +1915,10 @@ function renderReview() {
 }
 
 /* Экран 3 — «Пункты и настройки» */
+/* Подсказки поля «Модуль» — из списка групп (инвариант 13): он же задаёт
+   порядок на экранах, поэтому другого источника имён у формы нет */
 function groupList() {
-  const canon = ['Тело', 'Движение', 'Сон', 'Развитие'];
-  const seen = [];
-  for (const it of store.items) {
-    const g = (it.group || '').trim();
-    if (g && !seen.includes(g)) seen.push(g);
-  }
-  for (const g of canon) if (!seen.includes(g)) seen.push(g);
-  return seen;
+  return store.groups.map(g => g.name);
 }
 
 function barHistory(it) {
@@ -1777,15 +1950,25 @@ function currentFormKey() {
   return null;
 }
 
+/* Два слота черновика (задача 15, п. 6): формы листа детали и формы
+   «Пунктов» больше не делят один. Иначе уход в лист стирал бы начатую
+   правку названия, а возврат — черновик формы листа. */
+const isDetailKey = key => key.startsWith('formula:') || key.startsWith('ladder:');
+const draftSlot = key => (isDetailKey(key) ? 'detailDraft' : 'formDraft');
+
 function snapshotOpenForm() {
   const key = currentFormKey();
-  if (!key) { ui.formDraft = null; return; }
+  if (!key) return; // ничего не открыто — оба слота живут до смены своей формы
+  const slot = draftSlot(key);
   // форма ищется на том экране, которому принадлежит ключ: лист открывается
   // поверх «Пунктов», где форма правки остаётся в DOM и стоит в разметке выше
-  const form = document.querySelector(ui.detailId ? '#scr-detail .card.form' : '#scr-items .card.form');
+  // форма группы черновиком не считается — у неё одно поле и один тап
+  const form = document.querySelector(isDetailKey(key)
+    ? '#scr-detail .card.form'
+    : '#scr-items .card.form:not([data-form="group-add"])');
   const domKey = form ? (form.dataset.form === 'add' ? 'add' : form.dataset.form + ':' + form.dataset.id) : null;
   if (domKey !== key) {
-    if (ui.formDraft && ui.formDraft.key !== key) ui.formDraft = null; // открыли другую форму
+    if (ui[slot] && ui[slot].key !== key) ui[slot] = null; // открыли другую форму
     return;
   }
   const fields = {};
@@ -1797,18 +1980,20 @@ function snapshotOpenForm() {
   const focus = (ae && form.contains(ae) && ae.id)
     ? { id: ae.id, start: ae.selectionStart ?? null, end: ae.selectionEnd ?? null }
     : null;
-  const base = (ui.formDraft && ui.formDraft.key === key) ? ui.formDraft.fields : null;
-  ui.formDraft = { key, fields: Object.assign({}, base, fields), focus };
+  const base = (ui[slot] && ui[slot].key === key) ? ui[slot].fields : null;
+  ui[slot] = { key, fields: Object.assign({}, base, fields), focus };
 }
 
 function restoreOpenForm() {
   const key = currentFormKey();
-  if (!key || !ui.formDraft || ui.formDraft.key !== key) return;
-  for (const [fid, v] of Object.entries(ui.formDraft.fields)) {
+  if (!key) return;
+  const draft = ui[draftSlot(key)];
+  if (!draft || draft.key !== key) return;
+  for (const [fid, v] of Object.entries(draft.fields)) {
     const inp = el(fid);
     if (inp) inp.value = v;
   }
-  const f = ui.formDraft.focus;
+  const f = draft.focus;
   if (f) {
     const inp = el(f.id);
     if (inp) {
@@ -1820,6 +2005,52 @@ function restoreOpenForm() {
   }
 }
 
+/* Редактор групп (задача 15): порядок, цепочка, переименование, удаление.
+   Перетаскивание — отдельная задача, здесь только стрелки. */
+function groupEditor() {
+  let h = `<h2>Группы</h2>`;
+  if (!store.groups.length) {
+    h += `<p class="muted">Групп пока нет — пункты идут одним списком.</p>`;
+  }
+  store.groups.forEach((g, i) => {
+    const renaming = ui.groupRename === g.name;
+    h += `
+      <div class="grow">
+        <div class="row gline">
+          ${renaming
+            ? `<input type="text" id="g-name" class="gname-input" value="${esc(g.name)}">`
+            : `<span class="tname">${esc(g.name)}</span>`}
+          <span class="ictl">
+            <button class="btn icon quiet" data-act="group-up" data-name="${esc(g.name)}"${i === 0 ? ' disabled' : ''} aria-label="выше: «${esc(g.name)}»">&uarr;</button>
+            <button class="btn icon quiet" data-act="group-down" data-name="${esc(g.name)}"${i === store.groups.length - 1 ? ' disabled' : ''} aria-label="ниже: «${esc(g.name)}»">&darr;</button>
+            <label class="switch" aria-label="цепочка: «${esc(g.name)}»">
+              <input type="checkbox" data-act="group-chain" data-name="${esc(g.name)}"${g.chain ? ' checked' : ''}>
+              <span></span>
+            </label>
+          </span>
+        </div>
+        <div class="btns gbtns">
+          ${renaming
+            ? `<button class="btn quiet" data-act="group-rename-save" data-name="${esc(g.name)}">Сохранить</button>
+               <button class="btn quiet" data-act="group-rename-cancel">Отмена</button>`
+            : `<button class="btn quiet" data-act="group-rename" data-name="${esc(g.name)}">Переименовать</button>
+               <button class="btn quiet" data-act="group-del" data-name="${esc(g.name)}">${ui.groupDelete === g.name ? 'Подтвердить удаление' : 'Удалить'}</button>`}
+        </div>
+      </div>`;
+  });
+  h += `<p class="muted">Цепочка связывает пункты группы линией на дневном экране. Порядок выполнения свободный.</p>`;
+  h += ui.groupAdd
+    ? `<div class="card form" data-form="group-add">
+        <label class="field"><span>Название группы</span><input type="text" id="g-add" placeholder="Например: Вечер"></label>
+        <div class="btns">
+          <button class="btn primary" data-act="group-add-save">Добавить</button>
+          <button class="btn quiet" data-act="group-add-cancel">Отмена</button>
+        </div>
+      </div>`
+    : `<button class="btn wide" data-act="group-add-open">Добавить группу</button>`;
+  return h;
+}
+
 function renderItems() {
   snapshotOpenForm();
   let h = `<header class="page"><p class="overline">Настройка блоков</p><h1>Пункты</h1></header>`;
@@ -1827,6 +2058,8 @@ function renderItems() {
     h += `<p class="flash" role="status">Сохранено</p>`;
     ui.savedFlash = false;
   }
+
+  h += groupEditor();
 
   // две группы: минимум и привычки, у каждой своя кнопка добавления
   const groups = [
@@ -2062,7 +2295,7 @@ function openDetail(id) {
   ui.detailId = id;
   ui.detailForm = null;
   ui.ladderConfirm = false;
-  ui.formDraft = null;
+  ui.detailDraft = null;
   ui.missOpen = {}; // раскрытая подпись «вчера» принадлежит дневному экрану
   renderAll();
 }
@@ -2071,7 +2304,7 @@ function closeDetail() {
   ui.detailId = null;
   ui.detailForm = null;
   ui.ladderConfirm = false;
-  ui.formDraft = null;
+  ui.detailDraft = null;
 }
 
 function onClick(e) {
@@ -2127,25 +2360,25 @@ function onClick(e) {
       if (ladderStep(id, act === 'ladder-back' ? 'back' : 'fwd')) renderAll();
       break;
 
-    case 'formula-open': ui.detailForm = 'formula'; ui.formDraft = null; renderAll(); break;
-    case 'formula-cancel': ui.detailForm = null; ui.formDraft = null; renderAll(); break;
+    case 'formula-open': ui.detailForm = 'formula'; ui.detailDraft = null; renderAll(); break;
+    case 'formula-cancel': ui.detailForm = null; ui.detailDraft = null; renderAll(); break;
     case 'formula-save': {
       const values = {};
       for (const k of FORMULA_KEYS) values[k] = el('fx-' + k) ? el('fx-' + k).value : '';
       setFormula(id, values);
       ui.detailForm = null;
-      ui.formDraft = null;
+      ui.detailDraft = null;
       renderAll();
       break;
     }
 
-    case 'ladder-open': ui.detailForm = 'ladder'; ui.ladderConfirm = false; ui.formDraft = null; renderAll(); break;
-    case 'ladder-cancel': ui.detailForm = null; ui.ladderConfirm = false; ui.formDraft = null; renderAll(); break;
+    case 'ladder-open': ui.detailForm = 'ladder'; ui.ladderConfirm = false; ui.detailDraft = null; renderAll(); break;
+    case 'ladder-cancel': ui.detailForm = null; ui.ladderConfirm = false; ui.detailDraft = null; renderAll(); break;
     case 'ladder-save': {
       setLadder(id, el('fx-steps') ? el('fx-steps').value : '');
       ui.detailForm = null;
       ui.ladderConfirm = false; // незавершённое подтверждение не переживает форму
-      ui.formDraft = null;
+      ui.detailDraft = null;
       renderAll();
       break;
     }
@@ -2154,7 +2387,7 @@ function onClick(e) {
       clearLadder(id);
       ui.ladderConfirm = false;
       ui.detailForm = null;
-      ui.formDraft = null;
+      ui.detailDraft = null;
       renderAll();
       break;
     }
@@ -2210,7 +2443,45 @@ function onClick(e) {
       break;
     }
 
-    case 'edit-open': ui.editingId = id; ui.addOpen = false; ui.editNorm = null; renderItems(); break;
+    case 'group-up':
+    case 'group-down': {
+      if (!moveGroup(b.dataset.name, act === 'group-up' ? 'up' : 'down')) break;
+      ui.groupDelete = null;
+      renderItems();
+      // фокус на кнопке того же действия и той же группы; на краю — парной
+      const find = a => [...el('scr-items').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.name === b.dataset.name);
+      let btn = find(act);
+      if (!btn || btn.disabled) btn = find(act === 'group-up' ? 'group-down' : 'group-up');
+      if (btn && !btn.disabled) btn.focus();
+      break;
+    }
+    case 'group-rename': ui.groupRename = b.dataset.name; ui.groupDelete = null; renderItems(); break;
+    case 'group-rename-cancel': ui.groupRename = null; renderItems(); break;
+    case 'group-rename-save': {
+      const inp = el('g-name');
+      if (inp) renameGroup(b.dataset.name, inp.value); // пустое или занятое имя — тихий отказ
+      ui.groupRename = null;
+      renderItems();
+      break;
+    }
+    case 'group-del': {
+      if (ui.groupDelete !== b.dataset.name) { ui.groupDelete = b.dataset.name; renderItems(); break; }
+      deleteGroup(b.dataset.name); // пункты остаются, отметки не трогаются
+      ui.groupDelete = null;
+      renderItems();
+      break;
+    }
+    case 'group-add-open': ui.groupAdd = true; ui.groupDelete = null; renderItems(); break;
+    case 'group-add-cancel': ui.groupAdd = false; renderItems(); break;
+    case 'group-add-save': {
+      const inp = el('g-add');
+      if (inp && !addGroup(inp.value)) { inp.focus(); break; } // пустое или дубль — форма остаётся
+      ui.groupAdd = false;
+      renderItems();
+      break;
+    }
+
+    case 'edit-open': ui.editingId = id; ui.addOpen = false; ui.editNorm = null; ui.groupDelete = null; renderItems(); break;
     case 'edit-cancel': ui.editingId = null; ui.editNorm = null; renderItems(); break;
 
     case 'norm-dec':
@@ -2259,6 +2530,7 @@ function onClick(e) {
         }
         item.unit = el('e-unit').value.trim();
         item.group = el('e-group').value.trim();
+        addGroup(item.group); // новое имя заводит группу в конце списка (инвариант 13)
         if (item.type === 'weekly') {
           const g = parsePositive(el('e-goal') ? el('e-goal').value : null);
           if (g !== null && Math.round(g) >= 1) item.goal = Math.round(g); // невалид — старая цель
@@ -2335,6 +2607,7 @@ function onClick(e) {
         };
       }
       store.items.push(item);
+      addGroup(item.group); // новое имя заводит группу в конце списка (инвариант 13)
       save();
       ui.addOpen = false;
       ui.savedFlash = true; // тихое подтверждение (движение, задача 12)
@@ -2371,6 +2644,9 @@ function onChange(e) {
       const wrap = t.closest('.rowwrap');
       if (wrap) wrap.classList.toggle('off', !item.active); // переход тумблера играет
     }
+  } else if (act === 'group-chain') {
+    // цепочка — свойство группы; строки дневного экрана перестраиваются целиком
+    setGroupChain(t.dataset.name, t.checked);
   } else if (act === 'boundary') {
     store.settings.dayBoundary = Number(t.value) || 0;
     save();
@@ -2462,7 +2738,10 @@ if (typeof module !== 'undefined' && module.exports) {
     // формула и лестница (инвариант 12)
     activeLadderItem, closedWeeks, itemWeekCount, ladderNorm, ladderWeeksReady,
     canStepForward, canStepBack, ladderStatus, ladderStep, ladderBlockedBy,
-    setLadder, clearLadder, setFormula, normFormula, normLadder
+    setLadder, clearLadder, setFormula, normFormula, normLadder,
+    // группы и цепочки (инвариант 13)
+    findGroup, groupOf, addGroup, setGroupChain, moveGroup, renameGroup,
+    deleteGroup, groupedItems, chainNeighbours, segmentOn, groupList
   };
 } else if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', init);
