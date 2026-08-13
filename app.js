@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -79,12 +79,14 @@ function nextCalendarMonday(k) {
 function seedHabits(today) {
   const habit = (name) => ({
     id: uid(), name, value: null, unit: '', type: 'daily', area: 'habit', normPerWeek: 7,
-    goal: null, note: '', group: '', active: true, addedAt: today, raiseAfter: 0, history: []
+    goal: null, note: '', group: '', active: true, addedAt: today, raiseAfter: 0, history: [],
+    formula: null, ladder: null, ladderLog: []
   });
   return [
     { id: uid(), name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
       pkind: 'time', pvalue: 0, pstep: -15, goal: null, note: '', group: '',
-      active: true, addedAt: today, raiseAfter: 0, history: [{ date: today, value: 0 }] },
+      active: true, addedAt: today, raiseAfter: 0, history: [{ date: today, value: 0 }],
+      formula: null, ladder: null, ladderLog: [] },
     habit('Перестать грызть ногти'),
     habit('Ловить импульс трат → алгоритм')
   ];
@@ -96,7 +98,8 @@ function defaultStore() {
     id: uid(), name, value, unit, type, area: 'min',
     goal: goal || null, note: note || '', group: DEFAULT_GROUPS[name] || '',
     active: true, addedAt: today, raiseAfter: 0,
-    history: (typeof value === 'number') ? [{ date: today, value }] : []
+    history: (typeof value === 'number') ? [{ date: today, value }] : [],
+    formula: null, ladder: null, ladderLog: []
   });
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -135,6 +138,59 @@ function numOr(v, fallback) {
     return isFinite(n) ? n : fallback;
   }
   return fallback;
+}
+
+/* ── Формула и лестница: нормализация полей (инвариант 12) ──── */
+
+/* Четыре закона в порядке отображения; на логику не влияют — только текст */
+const FORMULA_KEYS = ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof'];
+
+/* Формула из внешних данных: объект из семи строк либо null.
+   Пустая (все поля пусты после trim) — это null, а не объект пустышек. */
+function normFormula(f) {
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return null;
+  const out = {};
+  let any = false;
+  for (const k of FORMULA_KEYS) {
+    const v = typeof f[k] === 'string' ? f[k].trim() : '';
+    out[k] = v;
+    if (v) any = true;
+  }
+  return any ? out : null;
+}
+
+/* Лестница из внешних данных: непустой список ступеней, индекс в границах,
+   неделя последнего шага — понедельник или null. Без ступеней лестницы нет. */
+function normLadder(l, today) {
+  if (!l || typeof l !== 'object' || Array.isArray(l)) return null;
+  const steps = Array.isArray(l.steps)
+    ? l.steps.filter(s => typeof s === 'string').map(s => s.trim()).filter(Boolean)
+    : [];
+  if (!steps.length) return null;
+  let step = Math.round(numOr(l.step, 0));
+  if (!(step > 0)) step = 0;
+  if (step > steps.length - 1) step = steps.length - 1;
+  // рукотворный не-понедельник приводится к своему понедельнику, а не
+  // обнуляется: иначе правка данных открывала бы лишний шаг на неделе
+  const wk = l.steppedWeek;
+  return {
+    steps,
+    step,
+    steppedWeek: isDayKey(wk) ? weekStartOf(wk) : null,
+    startedAt: isDayKey(l.startedAt) ? l.startedAt : today
+  };
+}
+
+/* Журнал шагов: записи с валидным днём, неотрицательной ступенью и текстом */
+function normLadderLog(log) {
+  if (!Array.isArray(log)) return [];
+  return log
+    .filter(e => e && typeof e === 'object' && !Array.isArray(e) && isDayKey(e.date))
+    .map(e => ({
+      date: e.date,
+      step: Math.max(0, Math.round(numOr(e.step, 0))),
+      text: typeof e.text === 'string' ? e.text : ''
+    }));
 }
 
 /* Миграции схемы. При изменении структуры: поднять SCHEMA_VERSION
@@ -192,7 +248,20 @@ function migrate(s) {
       .filter(h => h && typeof h === 'object' && !Array.isArray(h) && isDayKey(h.date))
       .map(h => ({ date: h.date, value: numOr(h.value, null) }))
       .filter(h => h.value !== null);
+    // v6 → v7 (инвариант 12): формула, лестница и журнал шагов — аддитивно
+    it.formula = normFormula(it.formula);
+    it.ladder = normLadder(it.ladder, today);
+    it.ladderLog = normLadderLog(it.ladderLog);
   }
+  // лестница в приложении одна: побеждает начатая позже (строгое сравнение —
+  // при равенстве и отсутствии startedAt остаётся первая по порядку items[]),
+  // у прочих снимается; журналы, отметки и история не трогаются
+  let keeper = null;
+  for (const it of s.items) {
+    if (!it.ladder) continue;
+    if (!keeper || it.ladder.startedAt > keeper.ladder.startedAt) keeper = it;
+  }
+  for (const it of s.items) if (it.ladder && it !== keeper) it.ladder = null;
 
   // отметки: ключ — валидный день, значение — непустой объект с булевыми
   // полями (как их оставляет toggleMark); иначе запись отбрасывается
@@ -235,7 +304,9 @@ function migrate(s) {
       const shower = {
         id: uid(), name: 'Принять душ', value: null, unit: '', type: 'daily', area: 'min',
         goal: null, note: '', group: 'Тело', active: true,
-        addedAt: dateKeyShift(new Date(), s.settings.dayBoundary), raiseAfter: 0, history: []
+        addedAt: dateKeyShift(new Date(), s.settings.dayBoundary), raiseAfter: 0, history: [],
+        // вставка идёт после валидации пунктов — каноническая форма задаётся здесь
+        formula: null, ladder: null, ladderLog: []
       };
       const at = s.items.findIndex(i => i.name === 'Умыться');
       s.items.splice(at >= 0 ? at + 1 : 0, 0, shower);
@@ -271,6 +342,8 @@ function migrate(s) {
   // v5 → v6: недельная норма привычек (normPerWeek = 7) — достраивается
   // безусловной валидацией пунктов выше, отдельный шаг не нужен; миграция
   // аддитивна: days{} и reviews[] не изменяются (решение владельца 19.07.2026)
+  // v6 → v7: formula/ladder/ladderLog — тем же способом (там же, инвариант 12);
+  // ничего не сеется: стартовый текст лестницы живёт только в форме
   // рукотворный/битый calendarSince приводится тем же правилом; не-понедельник
   // нормализуется вперёд — недели существуют только целиком
   if (!isDayKey(s.settings.calendarSince)) {
@@ -668,11 +741,17 @@ function keepParam(itemId) {
    Чистые функции от days{}, normPerWeek и календаря: разбор и
    closeWeek на них не влияют, смена нормы ретроактивна. */
 
-/* Отметки привычки в календарной неделе с понедельником mon */
-function habitWeekCount(item, mon) {
+/* Отметки ежедневного пункта в календарной неделе с понедельником mon —
+   общая функция для обеих областей (инвариант 12) */
+function itemWeekCount(item, mon) {
   let n = 0;
   for (let i = 0; i < 7; i++) if (isMarked(addDays(mon, i), item.id)) n++;
   return n;
+}
+
+/* Отметки привычки в той же неделе — тонкая обёртка (инвариант 11) */
+function habitWeekCount(item, mon) {
+  return itemWeekCount(item, mon);
 }
 
 /* Серия, считая назад от недели lastWeek включительно; недели существуют
@@ -705,6 +784,145 @@ function habitsSteady() {
     const p = r.perItem && r.perItem[h.id];
     return p && p.count >= (h.normPerWeek || 7);
   }));
+}
+
+/* ── Формула и лестница (инвариант 12) ──────────────────────
+   Формула — только текст владельца, на логику не влияет. Лестница —
+   ручная прогрессия: шаг вперёд по критерию двух недель, шаг назад
+   всегда. Автоматических шагов нет. */
+
+/* Единственный пункт с лестницей — или null, если её нет ни у кого */
+function activeLadderItem() {
+  return store.items.find(i => i.ladder) || null;
+}
+
+/* До n понедельников последних ЗАВЕРШЁННЫХ календарных недель, по
+   возрастанию; текущая не входит, недели до calendarSince не существуют
+   (инвариант 2) — при нехватке список короче n. */
+function closedWeeks(n) {
+  const out = [];
+  const cur = currentWeekStart();
+  const since = store.settings.calendarSince;
+  if (!cur || !isDayKey(since)) return out;
+  for (let i = 1; i <= n; i++) {
+    const w = addDays(cur, -7 * i);
+    if (w < since) break;
+    out.unshift(w);
+  }
+  return out;
+}
+
+/* Норма недели для шага лестницы: у привычки — своя, у минимума — 6 из 7 */
+function ladderNorm(item) {
+  return item.area === 'habit' ? (item.normPerWeek || 7) : 6;
+}
+
+/* Критерий шага вперёд: обе последние завершённые недели набрали норму */
+function ladderWeeksReady(item) {
+  const weeks = closedWeeks(2);
+  if (weeks.length < 2) return false;
+  return weeks.every(w => itemWeekCount(item, w) >= ladderNorm(item));
+}
+
+function canStepForward(item) {
+  const L = item && item.ladder;
+  if (!L || L.step >= L.steps.length - 1) return false;
+  if (L.steppedWeek && L.steppedWeek === currentWeekStart()) return false;
+  return ladderWeeksReady(item);
+}
+
+/* Шаг назад доступен всегда при step > 0 — критериев не имеет */
+function canStepBack(item) {
+  return !!(item && item.ladder && item.ladder.step > 0);
+}
+
+/* Состояние лестницы одной строкой — ровно один из четырёх текстов */
+function ladderStatus(item) {
+  const L = item && item.ladder;
+  if (!L) return '';
+  if (L.step >= L.steps.length - 1) return 'Последняя ступень';
+  if (L.steppedWeek && L.steppedWeek === currentWeekStart()) return 'Шаг уже сделан на этой неделе';
+  if (ladderWeeksReady(item)) return 'Ступень держится две недели — можно шагнуть';
+  return 'Две полные недели нормы ещё не набраны';
+}
+
+/* Запись шага в журнал: повторное изменение в тот же логический день
+   заменяет последнюю запись (как в recordBar). Схлопывания «туда-обратно»
+   здесь нет — журнал фиксирует движение, а не значение планки. */
+function recordLadderStep(item) {
+  if (!Array.isArray(item.ladderLog)) item.ladderLog = [];
+  const L = item.ladder;
+  const entry = { date: todayKey(), step: L.step, text: L.steps[L.step] || '' };
+  const last = item.ladderLog[item.ladderLog.length - 1];
+  if (last && last.date === entry.date) item.ladderLog[item.ladderLog.length - 1] = entry;
+  else item.ladderLog.push(entry);
+}
+
+/* Единственный путь смены ступени; guard'ы внутри, возвращает boolean.
+   Вперёд — по критерию и с отметкой недели, назад — без условий. */
+function ladderStep(itemId, dir) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || !item.ladder) return false;
+  const L = item.ladder;
+  if (dir === 'back') {
+    if (!canStepBack(item)) return false;
+    L.step -= 1; // steppedWeek не меняется: шаг назад не тратит неделю
+  } else {
+    if (!canStepForward(item)) return false;
+    L.step += 1;
+    L.steppedWeek = currentWeekStart();
+  }
+  recordLadderStep(item);
+  save();
+  return true;
+}
+
+/* Пункт, занявший единственный слот лестницы, — или null, если слот свободен
+   (для самого носителя лестницы слот не занят) */
+function ladderBlockedBy(item) {
+  if (!item || item.ladder) return null;
+  return activeLadderItem();
+}
+
+/* Сохранение лестницы из формы: ступени по одной на строку, пустые строки
+   отбрасываются. Пустой список — лестницы нет (как пустая формула — null).
+   Правка не сбрасывает step, только подтягивает его в новые границы. */
+function setLadder(itemId, text) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || item.type !== 'daily') return false;
+  if (ladderBlockedBy(item)) return false; // слот занят другим пунктом
+  const steps = String(text ?? '').split('\n').map(s => s.trim()).filter(Boolean);
+  if (!steps.length) {
+    item.ladder = null;
+    save();
+    return true;
+  }
+  if (item.ladder) {
+    item.ladder.steps = steps;
+    if (item.ladder.step > steps.length - 1) item.ladder.step = steps.length - 1;
+  } else {
+    item.ladder = { steps, step: 0, steppedWeek: null, startedAt: todayKey() };
+  }
+  save();
+  return true;
+}
+
+/* Снятие лестницы: days{}, history и ladderLog не трогаются */
+function clearLadder(itemId) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || !item.ladder) return false;
+  item.ladder = null;
+  save();
+  return true;
+}
+
+/* Сохранение формулы: пустая (все поля пусты после trim) — null */
+function setFormula(itemId, values) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || item.type !== 'daily') return false;
+  item.formula = normFormula(values);
+  save();
+  return true;
 }
 
 /* Перестановка пункта в пределах своей области (группы экрана «Пункты») */
@@ -816,6 +1034,7 @@ function importJSON(file) {
     ui.formDraft = null;
     ui.missOpen = {};
     ui.raiseEdit = {};
+    closeDetail(); // лист детали принадлежал прежним данным
     ui.renderedDayKey = todayKey();
     armDayTimer();
     const n = store.items.length;
@@ -843,8 +1062,12 @@ const ui = {
   savedFlash: false,    // разовое тихое подтверждение сохранения формы (движение, задача 12)
   importNote: null,     // строка «Импортировано: …», исчезает при следующем действии
   renderedDayKey: null, // логический день, для которого отрисован интерфейс (инвариант 8)
-  renderedTab: null,    // последняя отрисованная вкладка — скролл сбрасывается только при её смене
-  formDraft: null       // черновик открытой формы «Пунктов»: значения, фокус, каретка
+  renderedTab: null,    // последний отрисованный вид (вкладка или лист) — скролл сбрасывается только при его смене
+  formDraft: null,      // черновик открытой формы: значения, фокус, каретка
+  detailId: null,       // открытый лист детали пункта (поверх вкладки)
+  detailForm: null,     // форма в листе: 'formula' | 'ladder' | null
+  detailScroll: 0,      // позиция скролла вкладки, с которой открыт лист
+  ladderConfirm: false  // «Снять лестницу» ждёт подтверждения вторым тапом
 };
 
 let dayTimer = null; // таймер на ближайшую границу дня
@@ -923,18 +1146,27 @@ function motionLeave(node, done) {
 
 function renderAll() {
   const map = { today: 'scr-today', habits: 'scr-habits', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
-  for (const [tab, id] of Object.entries(map)) el(id).hidden = tab !== ui.tab;
+  // лист детали идёт поверх вкладки; исчезнувший пункт (импорт) закрывает лист
+  const detail = ui.detailId ? store.items.find(i => i.id === ui.detailId) : null;
+  if (ui.detailId && !detail) closeDetail();
+  for (const [tab, id] of Object.entries(map)) el(id).hidden = detail ? true : tab !== ui.tab;
+  el('scr-detail').hidden = !detail;
   document.querySelectorAll('#tabs button').forEach(b => {
+    // вкладка возврата остаётся текущей и при открытом листе
     if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
-  if (ui.tab === 'today') renderToday();
-  if (ui.tab === 'habits') renderHabits();
-  if (ui.tab === 'review') renderReview();
-  if (ui.tab === 'items') renderItems();
-  if (ui.tab === 'system') renderSystem();
-  if (ui.renderedTab !== ui.tab) window.scrollTo(0, 0); // скролл — только при фактической смене вкладки
-  ui.renderedTab = ui.tab;
+  if (detail) renderDetail(detail);
+  else {
+    if (ui.tab === 'today') renderToday();
+    if (ui.tab === 'habits') renderHabits();
+    if (ui.tab === 'review') renderReview();
+    if (ui.tab === 'items') renderItems();
+    if (ui.tab === 'system') renderSystem();
+  }
+  const view = detail ? 'detail' : ui.tab;
+  if (ui.renderedTab !== view) window.scrollTo(0, 0); // скролл — только при фактической смене вида
+  ui.renderedTab = view;
 }
 
 /* Экран 1 — «Сегодня»: только область min (инвариант 10) */
@@ -1002,26 +1234,47 @@ function renderToday() {
 
 /* Строка ежедневного пункта: чекбокс, точка-маркер, ретро-отметка —
    общая для «Сегодня» (area min) и «Привычек» (habit: true добавляет
-   серию у названия и полосу текущей недели под строкой) */
+   серию у названия и полосу текущей недели под строкой). У пункта с
+   лестницей подписью идёт текущая ступень (инвариант 12).
+   Название снова внутри label: тап по всей строке, кроме хвоста,
+   переключает отметку. Лист детали открывает хвостовая кнопка — она
+   есть только у пунктов с лестницей или формулой, поэтому строка
+   обычного пункта совпадает с версией до задачи 14 попиксельно.
+   Имя чекбоксу даёт содержимое label — aria-label его только затёр бы. */
 function dailyRow(it, t, habit) {
   const on = isMarked(t, it.id);
   const miss = missedYesterday(it, t);
   const vu = valUnit(it);
   const streak = habit ? habitStreak(it) : 0; // при нуле справка скрыта
+  const L = it.ladder;
+  const sub = L ? L.steps[L.step] : it.note;  // ступень вместо подписи
   return `
-      <div class="rowwrap${habit ? ' hrow' : ''}">
+      <div class="rowwrap${habit ? ' hrow' : ''}${on ? ' on' : ''}">
         <label class="row check${on ? ' on' : ''}">
           <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}>
           <span class="box" aria-hidden="true"></span>
           <span class="txt">
             <span class="tname">${esc(it.name)}${vu ? ` <span class="val">${esc(vu)}</span>` : ''}${streak ? ` <span class="streak">серия ${streak} нед</span>` : ''}</span>
-            ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
+            ${sub ? `<span class="note">${esc(sub)}</span>` : ''}
           </span>
         </label>
+        ${detailTail(it)}
         ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-label="вчера — пропуск"><i></i></button>` : ''}
         ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск<button type="button" class="undo" data-act="mark-yesterday" data-id="${esc(it.id)}" aria-label="отметить вчера: «${esc(it.name)}»">отметить</button></p>` : ''}
         ${habit ? habitWeekRow(it, t) : ''}
       </div>`;
+}
+
+/* Хвостовая кнопка строки дня — вход в лист детали. Существует только у
+   пунктов, которым есть что показать (лестница или формула): иначе строка
+   не должна отличаться от прежней ни на пиксель. Несёт метку положения на
+   лестнице (muted, без акцента — инвариант 12) и шеврон, как у баннера. */
+function detailTail(it) {
+  if (!it.ladder && !it.formula) return '';
+  const L = it.ladder;
+  return `<button type="button" class="idetail" data-act="item-detail" data-id="${esc(it.id)}" aria-label="подробно: «${esc(it.name)}»">` +
+    (L ? `<span class="lstep">${L.step + 1}/${L.steps.length}</span>` : '') +
+    `<span class="chev" aria-hidden="true">&rsaquo;</span></button>`;
 }
 
 /* Полоса текущей недели привычки: визуальный язык сетки разбора (подписи
@@ -1146,6 +1399,10 @@ function updateTodayMark(input) {
   input.checked = on;
   const label = input.closest('label.check');
   if (label) { label.classList.toggle('on', on); tapPop(label.querySelector('.box')); } // scale-отклик круга (12.1)
+  const wrap = input.closest('.rowwrap');
+  // хук уровня строки: цвет названия снова даёт .check.on, но класс сохранён
+  // как единственная зацепка для оформления всей строки, включая хвост
+  if (wrap) wrap.classList.toggle('on', on);
   const scr = input.closest('section.screen');
   if (scr && scr.id === 'scr-habits') { updateHabitsDayline(); updateHabitWeekRow(input); }
   else updateDayline();
@@ -1183,6 +1440,134 @@ function updateWeekCount(id) {
   } else if (!n && hasUndo) {
     next.remove();
   }
+}
+
+/* ── Лист детали пункта (инвариант 12) ─────────────────────────
+   Экран поверх вкладки: формула, лестница и их формы. Закрывается
+   «Готово» — возврат на прежнюю вкладку с прежним скроллом. */
+
+/* Четыре закона: порядок секций, поля и подписи полей */
+const FORMULA_GROUPS = [
+  { law: 'Очевидно', fields: [['anchor', 'Якорь'], ['when', 'Время и место']] },
+  { law: 'Привлекательно', fields: [['pair', 'Сразу после'], ['identity', 'Кем становлюсь']] },
+  { law: 'Легко', fields: [['twoMin', 'Версия на 2 минуты'], ['friction', 'Что уберу с пути']] },
+  { law: 'Приятно', fields: [['proof', 'Что подтвердит день']] }
+];
+
+/* Подсказки по заполнению — только в форме (анти-требование задачи 14) */
+const FORMULA_HINTS = {
+  anchor: 'То, что уже происходит каждый день само. „После того как поставлю телефон на зарядку“ — якорь. „Вечером“ — не якорь.',
+  when: 'Одно время, одно место. Чем конкретнее, тем меньше решений вечером.',
+  pair: 'Что приятного идёт следом, чтобы вечер не был про запрет. Не еда и не покупка.',
+  identity: 'От лица человека, а не результата. Не „хочу высыпаться“, а „я человек, который ложится вовремя“. Каждая отметка — голос за это.',
+  twoMin: 'Урежь до того, что стыдно не сделать. Не „уснуть в 23:30“, а „в 23:30 быть в кровати“. Уснуть — не твоё дело, лечь — твоё.',
+  friction: 'Одно физическое препятствие. Зарядка в коридоре работает сильнее любого намерения.',
+  proof: 'Одно наблюдаемое действие, не ощущение. Отметка в приложении уже считается — допиши, если нужно ещё.'
+};
+
+/* Стартовый текст лестницы: только предзаполнение формы, в migrate не сеется */
+const LADDER_START = [
+  'В 23:30 быть в кровати. Телефон — на зарядке вне спальни.',
+  '+ 10 минут без экрана до отбоя.',
+  '+ отбой на 15 минут раньше.',
+  '+ вечерний ритуал 10 минут: свет приглушён, душ или растяжка.',
+  '+ подъём в одно время, включая выходные.'
+].join('\n');
+
+/* Журнал шагов типографской строкой по образцу barHistory: «Ступень: 1 → 2
+   → 3 · с <дата>». Показываются последние 6 переходов (более ранние — «…»),
+   дата — первой записи журнала: она отмечает начало пути целиком, а не
+   начало показанного отрезка. Без записей строки нет; только в листе. */
+function ladderHistory(it) {
+  if (!Array.isArray(it.ladderLog) || !it.ladderLog.length) return '';
+  const nums = it.ladderLog.map(e => String(e.step + 1)); // ступени человеку — с единицы
+  const shown = nums.length > 6 ? ['…'].concat(nums.slice(-6)) : nums;
+  return `<p class="lhist">Ступень: ${shown.map(esc).join(' → ')} · с ${esc(fmtShort(it.ladderLog[0].date))}</p>`;
+}
+
+function renderDetail(it) {
+  snapshotOpenForm();
+  const meta = [valUnit(it), (it.group || '').trim()].filter(Boolean).join(' · ');
+  let h = `
+    <header class="page">
+      <h1 class="dtitle">${esc(it.name)}</h1>
+      ${meta ? `<p class="muted">${esc(meta)}</p>` : ''}
+      ${it.note ? `<p class="muted">${esc(it.note)}</p>` : ''}
+    </header>`;
+
+  const L = it.ladder;
+  if (L) {
+    h += `<h2>Лестница</h2>`;
+    h += `<ol class="ladder">` + L.steps.map((s, i) =>
+      `<li${i === L.step ? ' class="cur"' : ''}>${esc(s)}${i === L.step ? `<span class="sr-only"> — текущая ступень</span>` : ''}</li>`).join('') + `</ol>`;
+    h += `
+      <div class="btns">
+        <button class="btn primary" data-act="ladder-fwd" data-id="${esc(it.id)}"${canStepForward(it) ? '' : ' disabled'}>Шагнуть</button>
+        <button class="btn quiet" data-act="ladder-back" data-id="${esc(it.id)}"${canStepBack(it) ? '' : ' disabled'}>Назад</button>
+      </div>
+      <p class="muted">${esc(ladderStatus(it))}</p>${ladderHistory(it)}`;
+  }
+
+  // форма формулы правит те же поля — читаемый список на это время уступает ей место
+  h += `<h2>Формула</h2>`;
+  if (ui.detailForm === 'formula') {
+    h += formulaForm(it);
+  } else {
+    const F = it.formula;
+    for (const g of FORMULA_GROUPS) {
+      h += `<p class="overline">${g.law}</p>`;
+      for (const [key, label] of g.fields) {
+        const v = F && F[key] ? F[key] : '';
+        h += `<p class="fline"><span class="fkey">${label}</span>` +
+          (v ? `<span class="fval">${esc(v)}</span>` : `<span class="fval empty">— не заполнено</span>`) + `</p>`;
+      }
+    }
+    h += `<div class="btns"><button class="btn quiet" data-act="formula-open" data-id="${esc(it.id)}">Изменить</button></div>`;
+  }
+
+  h += ui.detailForm === 'ladder'
+    ? ladderForm(it)
+    : `<div class="btns dfoot"><button class="btn quiet" data-act="ladder-open" data-id="${esc(it.id)}">Настроить лестницу</button></div>`;
+
+  h += `<button class="btn primary wide" data-act="detail-done">Готово</button>`;
+
+  el('scr-detail').innerHTML = h;
+  restoreOpenForm();
+}
+
+function formulaForm(it) {
+  const F = it.formula || {};
+  let h = `<div class="card form formula" data-form="formula" data-id="${esc(it.id)}">`;
+  for (const g of FORMULA_GROUPS) {
+    h += `<p class="overline">${g.law}</p>`;
+    for (const [key, label] of g.fields) {
+      h += `
+      <label class="field"><span>${label}</span><input type="text" id="fx-${key}" value="${esc(F[key] || '')}"></label>
+      <p class="hint">${esc(FORMULA_HINTS[key])}</p>`;
+    }
+  }
+  return h + `
+      <div class="btns">
+        <button class="btn primary" data-act="formula-save" data-id="${esc(it.id)}">Сохранить</button>
+        <button class="btn quiet" data-act="formula-cancel">Отмена</button>
+      </div>
+    </div>`;
+}
+
+function ladderForm(it) {
+  const busy = ladderBlockedBy(it); // слот занят другим пунктом
+  const text = it.ladder ? it.ladder.steps.join('\n') : (busy ? '' : LADDER_START);
+  return `
+    <div class="card form ladder" data-form="ladder" data-id="${esc(it.id)}">
+      ${busy ? `<p class="muted">Лестница уже есть у пункта «${esc(busy.name)}». Снимите её там, чтобы начать здесь.</p>` : ''}
+      <label class="field"><span>Ступени — по одной на строку</span>
+        <textarea id="fx-steps" rows="6"${busy ? ' disabled' : ''}>${esc(text)}</textarea></label>
+      <div class="btns">
+        <button class="btn primary" data-act="ladder-save" data-id="${esc(it.id)}"${busy ? ' disabled' : ''}>Сохранить</button>
+        <button class="btn quiet" data-act="ladder-cancel">Отмена</button>
+        ${it.ladder ? `<button class="btn quiet" data-act="ladder-clear" data-id="${esc(it.id)}">${ui.ladderConfirm ? 'Подтвердить снятие' : 'Снять лестницу'}</button>` : ''}
+      </div>
+    </div>`;
 }
 
 /* Экран 2 — «Разбор недели» */
@@ -1361,6 +1746,7 @@ function paramHistory(it) {
    поле и позиция каретки. Восстанавливается при каждом renderItems,
    пока открыта та же форма. */
 function currentFormKey() {
+  if (ui.detailId !== null && ui.detailForm) return ui.detailForm + ':' + ui.detailId; // формы листа детали
   if (ui.addOpen) return 'add';
   if (ui.editingId !== null) return 'edit:' + ui.editingId;
   return null;
@@ -1369,14 +1755,14 @@ function currentFormKey() {
 function snapshotOpenForm() {
   const key = currentFormKey();
   if (!key) { ui.formDraft = null; return; }
-  const form = document.querySelector('#scr-items .card.form');
-  const domKey = form ? (form.dataset.form === 'add' ? 'add' : 'edit:' + form.dataset.id) : null;
+  const form = document.querySelector('.card.form'); // одновременно открыта только одна
+  const domKey = form ? (form.dataset.form === 'add' ? 'add' : form.dataset.form + ':' + form.dataset.id) : null;
   if (domKey !== key) {
     if (ui.formDraft && ui.formDraft.key !== key) ui.formDraft = null; // открыли другую форму
     return;
   }
   const fields = {};
-  for (const inp of form.querySelectorAll('input[id], select[id]')) {
+  for (const inp of form.querySelectorAll('input[id], select[id], textarea[id]')) {
     if (inp.dataset.act) continue; // управляемые ui-состоянием контролы (select типа) — не черновик
     fields[inp.id] = inp.value;
   }
@@ -1438,6 +1824,7 @@ function renderItems() {
             ${it.type === 'param' ? paramHistory(it) : barHistory(it)}
           </button>
           <span class="ictl">
+            ${it.type === 'daily' ? `<button class="btn icon quiet" data-act="item-detail" data-id="${esc(it.id)}" aria-label="подробно: «${esc(it.name)}»">&rsaquo;</button>` : ''}
             <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${gi === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
             <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${gi === items.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
             <label class="switch" aria-label="включён: «${esc(it.name)}»">
@@ -1511,7 +1898,8 @@ function editForm(it) {
   const head = `
     <div class="card form" data-form="edit" data-id="${esc(it.id)}">
       <label class="field"><span>Название</span><input type="text" id="e-name" value="${esc(it.name)}"></label>
-      <label class="field"><span>Подпись</span><input type="text" id="e-note" value="${esc(it.note || '')}" placeholder="необязательная строка под названием"></label>`;
+      <label class="field"><span>Подпись</span><input type="text" id="e-note" value="${esc(it.note || '')}" placeholder="необязательная строка под названием"></label>
+      ${it.ladder ? `<p class="hint">Пока у пункта есть лестница, на дневных экранах вместо подписи показывается текущая ступень. Подпись видна в листе пункта.</p>` : ''}`;
   const foot = `
       <div class="btns">
         <button class="btn primary" data-act="edit-save" data-id="${esc(it.id)}">Сохранить</button>
@@ -1637,6 +2025,24 @@ function parsePositive(v) {
   return n !== null && n > 0 ? n : null;
 }
 
+/* Лист детали: открытие запоминает позицию вкладки, закрытие её возвращает */
+function openDetail(id) {
+  ui.detailScroll = window.scrollY || 0;
+  ui.detailId = id;
+  ui.detailForm = null;
+  ui.ladderConfirm = false;
+  ui.formDraft = null;
+  ui.missOpen = {}; // раскрытая подпись «вчера» принадлежит дневному экрану
+  renderAll();
+}
+
+function closeDetail() {
+  ui.detailId = null;
+  ui.detailForm = null;
+  ui.ladderConfirm = false;
+  ui.formDraft = null;
+}
+
 function onClick(e) {
   const b = e.target.closest('[data-act]');
   if (!b) return;
@@ -1670,6 +2076,55 @@ function onClick(e) {
       renderDayScreen(); // структурный путь: точка исчезает
       const cb = [...dayScreenEl().querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
       if (cb) cb.focus();
+      break;
+    }
+
+    case 'item-detail':
+      if (item && item.type === 'daily') openDetail(id);
+      break;
+
+    case 'detail-done': {
+      const y = ui.detailScroll;
+      closeDetail();
+      renderAll();
+      window.scrollTo(0, y); // прежняя вкладка с прежним скроллом
+      break;
+    }
+
+    case 'ladder-fwd':
+    case 'ladder-back':
+      if (ladderStep(id, act === 'ladder-back' ? 'back' : 'fwd')) renderAll();
+      break;
+
+    case 'formula-open': ui.detailForm = 'formula'; ui.formDraft = null; renderAll(); break;
+    case 'formula-cancel': ui.detailForm = null; ui.formDraft = null; renderAll(); break;
+    case 'formula-save': {
+      const values = {};
+      for (const k of FORMULA_KEYS) values[k] = el('fx-' + k) ? el('fx-' + k).value : '';
+      setFormula(id, values);
+      ui.detailForm = null;
+      ui.formDraft = null;
+      renderAll();
+      break;
+    }
+
+    case 'ladder-open': ui.detailForm = 'ladder'; ui.ladderConfirm = false; ui.formDraft = null; renderAll(); break;
+    case 'ladder-cancel': ui.detailForm = null; ui.ladderConfirm = false; ui.formDraft = null; renderAll(); break;
+    case 'ladder-save': {
+      setLadder(id, el('fx-steps') ? el('fx-steps').value : '');
+      ui.detailForm = null;
+      ui.ladderConfirm = false; // незавершённое подтверждение не переживает форму
+      ui.formDraft = null;
+      renderAll();
+      break;
+    }
+    case 'ladder-clear': {
+      if (!ui.ladderConfirm) { ui.ladderConfirm = true; renderAll(); break; } // подтверждение вторым тапом
+      clearLadder(id);
+      ui.ladderConfirm = false;
+      ui.detailForm = null;
+      ui.formDraft = null;
+      renderAll();
       break;
     }
 
@@ -1945,6 +2400,7 @@ async function init() {
     b.addEventListener('click', () => {
       ui.importNote = null;
       if (b.dataset.tab !== ui.tab) { ui.missOpen = {}; ui.raiseEdit = {}; }
+      closeDetail(); // таб-бар уводит с листа детали, черновик формы не переносится
       ui.tab = b.dataset.tab;
       if (!syncDay()) renderAll(); // при смене дня syncDay уже перерисовал новую вкладку
     }));
@@ -1971,7 +2427,11 @@ if (typeof module !== 'undefined' && module.exports) {
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, recordBar, parsePositive, isDayKey, load,
-    mirrorRead, mirrorWrite, flushMirror
+    mirrorRead, mirrorWrite, flushMirror,
+    // формула и лестница (инвариант 12)
+    activeLadderItem, closedWeeks, itemWeekCount, ladderNorm, ladderWeeksReady,
+    canStepForward, canStepBack, ladderStatus, ladderStep, ladderBlockedBy,
+    setLadder, clearLadder, setFormula, normFormula, normLadder
   };
 } else if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', init);

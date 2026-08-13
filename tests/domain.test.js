@@ -398,7 +398,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 6);
+  assert.equal(m.schemaVersion, 7);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -429,7 +429,7 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 6);
+    assert.equal(m.schemaVersion, 7);
     assert.equal(Array.isArray(m.items), true);
     assert.equal(m.items.length, 10); // дефолтный набор: 7 минимум + 3 привычки
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);
@@ -546,7 +546,7 @@ test('З2: мусорный schemaVersion трактуется как v1 — в�
   const src = v1Store();
   src.schemaVersion = 'мусор';
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 6);
+  assert.equal(m.schemaVersion, 7);
   assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
   assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
@@ -574,7 +574,7 @@ test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпоте
     ]
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 6);
+  assert.equal(m.schemaVersion, 7);
   assert.equal(m.reviews[0].weekStart, '2026-06-01');
   assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
@@ -679,7 +679,7 @@ test('З4: миграция v3→v4 — exportedAt с мягким дефолт�
     settings: { dayBoundary: 4, hintShownForItemId: null }
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 6);
+  assert.equal(m.schemaVersion, 7);
   assert.equal(m.settings.exportedAt, null);
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
   assert.deepEqual(again, m);
@@ -1083,7 +1083,7 @@ test('З11: миграция v6 — норма достроена и валид�
     settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
   };
   const m = app.migrate(v5);
-  assert.equal(m.schemaVersion, 6);
+  assert.equal(m.schemaVersion, 7);
   assert.equal(m.items.find(i => i.id === 'h1').normPerWeek, 7); // достроена умолчанием
   assert.equal(m.items.find(i => i.id === 'h2').normPerWeek, 7); // мусор → умолчание
   assert.equal(m.items.find(i => i.id === 'h3').normPerWeek, 1); // к ближайшему допустимому
@@ -1152,7 +1152,7 @@ test('З10: hintShownForItemId мёртв — нет в defaultStore, v5-миг�
     pendingRaises: [], draftOneChange: '', weekStart: '2026-07-13',
     settings: { dayBoundary: 4, hintShownForItemId: 'x1', exportedAt: null }
   });
-  assert.equal(m.schemaVersion, 6);
+  assert.equal(m.schemaVersion, 7);
   assert.equal('hintShownForItemId' in m.settings, false);
 });
 
@@ -1198,6 +1198,367 @@ test('З7: currentOneChange — null без записей, при пустот�
   assert.equal(app.currentOneChange(), null);          // поля нет
   s.reviews.push({ oneChange: '  меньше сахара  ' });
   assert.equal(app.currentOneChange(), 'меньше сахара'); // trim, берётся последний
+});
+
+/* ── Задача 14. Формула и лестница (инвариант 12) ──────────── */
+
+/* Привычка с двумя завершёнными неделями по норме — база для шага вперёд */
+function ladderReadyHabit() {
+  const s = freshStore();
+  calendarPast(s);
+  const h = s.items.find(i => i.type === 'daily' && i.area === 'habit');
+  const prev = app.previousWeekStart();
+  markWeek(h.id, prev, 7);
+  markWeek(h.id, app.addDays(prev, -7), 7);
+  return { s, h };
+}
+
+test('З14: activeLadderItem — пусто, вторая лестница невозможна, снятие освобождает слот', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const [a, b] = s.items.filter(i => i.type === 'daily' && i.area === 'min');
+
+  assert.equal(app.activeLadderItem(), null); // свежий store — лестницы нет ни у кого
+
+  assert.equal(app.setLadder(a.id, 'раз\nдва'), true);
+  assert.equal(app.activeLadderItem().id, a.id);
+  assert.equal(app.ladderBlockedBy(a), null);   // для носителя слот не занят
+  assert.equal(app.ladderBlockedBy(b).id, a.id);
+
+  assert.equal(app.setLadder(b.id, 'три'), false); // вторую создать нельзя
+  assert.equal(b.ladder, null);
+  assert.equal(app.activeLadderItem().id, a.id);
+
+  assert.equal(app.clearLadder(a.id), true);
+  assert.equal(app.activeLadderItem(), null);
+  assert.equal(app.setLadder(b.id, 'три\nчетыре'), true); // слот освободился
+  assert.equal(app.activeLadderItem().id, b.id);
+});
+
+test('З14: шаг вперёд — критерий двух недель, одна неделя на шаг, последняя ступень', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const { s, h } = ladderReadyHabit();
+  const prev = app.previousWeekStart();
+  app.setLadder(h.id, 'раз\nдва\nтри');
+
+  assert.equal(app.canStepForward(h), true);
+  assert.equal(app.ladderStatus(h), 'Ступень держится две недели — можно шагнуть');
+
+  // недобор нормы хотя бы в одной из двух недель закрывает шаг
+  app.toggleMark(prev, h.id); // W−1 стала 6 из 7 при норме 7
+  assert.equal(app.canStepForward(h), false);
+  assert.equal(app.ladderStatus(h), 'Две полные недели нормы ещё не набраны');
+  app.toggleMark(prev, h.id);
+  app.toggleMark(app.addDays(prev, -7), h.id); // теперь недобор в W−2
+  assert.equal(app.canStepForward(h), false);
+  app.toggleMark(app.addDays(prev, -7), h.id);
+  assert.equal(app.canStepForward(h), true);
+
+  // успешный шаг: индекс вперёд и неделя отмечена
+  assert.equal(app.ladderStep(h.id, 'fwd'), true);
+  assert.equal(h.ladder.step, 1);
+  assert.equal(h.ladder.steppedWeek, app.currentWeekStart());
+
+  // второй шаг на той же неделе недоступен
+  assert.equal(app.canStepForward(h), false);
+  assert.equal(app.ladderStatus(h), 'Шаг уже сделан на этой неделе');
+  assert.equal(app.ladderStep(h.id, 'fwd'), false);
+  assert.equal(h.ladder.step, 1);
+
+  // новая неделя открывает шаг снова; на последней ступени шага нет
+  advanceDays(7);
+  markWeek(h.id, app.previousWeekStart(), 7); // прошедшая неделя тоже по норме
+  assert.equal(app.canStepForward(h), true);
+  assert.equal(app.ladderStep(h.id, 'fwd'), true);
+  assert.equal(h.ladder.step, 2);
+  assert.equal(app.canStepForward(h), false);
+  assert.equal(app.ladderStatus(h), 'Последняя ступень');
+  assert.equal(s.items.find(i => i.id === h.id).ladder.step, 2);
+});
+
+test('З14: шаг вперёд у минимума — норма 6 из 7', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
+  const prev = app.previousWeekStart();
+  app.setLadder(m.id, 'раз\nдва');
+  assert.equal(app.ladderNorm(m), 6);
+
+  markWeek(m.id, prev, 6);
+  markWeek(m.id, app.addDays(prev, -7), 5);
+  assert.equal(app.canStepForward(m), false); // 5 из 7 в W−2
+  app.toggleMark(app.addDays(prev, -7 + 5), m.id); // добор до 6
+  assert.equal(app.canStepForward(m), true);
+});
+
+test('З14: шаг назад — всегда при step > 0, steppedWeek не меняется, на нуле недоступен', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const { h } = ladderReadyHabit();
+  app.setLadder(h.id, 'раз\nдва\nтри');
+  app.ladderStep(h.id, 'fwd');
+  const week = h.ladder.steppedWeek;
+  assert.equal(h.ladder.step, 1);
+
+  assert.equal(app.canStepBack(h), true);
+  assert.equal(app.ladderStep(h.id, 'back'), true);
+  assert.equal(h.ladder.step, 0);
+  assert.equal(h.ladder.steppedWeek, week); // шаг назад неделю не тратит
+
+  assert.equal(app.canStepBack(h), false);
+  assert.equal(app.ladderStep(h.id, 'back'), false);
+  assert.equal(h.ladder.step, 0);
+
+  // критериев у шага назад нет: без единой отметки он всё равно доступен
+  const s2 = freshStore();
+  const it = s2.items.find(i => i.type === 'daily');
+  app.setLadder(it.id, 'а\nб\nв');
+  it.ladder.step = 2;
+  assert.equal(app.canStepForward(it), false); // недель нет вовсе
+  assert.equal(app.ladderStep(it.id, 'back'), true);
+  assert.equal(it.ladder.step, 1);
+});
+
+test('З14: ladderLog — записи разных дней копятся, повтор в тот же день заменяется', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const it = s.items.find(i => i.type === 'daily');
+  app.setLadder(it.id, 'раз\nдва\nтри\nчетыре');
+  it.ladder.step = 3;
+
+  app.ladderStep(it.id, 'back'); // день 1: → «три»
+  assert.equal(it.ladderLog.length, 1);
+  assert.deepEqual(it.ladderLog[0], { date: app.todayKey(), step: 2, text: 'три' });
+
+  app.ladderStep(it.id, 'back'); // тот же логический день: запись заменена
+  assert.equal(it.ladderLog.length, 1);
+  assert.deepEqual(it.ladderLog[0], { date: app.todayKey(), step: 1, text: 'два' });
+
+  advanceDays(1);
+  app.ladderStep(it.id, 'back'); // новый день: новая запись
+  assert.equal(it.ladderLog.length, 2);
+  assert.deepEqual(it.ladderLog[1], { date: app.todayKey(), step: 0, text: 'раз' });
+});
+
+test('З14: снятие лестницы не трогает days, history и ladderLog', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const it = s.items.find(i => i.name === 'Пешком'); // несёт history планки
+  markWeek(it.id, app.previousWeekStart(), 4);
+  app.toggleMark(app.todayKey(), it.id);
+  app.setLadder(it.id, 'раз\nдва');
+  it.ladder.step = 1;
+  app.ladderStep(it.id, 'back');
+
+  const daysBefore = JSON.stringify(s.days);
+  const histBefore = JSON.stringify(it.history);
+  const logBefore = JSON.stringify(it.ladderLog);
+
+  assert.equal(app.clearLadder(it.id), true);
+
+  assert.equal(it.ladder, null);
+  assert.equal(JSON.stringify(s.days), daysBefore);
+  assert.equal(JSON.stringify(it.history), histBefore);
+  assert.equal(JSON.stringify(it.ladderLog), logBefore);
+  assert.equal(app.clearLadder(it.id), false); // снимать нечего
+});
+
+test('З14: правка ступеней не сбрасывает step и подтягивает его в границы', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const it = s.items.find(i => i.type === 'daily');
+  app.setLadder(it.id, 'а\nб\nв\nг');
+  it.ladder.step = 3;
+
+  app.setLadder(it.id, 'а\nб\nв\nг\nд'); // список вырос — индекс на месте
+  assert.equal(it.ladder.step, 3);
+
+  app.setLadder(it.id, ' а \n\n б \n'); // пустые строки отбрасываются, список короче
+  assert.deepEqual(it.ladder.steps, ['а', 'б']);
+  assert.equal(it.ladder.step, 1); // step = steps.length − 1
+
+  app.setLadder(it.id, 'а\nб\nв'); // возврат длины — индекс не сбрасывается
+  assert.equal(it.ladder.step, 1);
+
+  // пустой текст — лестницы нет (как пустая формула — null)
+  assert.equal(app.setLadder(it.id, '   \n  '), true);
+  assert.equal(it.ladder, null);
+});
+
+test('З14: closedWeeks — текущая не входит, эпоха ограничивает, при нехватке короче n', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const cur = app.currentWeekStart();
+
+  assert.deepEqual(app.closedWeeks(3),
+    [app.addDays(cur, -21), app.addDays(cur, -14), app.addDays(cur, -7)]); // по возрастанию
+  assert.equal(app.closedWeeks(3).includes(cur), false); // текущая не входит
+
+  s.settings.calendarSince = app.addDays(cur, -14);
+  assert.deepEqual(app.closedWeeks(5), [app.addDays(cur, -14), app.addDays(cur, -7)]); // меньше n
+  s.settings.calendarSince = cur;
+  assert.deepEqual(app.closedWeeks(3), []); // завершённых недель эпохи ещё нет
+
+  s.settings.calendarSince = app.addDays(cur, 7); // переходные дни: недель нет вовсе
+  assert.deepEqual(app.closedWeeks(2), []);
+});
+
+test('З14: itemWeekCount — совпадает с habitWeekCount и считает пункты минимума', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const prev = app.previousWeekStart();
+  const h = s.items.find(i => i.type === 'daily' && i.area === 'habit');
+  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
+
+  markWeek(h.id, prev, 5);
+  markWeek(m.id, prev, 6);
+  assert.equal(app.itemWeekCount(h, prev), app.habitWeekCount(h, prev));
+  assert.equal(app.itemWeekCount(h, prev), 5);
+  assert.equal(app.itemWeekCount(m, prev), 6);
+  assert.equal(app.itemWeekCount(m, app.addDays(prev, -7)), 0); // чужая неделя
+  assert.equal(app.itemWeekCount(m, app.currentWeekStart()), 0);
+});
+
+test('З14: миграция v6→v7 — поля достроены, лестница одна, days и reviews не тронуты', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const days = { '2026-07-10': { i1: true }, '2026-07-11': { i1: true } };
+  const reviews = [{ closedAt: 1, week: '2026-07-06', keys: [], perItem: { i1: { count: 2 } }, trainings: {}, oneChange: '', raises: [], params: [] }];
+  const v6 = {
+    schemaVersion: 6,
+    items: [
+      { id: 'i1', name: 'Без новых полей', type: 'daily', area: 'min', addedAt: '2026-07-01' },
+      { id: 'i2', name: 'Мусор в полях', type: 'daily', area: 'min', addedAt: '2026-07-01',
+        formula: 'строка', ladder: 42, ladderLog: 'мусор' },
+      { id: 'i3', name: 'Пустая формула', type: 'daily', area: 'min', addedAt: '2026-07-01',
+        formula: { anchor: '  ', when: '', proof: null } },
+      { id: 'i4', name: 'Первая лестница', type: 'daily', area: 'min', addedAt: '2026-07-01',
+        formula: { anchor: '  после зарядки  ', junk: 'выкинуть' },
+        ladder: { steps: [' раз ', '', 'два', 5], step: '9', steppedWeek: '2026-07-07', startedAt: 'мусор' },
+        ladderLog: [null, { date: 'x', step: 1 }, { date: '2026-07-09', step: '2', text: 'два' }] },
+      { id: 'i5', name: 'Вторая лестница', type: 'daily', area: 'min', addedAt: '2026-07-01',
+        ladder: { steps: ['а', 'б'], step: 1, steppedWeek: null, startedAt: '2026-07-01' },
+        ladderLog: [{ date: '2026-07-08', step: 1, text: 'б' }] }
+    ],
+    days: JSON.parse(JSON.stringify(days)),
+    weekLog: [], reviews: JSON.parse(JSON.stringify(reviews)), pendingRaises: [], paramDecided: {},
+    draftOneChange: '', weekStart: '2026-07-01',
+    settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
+  };
+  const m = app.migrate(v6);
+  const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
+
+  assert.equal(m.schemaVersion, 7);
+  assert.equal(byId.i1.formula, null);           // достроено умолчанием
+  assert.equal(byId.i1.ladder, null);
+  assert.deepEqual(byId.i1.ladderLog, []);
+  assert.equal(byId.i2.formula, null);           // мусор → пусто
+  assert.equal(byId.i2.ladder, null);
+  assert.deepEqual(byId.i2.ladderLog, []);
+  assert.equal(byId.i3.formula, null);           // все поля пусты после trim
+  assert.equal(byId.i4.formula.anchor, 'после зарядки'); // trim, лишние ключи выброшены
+  assert.equal('junk' in byId.i4.formula, false);
+  assert.equal(byId.i4.formula.proof, '');
+  assert.deepEqual(byId.i4.ladder.steps, ['раз', 'два']); // пустые и не-строки выброшены
+  assert.equal(byId.i4.ladder.step, 1);          // индекс подтянут в границы
+  assert.equal(byId.i4.ladder.steppedWeek, '2026-07-06'); // не-понедельник → свой понедельник
+  assert.equal(byId.i4.ladder.startedAt, '2026-07-17');   // мусорная дата → сегодня
+  assert.deepEqual(byId.i4.ladderLog, [{ date: '2026-07-09', step: 2, text: 'два' }]);
+  assert.equal(byId.i5.ladder, null);            // лестница одна: у i4 startedAt позже (мусор → сегодня)
+  assert.deepEqual(byId.i5.ladderLog, [{ date: '2026-07-08', step: 1, text: 'б' }]); // журнал цел
+
+  assert.deepEqual(m.days, days);       // отметки не изменены (миграция аддитивна)
+  assert.deepEqual(m.reviews, reviews); // срезы не изменены
+  const again = app.migrate(JSON.parse(JSON.stringify(m)));
+  assert.deepEqual(again, m);           // идемпотентность
+});
+
+test('З14.1: конфликт лестниц — побеждает начатая позже, при равенстве первая по порядку', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const mk = (id, startedAt) => ({
+    id, name: id, type: 'daily', area: 'min', addedAt: '2026-07-01',
+    ladder: { steps: ['а', 'б'], step: 1, steppedWeek: null, startedAt },
+    ladderLog: [{ date: '2026-07-08', step: 1, text: 'б' }]
+  });
+  const base = extra => ({
+    schemaVersion: 7, items: extra, days: {}, weekLog: [], reviews: [], pendingRaises: [],
+    paramDecided: {}, draftOneChange: '', weekStart: '2026-07-01',
+    settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
+  });
+
+  // лестница у второго пункта начата позже — переживает миграцию, у первого снимается
+  const later = app.migrate(base([mk('i1', '2026-07-01'), mk('i2', '2026-07-10')]));
+  const byId = Object.fromEntries(later.items.map(i => [i.id, i]));
+  assert.equal(byId.i1.ladder, null);
+  assert.deepEqual(byId.i2.ladder.steps, ['а', 'б']);
+  assert.equal(byId.i2.ladder.step, 1);
+  // журналы обоих целы: снятие лестницы их не трогает
+  assert.deepEqual(byId.i1.ladderLog, [{ date: '2026-07-08', step: 1, text: 'б' }]);
+  assert.deepEqual(byId.i2.ladderLog, [{ date: '2026-07-08', step: 1, text: 'б' }]);
+
+  // равные даты — остаётся первая по порядку items[]
+  const tie = app.migrate(base([mk('a1', '2026-07-05'), mk('a2', '2026-07-05'), mk('a3', '2026-07-05')]));
+  assert.ok(tie.items.find(i => i.id === 'a1').ladder);
+  assert.equal(tie.items.find(i => i.id === 'a2').ladder, null);
+  assert.equal(tie.items.find(i => i.id === 'a3').ladder, null);
+
+  // мусорный startedAt нормализуется в сегодня — такая лестница и побеждает
+  const junk = app.migrate(base([mk('b1', '2026-07-05'), mk('b2', 'мусор')]));
+  assert.equal(junk.items.find(i => i.id === 'b1').ladder, null);
+  assert.equal(junk.items.find(i => i.id === 'b2').ladder.startedAt, '2026-07-17');
+
+  // идемпотентность: повторный прогон ничего не меняет
+  const again = app.migrate(JSON.parse(JSON.stringify(later)));
+  assert.deepEqual(again, later);
+});
+
+test('З14: steppedWeek не-понедельник и v6-экспорт — экспорт → импорт возвращает новые поля', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const it = s.items.find(i => i.type === 'daily');
+  app.setFormula(it.id, {
+    anchor: '  после зарядки  ', when: '23:30, спальня', pair: '', identity: 'я человек, который ложится вовремя',
+    twoMin: '', friction: '', proof: ''
+  });
+  app.setLadder(it.id, 'раз\nдва\nтри');
+  it.ladder.step = 2;
+  app.ladderStep(it.id, 'back');
+
+  const exported = JSON.stringify(app.store);         // содержимое файла экспорта
+  app.store = null;                                   // «очистка localStorage»
+  const imported = app.migrate(JSON.parse(exported)); // путь importJSON
+  app.store = imported;
+
+  assert.deepEqual(imported, JSON.parse(exported));   // до байта данных
+  const back = imported.items.find(i => i.id === it.id);
+  assert.equal(back.formula.anchor, 'после зарядки'); // trim при сохранении
+  assert.equal(back.formula.pair, '');
+  assert.deepEqual(back.ladder.steps, ['раз', 'два', 'три']);
+  assert.equal(back.ladder.step, 1);
+  assert.equal(back.ladderLog.length, 1);
+  assert.equal(app.activeLadderItem().id, it.id);     // домен жив после импорта
+});
+
+test('З14: формула — только текст владельца, пустая сохраняется как null', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const it = s.items.find(i => i.type === 'daily');
+  const param = s.items.find(i => i.type === 'param');
+
+  assert.equal(app.setFormula(it.id, { anchor: '  ', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '   ' }), true);
+  assert.equal(it.formula, null); // все поля пусты после trim
+
+  app.setFormula(it.id, { anchor: 'после зарядки' });
+  assert.deepEqual(Object.keys(it.formula), ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof']);
+  assert.equal(it.formula.anchor, 'после зарядки');
+  assert.equal(it.formula.when, '');
+
+  assert.equal(app.setFormula('нет-такого', { anchor: 'x' }), false);
+  assert.equal(app.setFormula(param.id, { anchor: 'x' }), false); // формула — у ежедневных
+  assert.equal(app.setLadder(param.id, 'раз'), false);
 });
 
 /* ── Инвариант 7. «Не пропускай дважды» ────────────────────── */

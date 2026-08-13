@@ -1402,7 +1402,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 6);
+  assert.equal(snap.schemaVersion, 7);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1478,7 +1478,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 6);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, 7);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1518,6 +1518,273 @@ test('строка «Резервная копия» подставляется 
   for (let i = 0; i < 100 && note.hidden; i++) await new Promise(r => setTimeout(r, 10));
   assert.equal(note.hidden, false);
   assert.match(note.textContent, /Резервная копия: /);
+});
+
+/* ── Задача 14. Формула и лестница ─────────────────────────── */
+
+const LADDER = { steps: ['в кровати в 23:30', '+10 минут без экрана', '+15 минут раньше'], step: 1, steppedWeek: null, startedAt: null };
+
+/* Вход в лист с «Пунктов» — работает для любого ежедневного пункта */
+function openDetailFromItems(document, name) {
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const row = [...document.querySelectorAll('#scr-items .rowwrap')]
+    .find(r => r.querySelector('.tname').textContent === name);
+  row.querySelector('[data-act="item-detail"]').click();
+  return document.getElementById('scr-detail');
+}
+
+test('строка дня: тап по названию отмечает пункт, хвостовая кнопка открывает лист', async () => {
+  const seed = dueSeed();
+  seed.items[0].note = 'подпись владельца';
+  seed.items[0].ladder = JSON.parse(JSON.stringify(LADDER));
+  const { document, window } = await boot({ seed });
+  const scr = document.getElementById('scr-today');
+
+  // подписью идёт текущая ступень вместо note, метка — в хвостовой кнопке
+  assert.match(scr.textContent, /\+10 минут без экрана/);
+  assert.doesNotMatch(scr.textContent, /подпись владельца/);
+  assert.equal(scr.querySelector('.idetail .lstep').textContent, '2/3');
+
+  // название снова внутри label: тап по нему отмечает пункт (тач-зона всей строки)
+  const label = scr.querySelector('label.check');
+  assert.ok(label.querySelector('.tname'), 'название внутри label');
+  assert.equal(label.querySelector('input[data-act="mark"]').getAttribute('aria-label'), null,
+    'имя чекбоксу даёт содержимое label, aria-label не дублируется');
+  scr.querySelector('.tname').click(); // тап по названию
+  assert.equal(label.classList.contains('on'), true, 'пункт отмечен');
+  assert.equal(document.getElementById('scr-detail').hidden, true, 'лист не открылся');
+  assert.equal(Object.values(JSON.parse(window.localStorage.getItem(NS)).days[daysAgo(0)])[0], true);
+
+  // хвостовая кнопка открывает лист и отметку не меняет
+  scr.querySelector('[data-act="item-detail"]').click();
+  const d = document.getElementById('scr-detail');
+  assert.equal(d.hidden, false);
+  assert.equal(scr.hidden, true);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).days[daysAgo(0)][seed.items[0].id], true,
+    'отметка не изменилась');
+  assert.equal(d.querySelectorAll('.ladder li').length, 3);
+  assert.equal(d.querySelectorAll('.ladder li.cur').length, 1);
+  assert.match(d.querySelector('.ladder li.cur').textContent, /\+10 минут без экрана/);
+  assert.match(d.textContent, /Две полные недели нормы ещё не набраны/);
+  assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true);
+  assert.equal(d.querySelector('[data-act="ladder-back"]').disabled, false);
+  // вкладка возврата остаётся подсвеченной
+  assert.equal(document.querySelector('#tabs button[data-tab="today"]').getAttribute('aria-current'), 'page');
+
+  // «Готово» возвращает на прежнюю вкладку
+  d.querySelector('[data-act="detail-done"]').click();
+  assert.equal(d.hidden, true);
+  assert.equal(document.getElementById('scr-today').hidden, false);
+  assert.equal(scr.querySelector('label.check').classList.contains('on'), true, 'отметка на месте');
+});
+
+test('хвостовая кнопка: нет без лестницы и формулы, есть при одной формуле', async () => {
+  const seed = dueSeed();
+  seed.items[0].note = 'подпись владельца';
+  seed.items.push({
+    id: 'it2', name: 'С формулой', value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', active: true, addedAt: addKey(prevMonday(), -14), raiseAfter: 0,
+    history: [], formula: { anchor: 'после зарядки', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '' },
+    ladder: null, ladderLog: []
+  });
+  const { document } = await boot({ seed });
+  const rowOf = name => [...document.querySelectorAll('#scr-today .rowwrap')]
+    .find(r => r.textContent.includes(name));
+
+  const plain = rowOf('Тестовый пункт');
+  assert.equal(plain.querySelector('.idetail'), null, 'без лестницы и формулы хвоста нет');
+  assert.equal(plain.querySelector('.lstep'), null);
+  assert.match(plain.querySelector('.note').textContent, /подпись владельца/);
+
+  const withFormula = rowOf('С формулой');
+  const tail = withFormula.querySelector('.idetail');
+  assert.ok(tail, 'при формуле хвост есть');
+  assert.equal(tail.querySelector('.lstep'), null, 'метки положения без лестницы нет');
+  assert.match(tail.getAttribute('aria-label'), /^подробно: «С формулой»$/);
+
+  // вход с «Пунктов» открывает лист любому ежедневному пункту
+  const d = openDetailFromItems(document, 'Тестовый пункт');
+  assert.equal(d.hidden, false);
+  assert.equal(d.querySelector('.ladder'), null, 'блока лестницы нет');
+  assert.equal(d.querySelectorAll('.fline').length, 7);
+  assert.equal(d.querySelectorAll('.fval.empty').length, 7);
+  const laws = [...d.querySelectorAll('.overline')].map(x => x.textContent);
+  assert.deepEqual(laws, ['Очевидно', 'Привлекательно', 'Легко', 'Приятно']);
+  assert.ok(d.querySelector('[data-act="ladder-open"]'));
+
+  // «Готово» возвращает на «Пункты»
+  d.querySelector('[data-act="detail-done"]').click();
+  assert.equal(document.getElementById('scr-items').hidden, false);
+  assert.equal(d.hidden, true);
+  // у параметра входа в лист нет — формула и лестница только у ежедневных
+  const paramRow = [...document.querySelectorAll('#scr-items .rowwrap')]
+    .find(r => r.textContent.includes('порог'));
+  if (paramRow) assert.equal(paramRow.querySelector('[data-act="item-detail"]'), null);
+});
+
+test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
+  const seed = dueSeed();
+  const prev = prevMonday();
+  seed.items.push({
+    id: 'h1', name: 'Отбой', value: null, unit: '', type: 'daily', area: 'habit', normPerWeek: 7,
+    goal: null, note: '', group: '', active: true, addedAt: addKey(prev, -28), raiseAfter: 0, history: [],
+    formula: null, ladder: JSON.parse(JSON.stringify({ ...LADDER, step: 0 })), ladderLog: []
+  });
+  for (let i = 0; i < 7; i++) { // две последние завершённые недели — по норме
+    for (const k of [addKey(prev, i), addKey(prev, i - 7)]) {
+      seed.days[k] = Object.assign({}, seed.days[k], { h1: true });
+    }
+  }
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const scr = document.getElementById('scr-habits');
+  assert.equal(scr.querySelector('.lstep').textContent, '1/3');
+
+  scr.querySelector('[data-act="item-detail"]').click();
+  const d = document.getElementById('scr-detail');
+  assert.match(d.textContent, /Ступень держится две недели — можно шагнуть/);
+  assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, false);
+  assert.equal(d.querySelector('[data-act="ladder-back"]').disabled, true, 'на первой ступени назад некуда');
+
+  d.querySelector('[data-act="ladder-fwd"]').click();
+  assert.match(d.querySelector('.ladder li.cur').textContent, /\+10 минут без экрана/);
+  assert.match(d.textContent, /Шаг уже сделан на этой неделе/);
+  assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true, 'второй шаг за неделю закрыт');
+  let saved = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'h1');
+  assert.equal(saved.ladder.step, 1);
+  assert.equal(saved.ladder.steppedWeek, curMonday());
+  assert.deepEqual(saved.ladderLog, [{ date: daysAgo(0), step: 1, text: '+10 минут без экрана' }]);
+
+  // шаг назад доступен всегда и неделю не тратит; запись того же дня заменяется
+  d.querySelector('[data-act="ladder-back"]').click();
+  saved = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'h1');
+  assert.equal(saved.ladder.step, 0);
+  assert.equal(saved.ladder.steppedWeek, curMonday());
+  assert.deepEqual(saved.ladderLog, [{ date: daysAgo(0), step: 0, text: 'в кровати в 23:30' }]);
+  assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true);
+
+  // журнал шагов — типографской строкой, только в листе (задача 14.1).
+  // Оба шага сделаны в один логический день, поэтому запись одна — итоговая
+  assert.equal(d.querySelector('.lhist').textContent, `Ступень: 1 · с ${fmtShortKey(daysAgo(0))}`);
+  assert.equal(document.getElementById('scr-habits').querySelector('.lhist'), null,
+    'на дневной экран журнал не выносится');
+
+  // лист вернулся на «Привычки», метка обновилась
+  d.querySelector('[data-act="detail-done"]').click();
+  assert.equal(document.getElementById('scr-habits').hidden, false);
+  assert.equal(scr.querySelector('.lstep').textContent, '1/3');
+});
+
+test('журнал лестницы: строки нет при пустом ladderLog, при длинной истории — последние 6', async () => {
+  const seed = dueSeed();
+  seed.items[0].ladder = JSON.parse(JSON.stringify({ ...LADDER, step: 0 }));
+  const { document } = await boot({ seed });
+  let d = document.getElementById('scr-detail');
+  document.querySelector('#scr-today [data-act="item-detail"]').click();
+  assert.ok(d.querySelector('.ladder'), 'блок лестницы есть');
+  assert.equal(d.querySelector('.lhist'), null, 'без записей строки нет');
+
+  // восемь переходов: показываются последние шесть, дата — первой записи
+  const seed2 = dueSeed();
+  seed2.items[0].ladder = JSON.parse(JSON.stringify({ ...LADDER, step: 0 }));
+  seed2.items[0].ladderLog = [0, 1, 2, 1, 0, 1, 2, 1].map((step, i) => ({
+    date: addKey(prevMonday(), i), step, text: 'ступень'
+  }));
+  const b = await boot({ seed: seed2 });
+  d = b.document.getElementById('scr-detail');
+  b.document.querySelector('#scr-today [data-act="item-detail"]').click();
+  const hist = d.querySelector('.lhist');
+  assert.match(hist.textContent, /^Ступень: … → 3 → 2 → 1 → 2 → 3 → 2 · с /); // последние 6, ступени с единицы
+  assert.match(hist.textContent, new RegExp(fmtShortKey(prevMonday()).replace('.', '\\.') + '$')); // дата первой записи
+  assert.equal(d.querySelector('.lhist svg, .lhist i'), null, 'без графики');
+});
+
+test('лист детали: форма формулы сохраняется и переживает смену логического дня', async () => {
+  const { document, window } = await boot();
+  // у пункта без лестницы и формулы хвоста нет — вход с «Пунктов»
+  const d = openDetailFromItems(document, 'Умыться');
+  const id = d.querySelector('[data-act="formula-open"]').dataset.id;
+
+  d.querySelector('[data-act="formula-open"]').click();
+  assert.ok(document.getElementById('fx-anchor'));
+  assert.equal(d.querySelectorAll('.card.form.formula .hint').length, 7, 'подсказки — только в форме');
+  assert.match(d.querySelector('.hint').textContent, /„После того как поставлю телефон на зарядку“ — якорь/);
+  document.getElementById('fx-anchor').value = '  после зарядки  ';
+  document.getElementById('fx-identity').value = 'я человек, который ложится вовремя';
+
+  // черновик формы переживает смену логического дня (инвариант 8)
+  shiftWindowDate(window, 24 * 3600000);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  assert.equal(document.getElementById('fx-anchor').value, '  после зарядки  ');
+  assert.equal(document.getElementById('scr-detail').hidden, false, 'лист остался открытым');
+
+  document.querySelector('[data-act="formula-save"]').click();
+  const it = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === id);
+  assert.equal(it.formula.anchor, 'после зарядки'); // trim
+  assert.equal(it.formula.identity, 'я человек, который ложится вовремя');
+  assert.equal(it.formula.proof, '');
+  assert.equal(document.getElementById('fx-anchor'), null, 'форма закрыта');
+  assert.match(d.textContent, /после зарядки/);
+  assert.equal(d.querySelectorAll('.fval.empty').length, 5); // заполнены два поля из семи
+  // «Готово» вернуло на «Пункты»; на дневном экране — только слова владельца,
+  // но появился хвост: у пункта теперь есть формула
+  d.querySelector('[data-act="detail-done"]').click();
+  assert.equal(document.getElementById('scr-items').hidden, false);
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  const scr = document.getElementById('scr-today');
+  assert.doesNotMatch(scr.textContent, /после зарядки|якорь/i);
+  const row = [...scr.querySelectorAll('.rowwrap')].find(r => r.textContent.includes('Умыться'));
+  assert.ok(row.querySelector('.idetail'), 'формула проявила хвостовую кнопку');
+});
+
+test('лист детали: форма лестницы — предзаполнение, сохранение, второй пункт заблокирован', async () => {
+  const { document, window } = await boot();
+  // вход с «Пунктов»: у пунктов пока нет ни лестницы, ни формулы
+  const openByName = name => {
+    if (!document.getElementById('scr-detail').hidden) {
+      document.querySelector('[data-act="detail-done"]').click();
+    }
+    return openDetailFromItems(document, name);
+  };
+  const d = openByName('Умыться');
+  const idA = d.querySelector('[data-act="ladder-open"]').dataset.id;
+
+  d.querySelector('[data-act="ladder-open"]').click();
+  const ta = document.getElementById('fx-steps');
+  assert.ok(ta, 'textarea лестницы');
+  assert.match(ta.value, /^В 23:30 быть в кровати\. Телефон — на зарядке вне спальни\./);
+  assert.equal(ta.value.split('\n').length, 5, 'стартовый текст — пять строк');
+  ta.value = 'раз\n\n  два  \nтри';
+  document.querySelector('[data-act="ladder-save"]').click();
+
+  let saved = JSON.parse(window.localStorage.getItem(NS));
+  let a = saved.items.find(i => i.id === idA);
+  assert.deepEqual(a.ladder.steps, ['раз', 'два', 'три']); // пустые строки отброшены, trim
+  assert.equal(a.ladder.step, 0);
+  assert.equal(a.ladder.steppedWeek, null);
+  assert.equal(a.ladder.startedAt, daysAgo(0));
+  assert.deepEqual(a.ladderLog, []); // создание лестницы шагом не считается
+  assert.equal(d.querySelectorAll('.ladder li').length, 3);
+
+  // второй пункт: слот занят — textarea и сохранение недоступны, строка объясняет
+  const busy = openByName('Принять душ');
+  busy.querySelector('[data-act="ladder-open"]').click();
+  assert.equal(document.getElementById('fx-steps').disabled, true);
+  assert.equal(busy.querySelector('[data-act="ladder-save"]').disabled, true);
+  assert.match(busy.textContent, /Лестница уже есть у пункта «Умыться»\. Снимите её там, чтобы начать здесь\./);
+
+  // снятие у носителя — вторым тапом; лестница слетает, отметки целы
+  openByName('Умыться').querySelector('[data-act="ladder-open"]').click();
+  const clear = () => document.querySelector('[data-act="ladder-clear"]');
+  assert.match(clear().textContent, /^Снять лестницу$/);
+  clear().click();
+  assert.match(clear().textContent, /Подтвердить снятие/);
+  assert.ok(JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === idA).ladder, 'первый тап не снимает');
+  clear().click();
+  saved = JSON.parse(window.localStorage.getItem(NS));
+  a = saved.items.find(i => i.id === idA);
+  assert.equal(a.ladder, null);
+  assert.equal(document.getElementById('scr-detail').querySelector('.ladder'), null);
 });
 
 test('баннер хранилища: появляется при сбое save и снимается первым успешным', async () => {
