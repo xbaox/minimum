@@ -187,24 +187,27 @@ h2 {
   padding: 9px 0;
 }
 
-/* ── Цепочка: линия связи внутри группы (задача 15) ─────────────
+/* ── Линия блока (задачи 15, 15.1) ──────────────────────────────
    Линия идёт через центры кругов отметки — по x круга, поэтому ширина
-   текста и положение круга не меняются ни у кого. Сегмент между соседями
-   собран из двух половин: нижней у верхнего пункта и верхней у нижнего.
-   Обе половины пары несут один data-seg и красятся вместе. */
+   текста и положение круга не меняются ни у кого. Каждая строка несёт две
+   половины (вверх и вниз); у крайних строк лишняя гасится. Линия постоянна:
+   она показывает принадлежность блоку, а не результат дня. */
 .chain .rowwrap { position: relative; }
 .cseg {
   position: absolute;
   left: 12px;                            /* центр круга внутри строки: 13px радиус − 1px полуширина линии */
   width: 2px;
-  background: var(--line);
-  transition: background-color .24s ease-out; /* окно движения 180–260 мс */
+  background: var(--chain);
 }
 .cseg.up { top: 0; height: 50%; }
-/* −1px: половины одной пары перекрываются на дробном стыке строк, разрыва
-   в линии нет; цвет у обеих половин пары всегда общий, перекрытие незаметно */
+/* −1px: половины перекрываются на дробном стыке строк — разрыва в линии нет */
 .cseg.down { top: 50%; bottom: -1px; }
-.cseg.on { background: var(--chain); }
+.chain > .rowwrap:first-child .cseg.up,
+.chain > .rowwrap:last-child .cseg.down { display: none; }
+
+/* Круг пункта в блоке носит тот же тон, что и линия; отметка главнее
+   принадлежности — заполненный круг остаётся акцентным */
+.chain .check:not(.on) .box { border-color: var(--chain); }
 
 .row .txt { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 /* хвостовая кнопка листа детали: тач-зона ≥44px, шеврон как у баннера,
@@ -418,26 +421,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 /* граничная стрелка (первый/последний пункт) гасится заметно и однозначно
    неактивна — не мутный полупрозрачный muted, а чёткий «выключенный» тон */
 .ictl .btn.icon:disabled { color: var(--line-strong); opacity: 1; }
-
-/* редактор групп (задача 15) */
-.grow + .grow { border-top: 1px solid var(--line); }
-.gline { gap: 14px; }
-.gline .tname { flex: 1; min-width: 0; }
-.gname-input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 16px;                       /* iOS: не масштабировать при фокусе */
-  min-height: 44px;
-  padding: 8px 12px;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-sm);
-  appearance: none;
-}
-.gbtns { margin: 0 0 10px; gap: 4px; }
-.gbtns .btn { padding: 0 10px; font-size: var(--text-xs); }
 
 /* переключатель */
 .switch { position: relative; flex: none; width: 46px; height: 28px; margin-left: 6px; cursor: pointer; }

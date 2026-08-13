@@ -398,7 +398,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 9);
+  assert.equal(m.schemaVersion, 10);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -429,7 +429,7 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 9);
+    assert.equal(m.schemaVersion, 10);
     assert.equal(Array.isArray(m.items), true);
     assert.equal(m.items.length, 10); // дефолтный набор: 7 минимум + 3 привычки
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);
@@ -546,7 +546,7 @@ test('З2: мусорный schemaVersion трактуется как v1 — в�
   const src = v1Store();
   src.schemaVersion = 'мусор';
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 9);
+  assert.equal(m.schemaVersion, 10);
   assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
   assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
@@ -574,7 +574,7 @@ test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпоте
     ]
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 9);
+  assert.equal(m.schemaVersion, 10);
   assert.equal(m.reviews[0].weekStart, '2026-06-01');
   assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
@@ -679,7 +679,7 @@ test('З4: миграция v3→v4 — exportedAt с мягким дефолт�
     settings: { dayBoundary: 4, hintShownForItemId: null }
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 9);
+  assert.equal(m.schemaVersion, 10);
   assert.equal(m.settings.exportedAt, null);
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
   assert.deepEqual(again, m);
@@ -1083,7 +1083,7 @@ test('З11: миграция v6 — норма достроена и валид�
     settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
   };
   const m = app.migrate(v5);
-  assert.equal(m.schemaVersion, 9);
+  assert.equal(m.schemaVersion, 10);
   assert.equal(m.items.find(i => i.id === 'h1').normPerWeek, 7); // достроена умолчанием
   assert.equal(m.items.find(i => i.id === 'h2').normPerWeek, 7); // мусор → умолчание
   assert.equal(m.items.find(i => i.id === 'h3').normPerWeek, 1); // к ближайшему допустимому
@@ -1152,7 +1152,7 @@ test('З10: hintShownForItemId мёртв — нет в defaultStore, v5-миг�
     pendingRaises: [], draftOneChange: '', weekStart: '2026-07-13',
     settings: { dayBoundary: 4, hintShownForItemId: 'x1', exportedAt: null }
   });
-  assert.equal(m.schemaVersion, 9);
+  assert.equal(m.schemaVersion, 10);
   assert.equal('hintShownForItemId' in m.settings, false);
 });
 
@@ -1465,7 +1465,7 @@ test('З14: миграция v6→v7 — поля достроены, лестн
   const m = app.migrate(v6);
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 9);
+  assert.equal(m.schemaVersion, 10);
   assert.equal(byId.i1.formula, null);           // достроено умолчанием
   assert.equal(byId.i1.ladder, null);
   assert.deepEqual(byId.i1.ladderLog, []);
@@ -1551,7 +1551,7 @@ test('З14.2: миграция v7→v8 — пустому журналу жив�
   const m = app.migrate(mkV7());
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 9);
+  assert.equal(m.schemaVersion, 10);
   // старт от startedAt, ступень и текст — те, на которых лестница стоит сейчас
   assert.deepEqual(byId.i1.ladderLog, [{ date: '2026-07-02', step: 1, text: 'два', start: true }]);
   assert.deepEqual(byId.i2.ladderLog, []); // без лестницы журнал не заводится
@@ -1663,8 +1663,8 @@ test('З15: миграция v8→v9 — группы в порядке перв
   });
 
   const m = app.migrate(mkV8());
-  assert.equal(m.schemaVersion, 9);
-  assert.deepEqual(m.groups, [{ name: 'Сон', chain: false }, { name: 'Тело', chain: false }]); // порядок первого появления
+  assert.equal(m.schemaVersion, 10);
+  assert.deepEqual(m.groups, [{ name: 'Сон' }, { name: 'Тело' }]); // порядок первого появления
   assert.deepEqual(m.days, days);       // миграция аддитивна
   assert.deepEqual(m.reviews, reviews);
   assert.deepEqual(m.items.map(i => i.group), ['Сон', 'Тело', 'Сон', '  ']); // items[] не изменены
@@ -1672,76 +1672,38 @@ test('З15: миграция v8→v9 — группы в порядке перв
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
   assert.deepEqual(again, m); // дубликатов не появляется
 
-  // существующий groups не перезаписывается
+  // существующий groups не перезаписывается: он идёт первым, недостающие имена
+  // из items[] дописываются следом
   const withGroups = mkV8();
   withGroups.groups = [{ name: 'Тело', chain: true }];
   const m2 = app.migrate(withGroups);
-  assert.deepEqual(m2.groups, [{ name: 'Тело', chain: true }, { name: 'Сон', chain: false }]);
+  assert.deepEqual(m2.groups, [{ name: 'Тело' }, { name: 'Сон' }]);
+  assert.equal(m2.groups.every(g => !('chain' in g)), true, 'поле chain снято у всех записей');
+
+  // v9 → v10: у готового списка снимается только chain, имена из items[]
+  // не досбираются — на девятой версии список уже полный
+  const v9 = mkV8();
+  v9.schemaVersion = 9;
+  v9.groups = [{ name: 'Тело', chain: true }];
+  assert.deepEqual(app.migrate(v9).groups, [{ name: 'Тело' }]);
 
   // нормализация: мусор, дубликаты и пустые имена
   const dirty = mkV8();
-  dirty.schemaVersion = 9;
-  dirty.groups = [null, 'строка', { name: '  Сон  ', chain: 'да' }, { name: 'Сон', chain: true }, { name: '   ' }, { name: 'Тело', chain: true }];
+  dirty.schemaVersion = 10;
+  dirty.groups = [null, 'строка', { name: '  Сон  ', chain: 'да' }, { name: 'Сон' }, { name: '   ' }, { name: 'Тело', chain: true }];
   const m3 = app.migrate(dirty);
-  assert.deepEqual(m3.groups, [{ name: 'Сон', chain: false }, { name: 'Тело', chain: true }]); // первый дубль побеждает
+  assert.deepEqual(m3.groups, [{ name: 'Сон' }, { name: 'Тело' }]); // первый дубль побеждает, chain снят
 
-  // экспорт → импорт восстанавливает список групп
+  // идемпотентность шага v9→v10: повторный прогон ничего не возвращает
+  assert.deepEqual(app.migrate(JSON.parse(JSON.stringify(m2))), m2);
+
+  // экспорт → импорт восстанавливает список блоков
   app.store = m;
   const exported = JSON.stringify(app.store);
   app.store = null;
   const imported = app.migrate(JSON.parse(exported));
   assert.deepEqual(imported, JSON.parse(exported));
-  assert.deepEqual(imported.groups, [{ name: 'Сон', chain: false }, { name: 'Тело', chain: false }]);
-});
-
-test('З15: сегмент окрашен только при двух отметках, порядок выполнения безразличен', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  const t = app.todayKey();
-  const [a, b] = s.items.filter(i => i.area === 'min' && i.type === 'daily');
-
-  assert.equal(app.segmentOn(a, b, t), false); // ни одного
-  app.toggleMark(t, a.id);
-  assert.equal(app.segmentOn(a, b, t), false); // один
-  app.toggleMark(t, b.id);
-  assert.equal(app.segmentOn(a, b, t), true);  // оба
-  assert.equal(app.segmentOn(b, a, t), true);  // порядок пары не важен
-
-  // отметить снизу вверх — результат тот же
-  app.toggleMark(t, a.id);
-  app.toggleMark(t, b.id);
-  assert.equal(app.segmentOn(a, b, t), false);
-  app.toggleMark(t, b.id);
-  app.toggleMark(t, a.id);
-  assert.equal(app.segmentOn(a, b, t), true);
-
-  // отметка вчерашнего дня сегодняшний сегмент не красит
-  app.toggleMark(t, a.id);
-  assert.equal(app.segmentOn(a, b, t), false);
-  app.toggleMark(app.addDays(t, -1), a.id);
-  assert.equal(app.segmentOn(a, b, t), false);
-});
-
-test('З15: chainNeighbours — соседи по цепочке, группа из одного пункта линии не даёт', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  const body = s.items.filter(i => i.area === 'min' && i.type === 'daily' && i.group === 'Тело');
-  assert.equal(body.length >= 3, true);
-
-  assert.equal(app.chainNeighbours(body[0]), null); // группа не цепочка
-  app.setGroupChain('Тело', true);
-  assert.deepEqual(app.chainNeighbours(body[0]), { prev: null, next: body[1] });
-  assert.deepEqual(app.chainNeighbours(body[1]), { prev: body[0], next: body[2] });
-  assert.equal(app.chainNeighbours(body[body.length - 1]).next, null);
-
-  // выключенный пункт выпадает из цепочки — соседи смыкаются
-  body[1].active = false;
-  assert.deepEqual(app.chainNeighbours(body[0]), { prev: null, next: body[2] });
-
-  // одинокий пункт цепочки соседей не имеет
-  const solo = s.items.find(i => i.area === 'min' && i.type === 'daily' && i.group === 'Движение');
-  app.setGroupChain('Движение', true);
-  assert.equal(app.chainNeighbours(solo), null);
+  assert.deepEqual(imported.groups, [{ name: 'Сон' }, { name: 'Тело' }]);
 });
 
 test('З15: groupedItems — порядок из store.groups, безгруппные и чужие последними', () => {
@@ -1779,7 +1741,6 @@ test('З15: переименование атомарно, удаление со
   const daysBefore = JSON.stringify(s.days);
 
   assert.equal(app.renameGroup('Тело', '  Утро  '), true); // trim
-  assert.equal(app.findGroup('Утро').chain, false);
   assert.equal(app.findGroup('Тело'), null);
   assert.equal(body.every(i => i.group === 'Утро'), true); // все пункты группы
   assert.equal(other.group, 'Сон');                        // и ни одного чужого
@@ -1799,7 +1760,7 @@ test('З15: переименование атомарно, удаление со
   assert.equal(app.deleteGroup('Утро'), false);
 });
 
-test('З15: addGroup/moveGroup/setGroupChain — границы и уникальность', () => {
+test('З15: addGroup/moveGroup — границы и уникальность', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   const names = () => s.groups.map(g => g.name);
@@ -1808,7 +1769,7 @@ test('З15: addGroup/moveGroup/setGroupChain — границы и уникал�
   assert.deepEqual(names(), ['Тело', 'Движение', 'Сон', 'Развитие', 'Вечер']); // в конец, с trim
   assert.equal(app.addGroup('Вечер'), false); // дубль
   assert.equal(app.addGroup('   '), false);   // пустое
-  assert.equal(s.groups[4].chain, false);
+  assert.deepEqual(Object.keys(s.groups[4]), ['name']); // блок — это только имя
 
   assert.equal(app.moveGroup('Тело', 'up'), false);        // уже первая
   assert.equal(app.moveGroup('Вечер', 'down'), false);     // уже последняя
@@ -1816,13 +1777,7 @@ test('З15: addGroup/moveGroup/setGroupChain — границы и уникал�
   assert.equal(app.moveGroup('Вечер', 'up'), true);
   assert.deepEqual(names(), ['Тело', 'Движение', 'Сон', 'Вечер', 'Развитие']);
 
-  assert.equal(app.setGroupChain('Вечер', true), true);
-  assert.equal(app.findGroup('Вечер').chain, true);
-  assert.equal(app.setGroupChain('Вечер', false), true);
-  assert.equal(app.findGroup('Вечер').chain, false);
-  assert.equal(app.setGroupChain('нет такой', true), false);
-
-  // groupList — источник подсказок поля «Модуль»
+  // groupList — источник подсказок поля «Блок»
   assert.deepEqual(app.groupList(), names());
 });
 

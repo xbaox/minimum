@@ -679,12 +679,10 @@ test('доступность: имена тумблера и кнопок нед
   const undo = document.querySelector('[data-act="train-undo"]');
   assert.match(undo.getAttribute('aria-label'), /Тренировка/);
 
-  // тумблер активности пункта (в редакторе групп выше — свой тумблер «Цепочка»)
+  // тумблер активности пункта (в редакторе блоков тумблеров больше нет)
   document.querySelector('#tabs button[data-tab="items"]').click();
   const sw = document.querySelector('.row.item label.switch');
   assert.match(sw.getAttribute('aria-label'), /включён: «Умыться»/);
-  const gsw = document.querySelector('.gline label.switch');
-  assert.match(gsw.getAttribute('aria-label'), /^цепочка: «/);
 });
 
 test('доступность: сетка разбора скрыта от AT, счётчики строк — в sr-only', async () => {
@@ -1423,7 +1421,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 9);
+  assert.equal(snap.schemaVersion, 10);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1499,7 +1497,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 9);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, 10);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1674,7 +1672,7 @@ test('«Пункты»: кнопка листа есть в форме daily, н
   // ни в одной строке списка кнопки листа нет
   document.querySelector('[data-act="edit-cancel"]').click();
   assert.equal(document.querySelectorAll('#scr-items .row.item [data-act="item-detail"]').length, 0);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 9);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 10);
 });
 
 test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
@@ -1856,11 +1854,11 @@ test('лист детали: форма лестницы — предзапол�
 
 /* ── Задача 15. Цепочки ────────────────────────────────────── */
 
-/* Сид с группой-цепочкой из трёх пунктов минимума */
+/* Сид с блоком из трёх пунктов минимума и блоком из одного */
 function chainSeed() {
   const seed = dueSeed();
-  seed.schemaVersion = 9;
-  seed.groups = [{ name: 'Вечер', chain: true }, { name: 'Утро', chain: false }];
+  seed.schemaVersion = 10;
+  seed.groups = [{ name: 'Вечер' }, { name: 'Утро' }];
   const mk = (id, name, group) => ({
     id, name, value: null, unit: '', type: 'daily', area: 'min', goal: null, note: '', group,
     active: true, addedAt: addKey(prevMonday(), -14), raiseAfter: 0, history: [],
@@ -1872,65 +1870,73 @@ function chainSeed() {
   return seed;
 }
 
-test('цепочка: сегменты красятся при двух отметках, порядок выполнения безразличен', async () => {
+test('блок: линия есть при двух и более активных пунктах и не зависит от отметок', async () => {
   const { document, window } = await boot({ seed: chainSeed() });
   const scr = document.getElementById('scr-today');
+  const rows = () => [...scr.querySelectorAll('.rowwrap')];
+  const rowOf = name => rows().find(r => r.textContent.includes(name));
   const cb = id => [...scr.querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
-  const segs = id => [...scr.querySelectorAll('.cseg')].filter(e => e.dataset.seg === id);
-  const segOn = id => segs(id).every(e => e.classList.contains('on'));
 
-  // три пункта цепочки дают два сегмента, каждый из двух половин
+  // блок «Вечер» из трёх пунктов — одна цепочка, у каждой строки по две половины
   assert.equal(scr.querySelectorAll('.chain').length, 1);
-  assert.equal(segs('c1').length, 2, 'сегмент c1→c2: низ у c1, верх у c2');
-  assert.equal(segs('c2').length, 2);
-  assert.equal(segs('c3').length, 0, 'за последним пунктом линии нет');
-  assert.equal(scr.querySelectorAll('.cseg.on').length, 0);
+  assert.equal(scr.querySelectorAll('.chain > .rowwrap').length, 3);
+  assert.equal(scr.querySelectorAll('.cseg').length, 6);
+  assert.equal(scr.querySelectorAll('.cseg.on').length, 0, 'состояния у линии больше нет');
 
-  // одна отметка сегмент не красит
+  // блок из одного активного пункта и пункт без блока линии не имеют
+  assert.equal(rowOf('Один').querySelector('.cseg'), null);
+  assert.equal(rowOf('Один').closest('.chain'), null);
+  assert.equal(rowOf('Без группы').querySelector('.cseg'), null);
+
+  // отметки на линию не влияют: ни на наличие, ни на класс
+  cb('c1').click();
   cb('c2').click();
-  assert.equal(segOn('c1'), false);
-  assert.equal(segOn('c2'), false);
-
-  // вторая — красит только смежный сегмент
+  assert.equal(scr.querySelectorAll('.cseg').length, 6);
+  assert.equal(scr.querySelectorAll('.cseg.on').length, 0);
   cb('c1').click();
-  assert.equal(segOn('c1'), true, 'c1—c2 связаны');
-  assert.equal(segOn('c2'), false, 'c2—c3 ещё нет');
+  assert.equal(scr.querySelectorAll('.cseg').length, 6);
 
-  // снятие гасит
-  cb('c1').click();
-  assert.equal(segOn('c1'), false);
-
-  // порядок снизу вверх даёт тот же результат
-  cb('c3').click();
-  assert.equal(segOn('c2'), true);
+  // выключенный пункт из блока выпадает: остаётся два — линия ещё есть
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(Object.keys(saved.days[daysAgo(0)]).length, 2);
+  assert.equal(saved.groups.every(g => !('chain' in g)), true);
 });
 
-test('цепочка: точечное обновление не перерисовывает экран, одиночная группа линии не рисует', async () => {
+test('блок: выключение пунктов убирает линию, когда активным остаётся один', async () => {
   const { document } = await boot({ seed: chainSeed() });
+  const off = id => {
+    document.querySelector('#tabs button[data-tab="items"]').click();
+    [...document.querySelectorAll('#scr-items .row.item input[data-act="toggle-active"]')]
+      .find(i => i.dataset.id === id).click();
+    document.querySelector('#tabs button[data-tab="today"]').click();
+  };
+  const scr = () => document.getElementById('scr-today');
+
+  off('c3');
+  assert.equal(scr().querySelectorAll('.chain').length, 1, 'двое — линия есть');
+  assert.equal(scr().querySelectorAll('.cseg').length, 4);
+
+  off('c2');
+  assert.equal(scr().querySelectorAll('.chain').length, 0, 'один — линии нет');
+  assert.equal(scr().querySelectorAll('.cseg').length, 0);
+  assert.match(scr().textContent, /Свет/); // сам пункт на месте
+});
+
+test('блок: обводка круга — --chain в блоке, --control-border вне, отмеченный — --accent', async () => {
+  const { document } = await boot({ seed: chainSeed() });
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  // правило обводки существует и не трогает отмеченный круг
+  assert.match(css, /\.chain \.check:not\(\.on\) \.box\s*\{[^}]*border-color:\s*var\(--chain\)/);
+  assert.match(css, /\.check\.on \.box\s*\{[^}]*border-color:\s*var\(--accent\)/);
+  assert.match(css, /\.check \.box\s*\{[^}]*border:\s*1\.5px solid var\(--control-border\)/);
+
+  // и в живом DOM: круг блока внутри .chain, круг одиночного пункта — нет
   const scr = document.getElementById('scr-today');
-  const rows = [...scr.querySelectorAll('.rowwrap')];
-  const cb = id => [...scr.querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
-  const seg = [...scr.querySelectorAll('.cseg')].find(e => e.dataset.seg === 'c1');
-  const bar = scr.querySelector('.bar i');
-
-  cb('c1').click();
-  cb('c2').click();
-
-  // узлы те же — экран не перерисовывался (горячий путь, 4.4)
-  assert.equal([...scr.querySelectorAll('.rowwrap')][0], rows[0]);
-  assert.equal([...scr.querySelectorAll('.cseg')].find(e => e.dataset.seg === 'c1'), seg);
-  assert.equal(scr.querySelector('.bar i'), bar);
-  assert.equal(seg.classList.contains('on'), true);
-
-  // группа «Утро» из одного активного пункта линии не рисует
-  const soloRow = rows.find(r => r.textContent.includes('Один'));
-  assert.equal(soloRow.querySelector('.cseg'), null);
-  assert.equal(soloRow.closest('.chain'), null);
-  // пункт без группы — тоже без линии
-  const looseRow = rows.find(r => r.textContent.includes('Без группы'));
-  assert.equal(looseRow.querySelector('.cseg'), null);
+  const rowOf = name => [...scr.querySelectorAll('.rowwrap')].find(r => r.textContent.includes(name));
+  assert.ok(rowOf('Свет').closest('.chain'), 'пункт блока внутри .chain');
+  assert.equal(rowOf('Один').closest('.chain'), null);
+  const box = rowOf('Свет').querySelector('.box');
+  assert.ok(box.closest('.chain'));
+  assert.equal(box.closest('label').classList.contains('on'), false);
 });
 
 test('цепочка: порядок групп следует store.groups, безгруппные — последними', async () => {
@@ -1965,38 +1971,50 @@ test('цепочка: «Привычки» и «Сегодня» рендеря�
   assert.match(document.getElementById('scr-habits').textContent, /Вечер/);
 });
 
-test('редактор групп: цепочка, порядок, переименование, удаление, добавление', async () => {
+test('редактор блоков: строка — имя и стрелки, правка раскрывается тапом', async () => {
   const { document, window } = await boot({ seed: chainSeed() });
   document.querySelector('#tabs button[data-tab="items"]').click();
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
-  const rowOf = name => [...document.querySelectorAll('#scr-items .grow')]
-    .find(r => r.textContent.includes(name));
+  const blocks = () => [...document.querySelectorAll('#scr-items [data-act="group-open"]')]
+    .map(b => b.closest('.rowwrap'));
+  const rowOf = name => blocks().find(r => r.querySelector('.tname').textContent === name);
 
-  // список в порядке store.groups
-  assert.deepEqual([...document.querySelectorAll('#scr-items .grow .tname')].map(x => x.textContent), ['Вечер', 'Утро']);
-
-  // тумблер цепочки
-  rowOf('Утро').querySelector('input[data-act="group-chain"]').click();
-  assert.equal(saved().groups.find(g => g.name === 'Утро').chain, true);
+  // список в порядке store.groups; в свёрнутой строке — только имя и стрелки
+  assert.deepEqual(blocks().map(r => r.querySelector('.tname').textContent), ['Вечер', 'Утро']);
+  const row = rowOf('Вечер');
+  assert.equal(row.querySelector('label.switch'), null, 'тумблера цепочки нет');
+  assert.equal(row.querySelector('[data-act="group-del"]'), null, 'кнопок правки в строке нет');
+  assert.deepEqual([...row.querySelectorAll('.ictl .btn')].map(b => b.dataset.act), ['group-up', 'group-down']);
+  assert.equal(document.getElementById('g-name'), null, 'правка свёрнута');
 
   // порядок
   rowOf('Утро').querySelector('[data-act="group-up"]').click();
   assert.deepEqual(saved().groups.map(g => g.name), ['Утро', 'Вечер']);
-  assert.equal(document.querySelector('#scr-items .grow [data-act="group-up"]').disabled, true, 'первая — вверх некуда');
+  assert.equal(blocks()[0].querySelector('[data-act="group-up"]').disabled, true, 'первый — вверх некуда');
 
-  // переименование переписывает item.group у всех пунктов группы
-  rowOf('Вечер').querySelector('[data-act="group-rename"]').click();
+  // тап по имени раскрывает правку; раскрыт один блок
+  rowOf('Вечер').querySelector('[data-act="group-open"]').click();
+  assert.ok(document.getElementById('g-name'), 'правка раскрыта');
+  assert.equal(document.querySelectorAll('#scr-items [data-form="group-edit"]').length, 1);
+  rowOf('Утро').querySelector('[data-act="group-open"]').click();
+  assert.equal(document.querySelectorAll('#scr-items [data-form="group-edit"]').length, 1, 'раскрыт ровно один');
+  assert.equal(document.querySelector('[data-form="group-edit"]').dataset.id, 'Утро');
+  document.querySelector('[data-act="group-cancel"]').click();
+  assert.equal(document.getElementById('g-name'), null, 'отмена сворачивает');
+
+  // переименование переписывает item.group у всех пунктов блока
+  rowOf('Вечер').querySelector('[data-act="group-open"]').click();
   document.getElementById('g-name').value = 'Ночь';
-  document.querySelector('[data-act="group-rename-save"]').click();
+  document.querySelector('[data-act="group-save"]').click();
   let s = saved();
   assert.deepEqual(s.groups.map(g => g.name), ['Утро', 'Ночь']);
   assert.deepEqual(s.items.filter(i => i.group === 'Ночь').map(i => i.id), ['c1', 'c2', 'c3']);
   assert.equal(s.items.find(i => i.id === 's1').group, 'Утро'); // чужой не тронут
 
   // пустое имя не сохраняется
-  rowOf('Ночь').querySelector('[data-act="group-rename"]').click();
+  rowOf('Ночь').querySelector('[data-act="group-open"]').click();
   document.getElementById('g-name').value = '   ';
-  document.querySelector('[data-act="group-rename-save"]').click();
+  document.querySelector('[data-act="group-save"]').click();
   assert.ok(saved().groups.find(g => g.name === 'Ночь'));
 
   // добавление в конец
@@ -2009,6 +2027,7 @@ test('редактор групп: цепочка, порядок, переим�
   document.querySelector('#tabs button[data-tab="today"]').click();
   [...document.querySelectorAll('#scr-today input[data-act="mark"]')].find(i => i.dataset.id === 'c1').click();
   document.querySelector('#tabs button[data-tab="items"]').click();
+  rowOf('Ночь').querySelector('[data-act="group-open"]').click(); // удаление живёт в раскрытой правке
   const del = () => rowOf('Ночь').querySelector('[data-act="group-del"]');
   assert.match(del().textContent, /^Удалить$/);
   del().click();
@@ -2022,7 +2041,7 @@ test('редактор групп: цепочка, порядок, переим�
   assert.equal(s.days[daysAgo(0)].c1, true, 'отметка не тронута');
 });
 
-test('поле «Модуль»: datalist из store.groups, новое имя заводит группу в конце', async () => {
+test('поле «Блок»: datalist из store.groups, новое имя заводит блок в конце', async () => {
   const { document, window } = await boot({ seed: chainSeed() });
   document.querySelector('#tabs button[data-tab="items"]').click();
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
@@ -2036,8 +2055,8 @@ test('поле «Модуль»: datalist из store.groups, новое имя �
   document.querySelector('[data-act="edit-save"]').click();
   const s = saved();
   assert.equal(s.items.find(i => i.id === 'c1').group, 'Ритуал');
-  assert.deepEqual(s.groups.map(g => g.name), ['Вечер', 'Утро', 'Ритуал']); // заведена в конце
-  assert.equal(s.groups[2].chain, false);
+  assert.deepEqual(s.groups.map(g => g.name), ['Вечер', 'Утро', 'Ритуал']); // заведён в конце
+  assert.deepEqual(Object.keys(s.groups[2]), ['name']);
 });
 
 test('черновик правки переживает уход в лист детали и возврат (14.2, вопрос 2)', async () => {
@@ -2060,7 +2079,7 @@ test('черновик правки переживает уход в лист д
   assert.equal(document.getElementById('e-note').value, 'черновик подписи');
 });
 
-test('источники: ни одного вхождения --warn и .broken', () => {
+test('источники: ни --warn и .broken, ни признака цепочки, ни слов «группа» и «модуль»', () => {
   const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
   const js = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   for (const [name, src] of [['styles.css', css], ['app.js', js]]) {
@@ -2070,8 +2089,21 @@ test('источники: ни одного вхождения --warn и .broken
   }
   // токен цепочки на месте в обеих темах и текстом не используется
   assert.equal((css.match(/--chain:/g) || []).length, 2);
-  assert.doesNotMatch(css, /color:\s*var\(--chain\)/, '--chain не красит текст');
-  assert.match(css, /\.cseg\.on\s*\{[^}]*background:\s*var\(--chain\)/);
+  // текстом не используется: border-color под запрет не подпадает (это обводка)
+  assert.doesNotMatch(css, /(?<!-)color:\s*var\(--chain\)/, '--chain не красит текст');
+  assert.match(css, /\.cseg\s*\{[^}]*background:\s*var\(--chain\)/);
+  // признак цепочки упразднён: ни поля, ни функции, ни состояния сегмента
+  assert.doesNotMatch(js, /setGroupChain|chainNeighbours|segmentOn|updateChainSegments/, 'мёртвая механика цепочки');
+  assert.doesNotMatch(js, /\bchain:\s*(true|false)/, 'поле chain в модели');
+  assert.doesNotMatch(css, /\.cseg\.on\b/, 'состояние сегмента в CSS');
+
+  // ни одной пользовательской строки со словами «Модуль» и «группа» (комментарии сняты)
+  const code = js.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  for (const word of [/Модул/, /модул/, /Групп/, /групп/]) {
+    assert.doesNotMatch(code, word, `слово ${word} в коде app.js`);
+  }
+  assert.match(js, /<h2>Блоки<\/h2>/);
+  assert.match(js, /<span>Блок<\/span>/);
 });
 
 test('баннер хранилища: появляется при сбое save и снимается первым успешным', async () => {
