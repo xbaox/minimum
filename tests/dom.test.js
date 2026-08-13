@@ -132,6 +132,18 @@ function mirrorStore() {
   };
 }
 
+/* Разбор ушёл с таб-бара (задача 16, фаза B): лист открывается баннером
+   «Доступен разбор недели» с «Сегодня» либо строкой с «Прогресса».
+   Хелпер повторяет путь пользователя — сначала на «Сегодня», затем тап
+   по баннеру; если баннера нет, разбор не назрел и тест это увидит. */
+function openReview(document) {
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  const banner = document.querySelector('#scr-today [data-act="goto-review"]');
+  assert.ok(banner, 'баннер разбора на «Сегодня»');
+  banner.click();
+  assert.equal(document.getElementById('scr-review').hidden, false, 'лист разбора открыт');
+}
+
 /* Минимальный валидный store с назревшим разбором: календарная эпоха в
    прошлом, две отметки в последней завершённой неделе; migrate достроит */
 function dueSeed() {
@@ -158,7 +170,7 @@ test('init() отрабатывает: экран «Сегодня» отрис�
   assert.equal(today.querySelectorAll('input[data-act="mark"]').length, 6); // 6 дневных пунктов минимума
   assert.ok(today.querySelector('.weekcount'));                            // недельный счётчик
   assert.match(today.textContent, /Минимум выполняется даже в худший день/);
-  for (const id of ['scr-habits', 'scr-review', 'scr-items', 'scr-system']) {
+  for (const id of ['scr-habits', 'scr-progress', 'scr-notes', 'scr-settings', 'scr-review', 'scr-detail']) {
     assert.equal(document.getElementById(id).hidden, true, id);
   }
 });
@@ -167,14 +179,20 @@ test('вкладки переключают все 5 экранов, кажды�
   const { document } = await boot();
   const tabs = [...document.querySelectorAll('#tabs button')];
   assert.equal(tabs.length, 5);
-  assert.deepEqual(tabs.map(b => b.dataset.tab), ['today', 'habits', 'system', 'review', 'items']); // порядок вкладок
-  const map = { today: 'scr-today', habits: 'scr-habits', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
+  // задача 16B: «Разбор» и «Система» ушли с панели, пришли «Прогресс» и «Заметки»
+  assert.deepEqual(tabs.map(b => b.dataset.tab), ['today', 'habits', 'progress', 'notes', 'settings']);
+  assert.deepEqual(tabs.map(b => b.textContent),
+    ['Сегодня', 'Привычки', 'Прогресс', 'Заметки', 'Настройки']);
+  const map = {
+    today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
+    notes: 'scr-notes', settings: 'scr-settings'
+  };
   const marker = {
     today: /Минимум выполняется/,
     habits: /Не спеши — доверься накопительному эффекту/,
-    review: /Разбор недели/,
-    items: /Граница дня/,
-    system: /Пять правил/
+    progress: /В системе/,
+    notes: /Пока пусто/,
+    settings: /Граница дня/
   };
   for (const b of tabs) {
     b.click();
@@ -185,6 +203,9 @@ test('вкладки переключают все 5 экранов, кажды�
     for (const [tab, sid] of Object.entries(map)) {
       if (tab !== b.dataset.tab) assert.equal(document.getElementById(sid).hidden, true, sid);
     }
+    // листы разбора и детали живут поверх вкладок и сейчас закрыты
+    assert.equal(document.getElementById('scr-review').hidden, true);
+    assert.equal(document.getElementById('scr-detail').hidden, true);
   }
 });
 
@@ -214,7 +235,7 @@ test('тап по чекбоксу отмечает пункт, обновляе
 
 test('формы редактирования и добавления открываются и закрываются', async () => {
   const { document } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
 
   // редактирование первого пункта
   const editBtn = document.querySelector('[data-act="edit-open"]');
@@ -254,18 +275,24 @@ test('назревший разбор: баннер на «Сегодня», с�
 
   closeBtn.click();
 
-  assert.match(document.getElementById('scr-review').textContent, /Неделя закрыта/);
-  // «Неделя закрыта.» показывается ровно один раз — повторный рендер её не содержит
-  document.querySelector('#tabs button[data-tab="review"]').click();
-  assert.doesNotMatch(document.getElementById('scr-review').textContent, /Неделя закрыта/);
+  // лист остаётся открытым и показывает состояние ожидания (задача 16B:
+  // с таб-бара разбор ушёл, повторно открыть его после закрытия нечем —
+  // потому «Неделя закрыта.» и текст ожидания проверяются здесь же)
+  const after = document.getElementById('scr-review').textContent;
+  assert.match(after, /Неделя закрыта/);
+  assert.match(after, /Разбор откроется в понедельник/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
   assert.equal(saved.reviews.length, 1);
   assert.equal(saved.reviews[0].perItem.it1.count, 2);
   assert.equal(saved.reviews[0].week, prevMonday()); // понедельник разобранной недели
   assert.deepEqual(saved.weekLog, []);
   assert.equal(saved.weekStart, prevMonday()); // историческое поле не тронуто
-  // подписи колонок — дни недели
-  assert.match(document.getElementById('scr-review').textContent, /Разбор откроется в понедельник|Календарные недели начнутся/);
+
+  // «Готово» возвращает на вкладку, с которой лист открыт; баннер снят
+  document.querySelector('[data-act="review-done"]').click();
+  assert.equal(document.getElementById('scr-review').hidden, true);
+  assert.equal(document.getElementById('scr-today').hidden, false);
+  assert.equal(document.querySelector('[data-act="goto-review"]'), null, 'неделя разобрана — баннера нет');
 });
 
 test('битый localStorage: сырая строка сохраняется в minimum:data:corrupt', async () => {
@@ -293,7 +320,7 @@ test('импорт мусора: migrate чинит, экраны живы, XSS-
   window.confirm = m => { confirmText = m; return true; };
   window.alert = m => { throw new Error('alert при успешном импорте: ' + m); };
 
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const inp = document.getElementById('import-file');
   const file = new window.File([JSON.stringify(payload)], 'x.json', { type: 'application/json' });
   Object.defineProperty(inp, 'files', { value: [file], configurable: true });
@@ -305,14 +332,17 @@ test('импорт мусора: migrate чинит, экраны живы, XSS-
   assert.match(confirmText, /дней с отметками: 1/);
   assert.match(confirmText, /закрытых недель: 0/);
   // тихая строка успеха в «Данных», числительные согласованы
-  assert.match(document.getElementById('scr-items').textContent, /Импортировано: 2 пункта, 1 день/);
+  assert.match(document.getElementById('scr-settings').textContent, /Импортировано: 2 пункта, 1 день/);
 
   // строка исчезает при следующем действии — даже если оно само не перерисовывает экран
   document.querySelector('[data-act="import"]').click();
-  assert.doesNotMatch(document.getElementById('scr-items').textContent, /Импортировано/);
+  assert.doesNotMatch(document.getElementById('scr-settings').textContent, /Импортировано/);
 
   // все 5 экранов рендерятся без исключений
-  const map = { today: 'scr-today', habits: 'scr-habits', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
+  const map = {
+    today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
+    notes: 'scr-notes', settings: 'scr-settings'
+  };
   for (const b of document.querySelectorAll('#tabs button')) {
     b.click();
     assert.ok(document.getElementById(map[b.dataset.tab]).innerHTML.length > 0, b.dataset.tab);
@@ -339,7 +369,7 @@ test('вредоносный count в reviews не ломает разбор: п
     trainings: {}, oneChange: '', raises: []
   }];
   const { document, window } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   const scr = document.getElementById('scr-review');
   assert.ok(scr.innerHTML.length > 0);
   assert.equal(scr.querySelector('img'), null); // разметка не материализовалась
@@ -359,12 +389,12 @@ test('правка значения: невалид сохраняет стар�
   }];
   seed.days = {};
   const { document, window } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const openEdit = name => [...document.querySelectorAll('[data-act="edit-open"]')]
     .find(b => b.querySelector('.tname').textContent === name).click();
   const savedItem = name => JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.name === name);
 
-  assert.match(document.getElementById('scr-items').textContent, /Планка: 10 → 12/);
+  assert.match(document.getElementById('scr-settings').textContent, /Планка: 10 → 12/);
 
   // невалидный ввод — значение и история не меняются
   openEdit('Правка');
@@ -379,7 +409,7 @@ test('правка значения: невалид сохраняет стар�
   document.querySelector('[data-act="edit-save"]').click();
   assert.equal(savedItem('Правка').value, null);
   assert.equal(savedItem('Правка').history.length, 2);
-  assert.doesNotMatch(document.getElementById('scr-items').textContent, /Планка:/);
+  assert.doesNotMatch(document.getElementById('scr-settings').textContent, /Планка:/);
 
   // цель weekly: пустое и невалидное поле сохраняют старую цель, валидное — меняет
   openEdit('Недельный');
@@ -460,7 +490,7 @@ test('visibilitychange после смены дня обновляет экра�
 
 test('фокус после «выше/ниже» возвращается кнопке, на краю — парной', async () => {
   const { document } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const btn = document.querySelector('[data-act="move-down"]'); // первый пункт
   const id = btn.dataset.id;
 
@@ -480,7 +510,7 @@ test('фокус после «выше/ниже» возвращается кн�
 
 test('открытая форма переживает перестановку и смену типа — значения и цель сохраняются', async () => {
   const { document, window } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const changeType = v => {
     const sel = document.getElementById('f-type');
     sel.value = v;
@@ -523,7 +553,7 @@ test('фокус-событие окна после смены дня обнов
 
 test('тумблер активности переключает .off точечно, без перерисовки', async () => {
   const { document, window } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const input = document.querySelector('input[data-act="toggle-active"]');
   const wrap = input.closest('.rowwrap');
   assert.equal(wrap.classList.contains('off'), false);
@@ -547,7 +577,7 @@ test('смена границы дня не перерисовывает «Пу�
   shiftWindowDate(window, target.getTime() - now.getTime());
   document.dispatchEvent(new window.Event('visibilitychange')); // синхронизировать экран со сдвинутым «сейчас»
 
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const sel = document.querySelector('select[data-act="boundary"]');
   sel.value = '0';
   sel.dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -572,7 +602,7 @@ test('подпись «вчера — пропуск» закрывается п
   dot.click();
   assert.ok(document.querySelector('.miss-note'), 'подпись раскрыта');
 
-  document.querySelector('#tabs button[data-tab="system"]').click();
+  document.querySelector('#tabs button[data-tab="progress"]').click();
   document.querySelector('#tabs button[data-tab="today"]').click();
   assert.equal(document.querySelector('.miss-note'), null); // missOpen очищен
   assert.ok(document.querySelector('[data-act="miss-note"]')); // сама точка на месте
@@ -583,10 +613,10 @@ test('скролл наверх — только при фактической �
   const calls = [];
   window.scrollTo = (...a) => calls.push(a);
 
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   assert.equal(calls.length, 1); // смена вкладки — скролл
 
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   assert.equal(calls.length, 1); // та же вкладка — позиция не трогается
 
   document.querySelector('#tabs button[data-tab="today"]').click();
@@ -595,7 +625,7 @@ test('скролл наверх — только при фактической �
 
 test('импорт при открытой форме: черновик не накатывается на импортированный пункт', async () => {
   const { document, window } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
 
   // открыть редактирование первого пункта и оставить несохранённый черновик
   const editBtn = document.querySelector('[data-act="edit-open"]');
@@ -623,7 +653,7 @@ test('импорт при открытой форме: черновик не н�
   assert.equal(document.getElementById('e-name'), null); // форма закрыта импортом
   const saved = JSON.parse(window.localStorage.getItem(NS));
   assert.equal(saved.items[0].name, 'Импортный'); // черновик не затёр импортированное
-  assert.match(document.getElementById('scr-items').textContent, /Импортный/);
+  assert.match(document.getElementById('scr-settings').textContent, /Импортный/);
 });
 
 test('доступность: точка вне label, aria-expanded, имена контролов, aria-live', async () => {
@@ -680,14 +710,14 @@ test('доступность: имена тумблера и кнопок нед
   assert.match(undo.getAttribute('aria-label'), /Тренировка/);
 
   // тумблер активности пункта (в редакторе блоков тумблеров больше нет)
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const sw = document.querySelector('.row.item label.switch');
   assert.match(sw.getAttribute('aria-label'), /включён: «Умыться»/);
 });
 
 test('доступность: сетка разбора скрыта от AT, счётчики строк — в sr-only', async () => {
   const { document } = await boot({ seed: dueSeed() });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   const grid = document.querySelector('.grid');
   assert.ok(grid);
   const hiddenWraps = grid.querySelectorAll(':scope > [aria-hidden="true"]');
@@ -736,7 +766,7 @@ test('ретро-отметка видна в сетке разбора и вх�
   document.querySelector('[data-act="miss-note"]').click();
   document.querySelector('[data-act="mark-yesterday"]').click(); // отметка в воскресенье
 
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   assert.match(document.querySelector('.g-name .sr-only').textContent, /отмечено 1 из 7/);
   assert.equal(document.querySelectorAll('.grid i.on').length, 1);
 
@@ -759,7 +789,7 @@ test('разбор показывает счёт тренировок разоб
   ];
   const { document, window } = await boot({ seed });
   assert.match(document.querySelector('.wnum b').textContent, /1/); // «Сегодня» — текущая неделя
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   assert.match(document.getElementById('scr-review').textContent, /Тренировка: 1 из 3/); // разбираемая неделя
   document.querySelector('[data-act="close-week"]').click();
   const saved = JSON.parse(window.localStorage.getItem(NS));
@@ -793,11 +823,14 @@ test('«Изменение этой недели» в обоих состоян�
     perItem: {}, trainings: {}, oneChange: evilChange, raises: []
   });
 
-  // состояние ожидания: последняя завершённая неделя уже разобрана
+  // состояние ожидания: неделя закрывается прямо в тесте — после 16B это
+  // единственный путь к нему (с таб-бара разбор ушёл). Строка берётся из
+  // только что записанного среза, то есть из черновика этой недели.
   const wait = dueSeed();
-  wait.reviews = [mkReview(prevMonday())];
+  wait.draftOneChange = evilChange;
   const a = await boot({ seed: wait });
-  a.document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(a.document);
+  a.document.querySelector('[data-act="close-week"]').click();
   let scr = a.document.getElementById('scr-review');
   assert.match(scr.textContent, /Разбор откроется/);
   assert.match(scr.textContent, /Изменение этой недели: „раньше <script>window\.__oc=1<\/script> ложиться“/);
@@ -808,16 +841,17 @@ test('«Изменение этой недели» в обоих состоян�
   const due = dueSeed();
   due.reviews = [mkReview(addKey(prevMonday(), -28))];
   const b = await boot({ seed: due });
-  b.document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(b.document);
   scr = b.document.getElementById('scr-review');
   assert.ok(scr.querySelector('.grid'), 'открытый разбор');
   assert.match(scr.textContent, /Изменение этой недели: „раньше <script>window\.__oc=1<\/script> ложиться“/);
 
   // пустое «одно изменение» — строки нет
   const empty = dueSeed();
-  empty.reviews = [{ closedAt: 1, week: prevMonday(), keys: [prevMonday()], perItem: {}, trainings: {}, oneChange: '   ', raises: [] }];
+  empty.draftOneChange = '   ';
   const c = await boot({ seed: empty });
-  c.document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(c.document);
+  c.document.querySelector('[data-act="close-week"]').click();
   assert.doesNotMatch(c.document.getElementById('scr-review').textContent, /Изменение этой недели/);
 });
 
@@ -882,7 +916,7 @@ test('разбор: секции «Минимум» и «Привычки», к�
   const wk = (week) => ({ closedAt: 1, week, keys: [week], perItem: { h1: { count: 7 } }, trainings: {}, oneChange: '', raises: [] });
   seed.reviews = [wk(addKey(prev, -21)), wk(addKey(prev, -14))];
   const { document, window } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   const scr = document.getElementById('scr-review');
 
   const h2s = [...scr.querySelectorAll('h2')].map(x => x.textContent);
@@ -907,7 +941,7 @@ test('разбор: секции «Минимум» и «Привычки», к�
   assert.match(document.getElementById('scr-habits').textContent, /Отбой · 23:45/);
 
   // закрытие пишет params и чистит решения
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   document.querySelector('[data-act="close-week"]').click();
   saved = JSON.parse(window.localStorage.getItem(NS));
   const r = saved.reviews[saved.reviews.length - 1];
@@ -923,7 +957,7 @@ test('разбор: «Оставить» фиксирует отказ и пор
     addedAt: addKey(prevMonday(), -14), raiseAfter: 0, history: []
   });
   const { document, window } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   document.querySelector('[data-act="param-keep"]').click();
   await settle(); // отложенный уход карточки
   const scr = document.getElementById('scr-review');
@@ -936,8 +970,8 @@ test('разбор: «Оставить» фиксирует отказ и пор
 
 test('«Пункты»: две группы, формы обеих областей, параметр добавляется и правится', async () => {
   const { document, window } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
-  const scr = document.getElementById('scr-items');
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const scr = document.getElementById('scr-settings');
 
   const h2s = [...scr.querySelectorAll('h2')].map(x => x.textContent);
   assert.ok(h2s.includes('Минимум') && h2s.includes('Привычки'));
@@ -992,20 +1026,20 @@ test('edit-форма параметра: вид — muted-строка без �
       addedAt: daysAgo(10), raiseAfter: 0, history: [] }
   );
   const { document, window } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const open = name => [...document.querySelectorAll('[data-act="edit-open"]')]
     .find(b => b.textContent.includes(name)).click();
   const savedPn = () => JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'pn');
 
   open('Отбой');
   assert.equal(document.getElementById('e-pkind'), null, 'селекта вида нет');
-  assert.match(document.querySelector('#scr-items .card.form').textContent, /Вид: время/);
+  assert.match(document.querySelector('#scr-settings .card.form').textContent, /Вид: время/);
   assert.ok(document.getElementById('e-ptime'), 'порог времени правится');
   assert.ok(document.getElementById('e-pstep'));
 
   open('Шаги');
   assert.equal(document.getElementById('e-pkind'), null);
-  assert.match(document.querySelector('#scr-items .card.form').textContent, /Вид: число/);
+  assert.match(document.querySelector('#scr-settings .card.form').textContent, /Вид: число/);
   assert.ok(document.getElementById('e-pvalue'), 'числовой порог правится');
   assert.ok(document.getElementById('e-punit'), 'единица правится');
 
@@ -1040,7 +1074,7 @@ test('разбор: решение чужой недели не гасит ка�
   // решение прошлого разбора (неделя W−7), который так и не был закрыт
   seed.paramDecided = { pt: { week: addKey(prevMonday(), -7), from: 90, to: null } };
   const { document, window } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   const scr = document.getElementById('scr-review');
   assert.ok(scr.querySelector('[data-act="param-step"]'), 'карточка решения показана');
   assert.doesNotMatch(scr.textContent, /без шага/); // итог чужой недели не показан
@@ -1069,7 +1103,7 @@ function paramSeed() {
 
 test('движение: карточка разбора уходит через класс .leaving, затем удаляется перерисовкой', async () => {
   const { document } = await boot({ seed: paramSeed() });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   const scr = document.getElementById('scr-review');
   scr.querySelector('[data-act="param-step"]').click();
 
@@ -1087,7 +1121,7 @@ test('движение: карточка разбора уходит через 
 
 test('движение: карточка убирается по transitionend (первичный путь браузера), fallback не ломает состояние', async () => {
   const { document, window } = await boot({ seed: paramSeed() });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   const scr = document.getElementById('scr-review');
   const card = scr.querySelector('[data-act="param-step"]').closest('.card');
   scr.querySelector('[data-act="param-step"]').click();
@@ -1108,7 +1142,7 @@ test('движение: карточка убирается по transitionend (
 test('движение: при reduced-motion карточка уходит немедленно, состояние достижимо без ожидания', async () => {
   const { document, window } = await boot({ seed: paramSeed() });
   window.matchMedia = () => ({ matches: true }); // эмулируем prefers-reduced-motion: reduce
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   const scr = document.getElementById('scr-review');
   scr.querySelector('[data-act="param-keep"]').click();
 
@@ -1120,20 +1154,20 @@ test('движение: при reduced-motion карточка уходит не
 
 test('движение: тихое подтверждение «Сохранено» показывается один раз и гаснет при следующем рендере', async () => {
   const { document } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const addHabit = [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit');
   addHabit.click();
   document.getElementById('f-name').value = 'Растяжка';
   document.querySelector('[data-act="add-save"]').click();
 
-  const flash = document.querySelector('#scr-items .flash');
+  const flash = document.querySelector('#scr-settings .flash');
   assert.ok(flash, 'подтверждение показано');
   assert.match(flash.textContent, /Сохранено/);
   assert.equal(flash.getAttribute('role'), 'status');
 
   // следующий рендер (открытие формы) — подтверждения уже нет (разовое)
   [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit').click();
-  assert.equal(document.querySelector('#scr-items .flash'), null, 'подтверждение разовое');
+  assert.equal(document.querySelector('#scr-settings .flash'), null, 'подтверждение разовое');
 });
 
 test('движение: reduced-motion в CSS отключает transition и animation полностью', () => {
@@ -1213,12 +1247,11 @@ function fmtShortKey(k) {
   return new Date(y, m - 1, d, 12).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 }
 
-test('тексты ожидания разбора: полная дата понедельника открытия в обоих состояниях', async () => {
-  // обычное ожидание: последняя завершённая неделя разобрана — откроется в следующий понедельник
-  const wait = dueSeed();
-  wait.reviews = [{ closedAt: 1, week: prevMonday(), keys: [], perItem: {}, trainings: {}, oneChange: '', raises: [] }];
-  const a = await boot({ seed: wait });
-  a.document.querySelector('#tabs button[data-tab="review"]').click();
+test('тексты ожидания разбора: полная дата понедельника открытия', async () => {
+  // ожидание достижимо закрытием недели: лист остаётся открытым (задача 16B)
+  const a = await boot({ seed: dueSeed() });
+  openReview(a.document);
+  a.document.querySelector('[data-act="close-week"]').click();
   const textA = a.document.getElementById('scr-review').textContent;
   const monA = addKey(curMonday(), 7);
   assert.ok(textA.includes('Разбор откроется в понедельник, ' + fmtDayKey(monA)), textA);
@@ -1229,14 +1262,16 @@ test('тексты ожидания разбора: полная дата пон
     assert.ok(!textA.includes(fmtShortKey(monA)), 'сокращённый месяц («июл.») не используется');
   }
 
-  // переходные дни: calendarSince в будущем — первый разбор через неделю после него
+  // переходные дни: calendarSince в будущем — приложение о разборе молчит:
+  // ни баннера на «Сегодня», ни открывающей строки на «Прогрессе»
   const trans = dueSeed();
   trans.settings.calendarSince = addKey(curMonday(), 7);
   const b = await boot({ seed: trans });
-  b.document.querySelector('#tabs button[data-tab="review"]').click();
-  const textB = b.document.getElementById('scr-review').textContent;
-  assert.ok(textB.includes('Разбор откроется в понедельник, ' + fmtDayKey(addKey(curMonday(), 14))), textB);
-  assert.doesNotMatch(textB, /Календарные недели начнутся/);
+  assert.equal(b.document.querySelector('[data-act="goto-review"]'), null, 'баннера нет');
+  b.document.querySelector('#tabs button[data-tab="progress"]').click();
+  const prog = b.document.getElementById('scr-progress');
+  assert.equal(prog.querySelector('[data-act="goto-review"]'), null);
+  assert.match(prog.textContent, /Следующий разбор — в понедельник/);
 });
 
 test('привычка: полоса недели — состояния ячеек, «X из N», тап по полосе игнорируется', async () => {
@@ -1326,7 +1361,7 @@ test('привычка: «серия M нед» видна при M ≥ 1 и с�
 
 test('привычка из формы «Пункты» сразу несёт normPerWeek: 7 (каноническая форма)', async () => {
   const { document, window } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const addHabit = [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit');
   addHabit.click();
   document.getElementById('f-name').value = 'Медитация';
@@ -1338,10 +1373,10 @@ test('привычка из формы «Пункты» сразу несёт no
 
 test('привычка: степпер нормы — границы 1 и 7, сохранение', async () => {
   const { document, window } = await boot(); // дефолтный store: 2 привычки
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   [...document.querySelectorAll('[data-act="edit-open"]')]
     .find(b => b.textContent.includes('Перестать грызть ногти')).click();
-  const form = () => document.querySelector('#scr-items .card.form');
+  const form = () => document.querySelector('#scr-settings .card.form');
   assert.match(form().textContent, /Норма в неделю: 7/);
   assert.equal(document.querySelector('[data-act="norm-inc"]').disabled, true, 'верхняя граница 7');
 
@@ -1378,7 +1413,7 @@ test('разбор: строки привычек — «X из N · серия M
   put(addKey(prev, 0), 'hb'); put(addKey(prev, 1), 'hb');     // разбираемая — 2 из 7
   put(addKey(prev, 2), 'hc');                                  // 1 из 7, серии не было
   const { document } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   const scr = document.getElementById('scr-review');
   const text = scr.textContent;
   assert.match(text, /Выполненная: 5 из 5 · серия 2 нед/);
@@ -1400,14 +1435,14 @@ test('разбор: готовность к новой привычке при �
   const wk = (week, c) => ({ closedAt: 1, week, keys: [week], perItem: { h1: { count: c } }, trainings: {}, oneChange: '', raises: [], params: [] });
   seed.reviews = [wk(addKey(prevMonday(), -21), 5), wk(addKey(prevMonday(), -14), 6)]; // 5 и 6 при норме 5
   const { document } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="review"]').click();
+  openReview(document);
   assert.match(document.getElementById('scr-review').textContent, /Привычки устойчивы 2 недели — можно добавить новую/);
 });
 
 test('раздел «Данные»: пассивная строка вместо императива', async () => {
   const { document } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
-  const text = document.getElementById('scr-items').textContent;
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const text = document.getElementById('scr-settings').textContent;
   assert.match(text, /Все данные — на этом устройстве/);
   assert.doesNotMatch(text, /Экспортируйте данные/);
 });
@@ -1469,7 +1504,7 @@ test('indexedDB отсутствует → прежнее поведение, б
   const { document, window } = await boot(); // window.indexedDB не определён
   assert.equal(document.querySelectorAll('input[data-act="mark"]').length, 6);
   assert.equal(await window.flushMirror(), false);
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   assert.equal(document.getElementById('mirror-note').hidden, true); // строка копии не показана
 });
 
@@ -1516,8 +1551,8 @@ test('уход в фон (visibilitychange→hidden) сбрасывает зер
 
 test('exportedAt ставится при экспорте, строки «Данных» рендерятся', async () => {
   const { document, window } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
-  assert.match(document.getElementById('scr-items').textContent, /Экспорта ещё не было/);
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  assert.match(document.getElementById('scr-settings').textContent, /Экспорта ещё не было/);
 
   window.URL.createObjectURL = () => 'blob:fake'; // в jsdom не реализовано
   window.URL.revokeObjectURL = () => {};
@@ -1525,14 +1560,14 @@ test('exportedAt ставится при экспорте, строки «Дан
 
   const saved = JSON.parse(window.localStorage.getItem(NS));
   assert.equal(typeof saved.settings.exportedAt, 'number');
-  assert.match(document.getElementById('scr-items').textContent, /Последний экспорт:/);
+  assert.match(document.getElementById('scr-settings').textContent, /Последний экспорт:/);
 });
 
 test('строка «Резервная копия» подставляется асинхронно из savedAt зеркала', async () => {
   const idb = new IDBFactory();
   await idbPut(idb, { json: JSON.stringify(mirrorStore()), savedAt: Date.now(), schemaVersion: 4 });
   const { document, window } = await boot({ idb });
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const note = document.getElementById('mirror-note');
   for (let i = 0; i < 100 && note.hidden; i++) await new Promise(r => setTimeout(r, 10));
   assert.equal(note.hidden, false);
@@ -1545,11 +1580,11 @@ const LADDER = { steps: ['в кровати в 23:30', '+10 минут без э
 
 /* Вход в лист с «Пунктов» — из формы правки пункта (задача 14.2) */
 function openDetailFromItems(document, name) {
-  document.querySelector('#tabs button[data-tab="items"]').click();
-  const row = [...document.querySelectorAll('#scr-items .rowwrap')]
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const row = [...document.querySelectorAll('#scr-settings .rowwrap')]
     .find(r => r.querySelector('.tname').textContent === name);
   row.querySelector('[data-act="edit-open"]').click();
-  document.querySelector('#scr-items .card.form [data-act="item-detail"]').click();
+  document.querySelector('#scr-settings .card.form [data-act="item-detail"]').click();
   return document.getElementById('scr-detail');
 }
 
@@ -1623,8 +1658,8 @@ test('хвостовая кнопка: нет без лестницы и фор�
   assert.match(tail.getAttribute('aria-label'), /^подробно: «С формулой»$/);
 
   // в строке «Пунктов» кнопки листа нет — вход через форму правки (14.2)
-  document.querySelector('#tabs button[data-tab="items"]').click();
-  const itemsRow = [...document.querySelectorAll('#scr-items .rowwrap')]
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const itemsRow = [...document.querySelectorAll('#scr-settings .rowwrap')]
     .find(r => r.querySelector('.tname').textContent === 'Тестовый пункт');
   assert.equal(itemsRow.querySelector('[data-act="item-detail"]'), null, 'в строке списка кнопки нет');
   assert.equal(itemsRow.querySelectorAll('.ictl .btn').length, 2, 'в кластере только стрелки');
@@ -1640,7 +1675,7 @@ test('хвостовая кнопка: нет без лестницы и фор�
 
   // «Готово» возвращает на «Пункты», и форма правки осталась открытой (14.2)
   d.querySelector('[data-act="detail-done"]').click();
-  assert.equal(document.getElementById('scr-items').hidden, false);
+  assert.equal(document.getElementById('scr-settings').hidden, false);
   assert.equal(d.hidden, true);
   assert.ok(document.getElementById('e-name'), 'форма правки осталась открытой');
   assert.equal(document.getElementById('e-name').value, 'Тестовый пункт');
@@ -1648,14 +1683,14 @@ test('хвостовая кнопка: нет без лестницы и фор�
 
 test('«Пункты»: кнопка листа есть в форме daily, нет у weekly и param', async () => {
   const { document, window } = await boot(); // дефолт: daily, weekly «Тренировка», param «Отбой»
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const openEdit = name => {
     const cancel = document.querySelector('[data-act="edit-cancel"]');
     if (cancel) cancel.click();
-    [...document.querySelectorAll('#scr-items .rowwrap')]
+    [...document.querySelectorAll('#scr-settings .rowwrap')]
       .find(r => r.querySelector('.tname').textContent === name)
       .querySelector('[data-act="edit-open"]').click();
-    return document.querySelector('#scr-items .card.form');
+    return document.querySelector('#scr-settings .card.form');
   };
 
   const daily = openEdit('Умыться');
@@ -1671,7 +1706,7 @@ test('«Пункты»: кнопка листа есть в форме daily, н
 
   // ни в одной строке списка кнопки листа нет
   document.querySelector('[data-act="edit-cancel"]').click();
-  assert.equal(document.querySelectorAll('#scr-items .row.item [data-act="item-detail"]').length, 0);
+  assert.equal(document.querySelectorAll('#scr-settings .row.item [data-act="item-detail"]').length, 0);
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 10);
 });
 
@@ -1792,7 +1827,7 @@ test('лист детали: форма формулы сохраняется и
   // «Готово» вернуло на «Пункты»; на дневном экране — только слова владельца,
   // но появился хвост: у пункта теперь есть формула
   d.querySelector('[data-act="detail-done"]').click();
-  assert.equal(document.getElementById('scr-items').hidden, false);
+  assert.equal(document.getElementById('scr-settings').hidden, false);
   document.querySelector('#tabs button[data-tab="today"]').click();
   const scr = document.getElementById('scr-today');
   assert.doesNotMatch(scr.textContent, /после зарядки|якорь/i);
@@ -1904,8 +1939,8 @@ test('блок: линия есть при двух и более активны
 test('блок: выключение пунктов убирает линию, когда активным остаётся один', async () => {
   const { document } = await boot({ seed: chainSeed() });
   const off = id => {
-    document.querySelector('#tabs button[data-tab="items"]').click();
-    [...document.querySelectorAll('#scr-items .row.item input[data-act="toggle-active"]')]
+    document.querySelector('#tabs button[data-tab="settings"]').click();
+    [...document.querySelectorAll('#scr-settings .row.item input[data-act="toggle-active"]')]
       .find(i => i.dataset.id === id).click();
     document.querySelector('#tabs button[data-tab="today"]').click();
   };
@@ -1961,10 +1996,13 @@ test('цепочка: «Привычки» и «Сегодня» рендеря�
     raiseAfter: 0, history: [], formula: null, ladder: null, ladderLog: []
   });
   const { document } = await boot({ seed });
-  for (const tab of ['today', 'habits', 'review', 'items', 'system']) {
+  for (const tab of ['today', 'habits', 'progress', 'notes', 'settings']) {
     document.querySelector(`#tabs button[data-tab="${tab}"]`).click();
     assert.ok(document.getElementById('scr-' + tab).innerHTML.length > 0, tab);
   }
+  openReview(document); // лист разбора — тем же сидом, тоже без исключений
+  assert.ok(document.getElementById('scr-review').innerHTML.length > 0);
+  document.querySelector('[data-act="review-done"]').click();
   // одинокая привычка в группе-цепочке линии не получает (4.6)
   document.querySelector('#tabs button[data-tab="habits"]').click();
   assert.equal(document.querySelectorAll('#scr-habits .cseg').length, 0);
@@ -1973,9 +2011,9 @@ test('цепочка: «Привычки» и «Сегодня» рендеря�
 
 test('редактор блоков: строка — имя и стрелки, правка раскрывается тапом', async () => {
   const { document, window } = await boot({ seed: chainSeed() });
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
-  const blocks = () => [...document.querySelectorAll('#scr-items [data-act="group-open"]')]
+  const blocks = () => [...document.querySelectorAll('#scr-settings [data-act="group-open"]')]
     .map(b => b.closest('.rowwrap'));
   const rowOf = name => blocks().find(r => r.querySelector('.tname').textContent === name);
 
@@ -1995,9 +2033,9 @@ test('редактор блоков: строка — имя и стрелки, 
   // тап по имени раскрывает правку; раскрыт один блок
   rowOf('Вечер').querySelector('[data-act="group-open"]').click();
   assert.ok(document.getElementById('g-name'), 'правка раскрыта');
-  assert.equal(document.querySelectorAll('#scr-items [data-form="group-edit"]').length, 1);
+  assert.equal(document.querySelectorAll('#scr-settings [data-form="group-edit"]').length, 1);
   rowOf('Утро').querySelector('[data-act="group-open"]').click();
-  assert.equal(document.querySelectorAll('#scr-items [data-form="group-edit"]').length, 1, 'раскрыт ровно один');
+  assert.equal(document.querySelectorAll('#scr-settings [data-form="group-edit"]').length, 1, 'раскрыт ровно один');
   assert.equal(document.querySelector('[data-form="group-edit"]').dataset.id, 'Утро');
   document.querySelector('[data-act="group-cancel"]').click();
   assert.equal(document.getElementById('g-name'), null, 'отмена сворачивает');
@@ -2026,7 +2064,7 @@ test('редактор блоков: строка — имя и стрелки, 
   // удаление — вторым тапом; пункты и отметки остаются
   document.querySelector('#tabs button[data-tab="today"]').click();
   [...document.querySelectorAll('#scr-today input[data-act="mark"]')].find(i => i.dataset.id === 'c1').click();
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   rowOf('Ночь').querySelector('[data-act="group-open"]').click(); // удаление живёт в раскрытой правке
   const del = () => rowOf('Ночь').querySelector('[data-act="group-del"]');
   assert.match(del().textContent, /^Удалить$/);
@@ -2043,10 +2081,10 @@ test('редактор блоков: строка — имя и стрелки, 
 
 test('поле «Блок»: datalist из store.groups, новое имя заводит блок в конце', async () => {
   const { document, window } = await boot({ seed: chainSeed() });
-  document.querySelector('#tabs button[data-tab="items"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
 
-  [...document.querySelectorAll('#scr-items .row.item [data-act="edit-open"]')]
+  [...document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]')]
     .find(b => b.querySelector('.tname').textContent === 'Свет').click();
   const opts = [...document.querySelectorAll('#groups-dl option')].map(o => o.value);
   assert.deepEqual(opts, ['Вечер', 'Утро']); // подсказки — из store.groups
@@ -2061,13 +2099,13 @@ test('поле «Блок»: datalist из store.groups, новое имя за�
 
 test('черновик правки переживает уход в лист детали и возврат (14.2, вопрос 2)', async () => {
   const { document } = await boot();
-  document.querySelector('#tabs button[data-tab="items"]').click();
-  [...document.querySelectorAll('#scr-items .row.item [data-act="edit-open"]')]
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  [...document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]')]
     .find(b => b.querySelector('.tname').textContent === 'Умыться').click();
   document.getElementById('e-name').value = 'Новое имя';
   document.getElementById('e-note').value = 'черновик подписи';
 
-  document.querySelector('#scr-items .card.form [data-act="item-detail"]').click();
+  document.querySelector('#scr-settings .card.form [data-act="item-detail"]').click();
   assert.equal(document.getElementById('scr-detail').hidden, false);
   // в листе своя форма — её черновик не смешивается с черновиком «Пунктов»
   document.querySelector('[data-act="formula-open"]').click();
@@ -2121,7 +2159,8 @@ test('источники: ни --warn и .broken, ни признака цепо
   for (const word of [/Модул/, /модул/, /Групп/, /групп/]) {
     assert.doesNotMatch(code, word, `слово ${word} в коде app.js`);
   }
-  assert.match(js, /<h2>Блоки<\/h2>/);
+  // «Блоки» — заголовок секции «Настроек» (задача 16B), «Блок» — поле формы
+  assert.match(js, /sect\('groups', 'Блоки'/);
   assert.match(js, /<span>Блок<\/span>/);
 });
 
@@ -2141,4 +2180,127 @@ test('баннер хранилища: появляется при сбое save
   Object.defineProperty(window, 'localStorage', { configurable: true, get: () => realLS });
   document.querySelector('input[data-act="mark"]').click(); // успешный save снимает флаг
   assert.doesNotMatch(document.getElementById('scr-today').textContent, /Хранилище недоступно/);
+});
+
+/* ── Задача 16, фаза B. Навигация и «Прогресс» ─────────────── */
+
+/* Сид «Прогресса»: два пункта минимума, заведённых до начала эпохи */
+function progSeed() {
+  const seed = dueSeed();
+  const old = addKey(prevMonday(), -14);
+  seed.items = [
+    { id: 'p1', name: 'Первый', value: 10, unit: 'мин', type: 'daily', area: 'min',
+      goal: null, note: '', group: '', active: true, addedAt: old, raiseAfter: 0,
+      history: [{ date: old, value: 10 }] },
+    { id: 'p2', name: 'Второй', value: null, unit: '', type: 'daily', area: 'min',
+      goal: null, note: '', group: '', active: true, addedAt: old, raiseAfter: 0, history: [] }
+  ];
+  seed.days = {
+    [daysAgo(0)]: { p1: true, p2: true }, // закрыт
+    [daysAgo(1)]: { p1: true }            // отмечено не всё
+  };
+  return seed;
+}
+
+test('«Прогресс»: «в системе», серия, цепь дней 8×7 и скрытые будущие ячейки', async () => {
+  const seed = progSeed();
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  const scr = document.getElementById('scr-progress');
+
+  // «в системе» — от calendarSince до сегодня включительно
+  const total = Math.round((new Date(daysAgo(0)) - new Date(seed.settings.calendarSince)) / 86400000) + 1;
+  const stats = [...scr.querySelectorAll('.stat')].map(x => x.textContent);
+  assert.equal(stats.length, 2);
+  assert.match(stats[0], new RegExp('^' + total + ' '));
+  assert.match(stats[1], /^1 /, 'серия: сегодня закрыт, вчера — амнистия, позавчера обрыв');
+  assert.match(scr.textContent, /Один пропуск не обнуляет\. Два подряд — начинают заново\./);
+
+  // цепь дней: 8 строк по 7 ячеек и строка подписей
+  const cells = [...scr.querySelectorAll('.cdays i')];
+  assert.equal(cells.length, 56);
+  assert.deepEqual([...scr.querySelectorAll('.cd-head')].map(x => x.textContent),
+    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']);
+
+  // будущие дни текущей недели не рисуются
+  const dow = (new Date(daysAgo(0) + 'T12:00').getDay() + 6) % 7;
+  assert.equal(cells.filter(c => c.classList.contains('fut')).length, 6 - dow);
+  assert.equal(cells.filter(c => c.classList.contains('full')).length, 1, 'закрытый день');
+  assert.equal(cells.filter(c => c.classList.contains('part')).length, 1, 'частично отмеченный');
+  // сетка скрыта от AT, вместо неё — сводка по неделям
+  assert.equal(scr.querySelector('.cdays').getAttribute('aria-hidden'), 'true');
+  assert.match(scr.querySelector('.sr-only').textContent, /Неделя с .*: закрыто \d из 7/);
+
+  // «Отметки»: строка на каждый активный дневной пункт
+  assert.match(scr.textContent, new RegExp('Первый · 2 из ' + total));
+  assert.match(scr.textContent, new RegExp('Второй · 1 из ' + total));
+});
+
+test('«Прогресс»: подъём — линия при двух записях истории, при одной блока нет', async () => {
+  const one = await boot({ seed: progSeed() });
+  one.document.querySelector('#tabs button[data-tab="progress"]').click();
+  assert.equal(one.document.querySelectorAll('#scr-progress .rise').length, 0);
+  assert.doesNotMatch(one.document.getElementById('scr-progress').textContent, /Подъём/);
+
+  const seed = progSeed();
+  seed.items[0].history.push({ date: daysAgo(3), value: 14 });
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  const scr = document.getElementById('scr-progress');
+  assert.match(scr.textContent, /Подъём/);
+  const svg = scr.querySelectorAll('.rise');
+  assert.equal(svg.length, 1, 'один визуал на пункт');
+  const d = svg[0].querySelector('path').getAttribute('d');
+  assert.equal((d.match(/[HV]/g) || []).length, 3);
+  assert.equal(svg[0].getAttribute('aria-hidden'), 'true');
+  // подпись — словами владельца, без осей и подписей значений внутри графика
+  assert.match(scr.querySelector('.rise-v').textContent, /^10 → 14 мин$/);
+  assert.equal(svg[0].querySelector('text'), null, 'подписей значений в SVG нет');
+  assert.equal(svg[0].querySelector('line'), null, 'осей и сетки нет');
+  assert.equal(svg[0].querySelector('circle'), null, 'точек нет');
+});
+
+test('разбор: открывается строкой «Прогресса» и «Готово» возвращает на неё', async () => {
+  const { document } = await boot({ seed: dueSeed() });
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  const line = document.querySelector('#scr-progress [data-act="goto-review"]');
+  assert.ok(line, 'строка разбора на «Прогрессе»');
+
+  line.click();
+  assert.equal(document.getElementById('scr-review').hidden, false);
+  assert.equal(document.getElementById('scr-progress').hidden, true);
+  // вкладка возврата остаётся текущей и при открытом листе
+  assert.equal(document.querySelector('#tabs button[data-tab="progress"]').getAttribute('aria-current'), 'page');
+
+  document.querySelector('[data-act="review-done"]').click();
+  assert.equal(document.getElementById('scr-review').hidden, true);
+  assert.equal(document.getElementById('scr-progress').hidden, false);
+
+  // таб-бар тоже уводит с листа
+  document.querySelector('#scr-progress [data-act="goto-review"]').click();
+  assert.equal(document.getElementById('scr-review').hidden, false);
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(document.getElementById('scr-review').hidden, true);
+  assert.equal(document.getElementById('scr-today').hidden, false);
+});
+
+test('«Настройки»: четыре секции по порядку, раскрыты только «Пункты», состояние держится', async () => {
+  const { document } = await boot();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const sects = () => [...document.querySelectorAll('#scr-settings details.sect')];
+  const titles = () => sects().map(s => s.querySelector('summary').textContent.replace('›', '').trim());
+
+  assert.deepEqual(titles(), ['Блоки', 'Пункты', 'Данные', 'Система']);
+  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, false, false]);
+
+  // содержимое прежних экранов на месте, внутри своих секций
+  assert.match(sects()[0].textContent, /Добавить блок/);
+  assert.match(sects()[1].textContent, /Граница дня/);
+  assert.ok(sects()[2].querySelector('[data-act="export"]'));
+  assert.match(sects()[3].textContent, /Пять правил/);
+
+  // раскрытие запоминается: перерисовка после действия секцию не захлопывает
+  sects()[2].querySelector('summary').click();
+  document.querySelector('#scr-settings [data-act="add-open"]').click(); // перерисовка «Настроек»
+  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, true, false]);
 });

@@ -1084,6 +1084,99 @@ function moveItem(id, dir) {
   return true;
 }
 
+/* ── Прогресс (инвариант 14) ───────────────────────────────────
+   Чистые функции от days{}, items[] и календаря. Ни разборы, ни
+   закрытие недели на них не влияют: прошлое читается по фактам
+   отметок, а не по срезам. Всё это живёт только на «Прогрессе» —
+   экране, который открывают намеренно. */
+
+/* Пункты минимума, существовавшие в этот день: активные сейчас и
+   заведённые не позже дня (addedAt ≤ день). Пункт, добавленный
+   сегодня, прошлые дни не переписывает. */
+function minDayItems(dayKey) {
+  return store.items.filter(i =>
+    i.type === 'daily' && i.area === 'min' && i.active && i.addedAt <= dayKey);
+}
+
+/* Сколько таких пунктов отмечено: 0 — день пуст, меньше всех —
+   частичный, все — закрыт. Один проход для серии и для цепи дней. */
+function minDayMarks(dayKey) {
+  const items = minDayItems(dayKey);
+  return { done: items.filter(i => isMarked(dayKey, i.id)).length, total: items.length };
+}
+
+/* Пустой список пунктов днём закрытым не делает: закрывать было
+   нечего. Иначе вакуумная истина дала бы серию до начала календаря. */
+function minDayClosed(dayKey) {
+  const m = minDayMarks(dayKey);
+  return m.total > 0 && m.done === m.total;
+}
+
+/* «В системе N дней»: логические дни от calendarSince до сегодня
+   включительно. Не прерывается никогда — пропуски на неё не влияют.
+   Ноль до наступления calendarSince (миграция ставит его в ближайший
+   понедельник, который может быть впереди). */
+function daysInSystem() {
+  const since = store.settings.calendarSince;
+  const t = todayKey();
+  if (!isDayKey(since) || t < since) return 0;
+  return diffDays(t, since) + 1;
+}
+
+/* Серия закрытых дней, считая назад от сегодня (инвариант 14).
+   Сегодня незакрытым пропускается — день ещё не кончился. Дальше:
+   закрытый +1, незакрытый — амнистия (один подряд серию не рвёт и в
+   счёт не идёт), два подряд обрывают. Дно — calendarSince. */
+function dayStreak() {
+  const t = todayKey();
+  const since = store.settings.calendarSince;
+  const floor = isDayKey(since) ? since : t;
+  let n = minDayClosed(t) ? 1 : 0;
+  let miss = 0; // незакрытых подряд; сегодняшний пропуск в счёт амнистии не идёт
+  for (let k = addDays(t, -1); k >= floor; k = addDays(k, -1)) {
+    if (minDayClosed(k)) { n++; miss = 0; continue; }
+    if (++miss >= 2) break;
+  }
+  return n;
+}
+
+/* Понедельники последних n календарных недель по возрастанию, включая
+   текущую. Опирается на weekStartOf, а не на currentWeekStart: сетка
+   рисуется и до наступления calendarSince. */
+function chainWeeks(n) {
+  const mon = weekStartOf(todayKey());
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) out.push(addDays(mon, -7 * i));
+  return out;
+}
+
+/* Отметок пункта за время в системе — числитель строки «Отметки» */
+function marksInSystem(item) {
+  const since = store.settings.calendarSince;
+  const t = todayKey();
+  if (!isDayKey(since)) return 0;
+  let n = 0;
+  for (const k of Object.keys(store.days)) {
+    if (k >= since && k <= t && store.days[k][item.id]) n++;
+  }
+  return n;
+}
+
+/* Ряд «Подъёма» — точки {date, value} и вид ряда. Планка первична:
+   лестница даёт ряд только у пункта без истории значений (не больше
+   одного визуала на пункт). Меньше двух записей — ряда нет. */
+function riseSeries(item) {
+  const hist = Array.isArray(item.history) ? item.history : [];
+  if (hist.length >= 2) {
+    return { kind: 'bar', points: hist.map(x => ({ date: x.date, value: x.value })) };
+  }
+  const log = Array.isArray(item.ladderLog) ? item.ladderLog : [];
+  if (log.length >= 2) {
+    return { kind: 'ladder', points: log.map(x => ({ date: x.date, value: x.step + 1 })) };
+  }
+  return null;
+}
+
 /* ── Закрытие недели ───────────────────────────────────────── */
 
 function closeWeek() {
@@ -1218,7 +1311,12 @@ const ui = {
   detailDraft: null,    // черновик формы листа — отдельный слот от «Пунктов» (14.2, вопрос 2)
   groupRename: null,    // имя блока с раскрытой правкой
   groupDelete: null,    // блок ждёт подтверждения удаления вторым тапом
-  groupAdd: false       // открыто поле «Добавить блок»
+  groupAdd: false,      // открыто поле «Добавить блок»
+  reviewOpen: false,    // разбор открыт поверх вкладки (с таб-бара он ушёл, задача 16B)
+  reviewFrom: null,     // вкладка, на которую вернёт «Готово»
+  reviewScroll: 0,      // её скролл — возвращается вместе с ней
+  // свёрнутые секции «Настроек»: по умолчанию раскрыты только «Пункты»
+  settingsOpen: { groups: false, items: true, data: false, system: false }
 };
 
 let dayTimer = null; // таймер на ближайшую границу дня
@@ -1295,27 +1393,37 @@ function motionLeave(node, done) {
   setTimeout(fin, MOTION_MS + 60);
 }
 
+/* Пять вкладок плюс два листа поверх них: лист детали пункта и разбор
+   недели. Разбор с таб-бара ушёл (задача 16B) — открывается баннером
+   «Сегодня» и строкой «Прогресса», закрывается «Готово» на ту вкладку,
+   с которой открыт. Лист детали главнее: он открывается и из разбора. */
 function renderAll() {
-  const map = { today: 'scr-today', habits: 'scr-habits', review: 'scr-review', items: 'scr-items', system: 'scr-system' };
-  // лист детали идёт поверх вкладки; исчезнувший пункт (импорт) закрывает лист
+  const map = {
+    today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
+    notes: 'scr-notes', settings: 'scr-settings'
+  };
+  // исчезнувший пункт (импорт) закрывает лист детали
   const detail = ui.detailId ? store.items.find(i => i.id === ui.detailId) : null;
   if (ui.detailId && !detail) closeDetail();
-  for (const [tab, id] of Object.entries(map)) el(id).hidden = detail ? true : tab !== ui.tab;
-  el('scr-detail').hidden = !detail;
+  const sheet = detail ? 'detail' : (ui.reviewOpen ? 'review' : null);
+  for (const [tab, id] of Object.entries(map)) el(id).hidden = sheet ? true : tab !== ui.tab;
+  el('scr-detail').hidden = sheet !== 'detail';
+  el('scr-review').hidden = sheet !== 'review';
   document.querySelectorAll('#tabs button').forEach(b => {
     // вкладка возврата остаётся текущей и при открытом листе
     if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
   if (detail) renderDetail(detail);
+  else if (ui.reviewOpen) renderReview();
   else {
     if (ui.tab === 'today') renderToday();
     if (ui.tab === 'habits') renderHabits();
-    if (ui.tab === 'review') renderReview();
-    if (ui.tab === 'items') renderItems();
-    if (ui.tab === 'system') renderSystem();
+    if (ui.tab === 'progress') renderProgress();
+    if (ui.tab === 'notes') renderNotes();
+    if (ui.tab === 'settings') renderSettings();
   }
-  const view = detail ? 'detail' : ui.tab;
+  const view = sheet || ui.tab;
   if (ui.renderedTab !== view) window.scrollTo(0, 0); // скролл — только при фактической смене вида
   ui.renderedTab = view;
 }
@@ -1503,6 +1611,141 @@ function renderHabits() {
   h += `<p class="creed">Не спеши — доверься накопительному эффекту.</p>`;
 
   el('scr-habits').innerHTML = h;
+}
+
+/* ── Экран 3 — «Прогресс» (инвариант 14) ───────────────────────
+   Единственное место, где приложение показывает прошлое: экран
+   открывают намеренно, дневные экраны остаются без истории. */
+
+const RISE_W = 100, RISE_H = 44, RISE_PAD = 2; // система координат ступеньки
+
+/* Ступенчатый путь: ось X — даты от первой записи до сегодня, ось Y —
+   значения. Последнее значение держится до правого края, поэтому
+   сегментов ровно 2N−1: N−1 горизонталей, N−1 вертикалей и финальная
+   горизонталь. Ни осей, ни сетки, ни точек — только линия. */
+function risePath(points) {
+  const r = n => Math.round(n * 100) / 100;
+  const first = points[0].date;
+  const last = points[points.length - 1].date;
+  const t = todayKey();
+  const end = last > t ? last : t;
+  const span = diffDays(end, first);
+  // все записи одним днём (стартовая запись лестницы и шаг того же дня) —
+  // раскладываем по индексу: дат для пропорции не хватает
+  const x = (p, i) => span > 0
+    ? r(RISE_W * diffDays(p.date, first) / span)
+    : r(points.length > 1 ? RISE_W * i / (points.length - 1) : 0);
+  const vals = points.map(p => p.value);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const y = v => hi === lo
+    ? RISE_H / 2 // ряд без размаха — ровная линия посередине
+    : r(RISE_H - RISE_PAD - (v - lo) / (hi - lo) * (RISE_H - RISE_PAD * 2));
+  let d = `M${x(points[0], 0)} ${y(vals[0])}`;
+  for (let i = 1; i < points.length; i++) d += `H${x(points[i], i)}V${y(vals[i])}`;
+  return d + `H${RISE_W}`;
+}
+
+/* Значение ряда словами владельца: у параметра — через fmtParam
+   (time читается как 23:30), у остальных — числом */
+function riseValue(it, v) {
+  return it.type === 'param' ? fmtParam(it, v) : String(v);
+}
+
+function riseBlocks() {
+  let h = '';
+  for (const it of store.items) {
+    const s = riseSeries(it);
+    if (!s) continue;
+    const a = s.points[0].value, b = s.points[s.points.length - 1].value;
+    const label = s.kind === 'ladder'
+      ? `Ступень ${a} → ${b}`
+      : `${riseValue(it, a)} → ${riseValue(it, b)}${it.type !== 'param' && it.unit ? ' ' + it.unit : ''}`;
+    h += `
+      <div class="rise-b">
+        <p class="rise-h"><span class="rise-n">${esc(it.name)}</span><span class="rise-v">${esc(label)}</span></p>
+        <svg class="rise" viewBox="0 0 ${RISE_W} ${RISE_H}" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path d="${risePath(s.points)}"/></svg>
+      </div>`;
+  }
+  return h;
+}
+
+/* Цепь дней: 8 календарных недель, строка — неделя, ячейка — день.
+   Кружок сетки разбора: заполненный — день закрыт, контурный —
+   отмечено не всё, пустой — пусто. Будущие дни не рисуются. */
+function chainGrid() {
+  const t = todayKey();
+  const weeks = chainWeeks(8);
+  const names = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+  let cells = '';
+  const sr = [];
+  for (const mon of weeks) {
+    let closed = 0;
+    for (let i = 0; i < 7; i++) {
+      const k = addDays(mon, i);
+      if (k > t) { cells += `<i class="cd fut"></i>`; continue; }
+      const m = minDayMarks(k);
+      const full = m.total > 0 && m.done === m.total;
+      if (full) closed++;
+      cells += `<i class="cd${full ? ' full' : (m.done ? ' part' : '')}"></i>`;
+    }
+    sr.push(`Неделя с ${fmtShort(mon)}: закрыто ${closed} из 7`);
+  }
+  return `<p class="sr-only">${esc(sr.join('. '))}</p>` +
+    `<div class="cdays" aria-hidden="true">` +
+    names.map(d => `<span class="cd-head">${d}</span>`).join('') + cells + `</div>`;
+}
+
+function renderProgress() {
+  const t = todayKey();
+  ui.renderedDayKey = t;
+  const since = store.settings.calendarSince;
+  const days = daysInSystem();
+  const streak = dayStreak();
+
+  let h = `
+    <header class="page">
+      <p class="overline">Накопленное</p>
+      <h1>Прогресс</h1>
+    </header>`;
+
+  h += `<h2>В системе</h2>
+    <p class="stat">${days} ${plural(days, 'день', 'дня', 'дней')}</p>`;
+  if (isDayKey(since)) h += `<p class="muted">с ${esc(fmtDay(since))}</p>`;
+
+  h += `<h2>Серия</h2>
+    <p class="stat">${streak} ${plural(streak, 'день', 'дня', 'дней')}</p>
+    <p class="muted">Один пропуск не обнуляет. Два подряд — начинают заново.</p>`;
+
+  h += `<h2>Цепь дней</h2>` + chainGrid();
+
+  const rise = riseBlocks();
+  if (rise) h += `<h2>Подъём</h2>` + rise;
+
+  const inOrder = area => groupedItems(activeDaily().filter(i => i.area === area))
+    .reduce((acc, sec) => acc.concat(sec.items), []);
+  const listed = inOrder('min').concat(inOrder('habit'));
+  if (listed.length) {
+    h += `<h2>Отметки</h2>`;
+    for (const it of listed) {
+      h += `<p class="line muted">${esc(it.name)} · ${marksInSystem(it)} из ${days}</p>`;
+    }
+  }
+
+  h += reviewDue()
+    ? `<button class="banner rev" data-act="goto-review"><span>Разбор недели</span><span class="chev" aria-hidden="true">&rsaquo;</span></button>`
+    : `<p class="muted rev">Следующий разбор — в понедельник</p>`;
+
+  el('scr-progress').innerHTML = h;
+}
+
+/* Экран 4 — «Заметки»: наполняется в фазе E */
+function renderNotes() {
+  el('scr-notes').innerHTML = `
+    <header class="page">
+      <p class="overline">Своими словами</p>
+      <h1>Заметки</h1>
+    </header>
+    <p class="muted">Пока пусто</p>`;
 }
 
 /* ── Точечные обновления «Сегодня» и «Привычек» (горячие пути) ──
@@ -1729,7 +1972,10 @@ function ladderForm(it) {
     </div>`;
 }
 
-/* Экран 2 — «Разбор недели» */
+/* Лист «Разбор недели»: открывается баннером «Сегодня» и строкой
+   «Прогресса», возвращает на прежнюю вкладку (задача 16B) */
+const REVIEW_DONE = `<button class="btn wide" data-act="review-done">Готово</button>`;
+
 function renderReview() {
   let h = `<header class="page"><p class="overline">Раз в неделю</p><h1>Разбор недели</h1></header>`;
 
@@ -1745,6 +1991,7 @@ function renderReview() {
     }
     const ocWait = currentOneChange();
     if (ocWait) h += `<p class="muted">Изменение этой недели: „${esc(ocWait)}“</p>`;
+    h += REVIEW_DONE;
     el('scr-review').innerHTML = h;
     ui.justClosed = false; // «Неделя закрыта.» показывается ровно один раз
     return;
@@ -1864,7 +2111,7 @@ function renderReview() {
       <span>Одно изменение на следующую неделю</span>
       <input type="text" data-bind="one-change" value="${esc(store.draftOneChange)}" placeholder="необязательно">
     </label>
-    <button class="btn primary wide" data-act="close-week">Закрыть неделю</button>`;
+    <button class="btn primary wide" data-act="close-week">Закрыть неделю</button>` + REVIEW_DONE;
 
   el('scr-review').innerHTML = h;
 }
@@ -1896,7 +2143,7 @@ function paramHistory(it) {
 
 /* Черновик открытой формы «Пунктов»: значения всех полей (сливаются
    с прежним черновиком — цель переживает смену типа), сфокусированное
-   поле и позиция каретки. Восстанавливается при каждом renderItems,
+   поле и позиция каретки. Восстанавливается при каждом renderSettings,
    пока открыта та же форма. */
 function currentFormKey() {
   if (ui.detailId !== null && ui.detailForm) return ui.detailForm + ':' + ui.detailId; // формы листа детали
@@ -1920,7 +2167,7 @@ function snapshotOpenForm() {
   // формы блока черновиком не считаются — одно поле и один тап
   const form = document.querySelector(isDetailKey(key)
     ? '#scr-detail .card.form'
-    : '#scr-items .card.form:not([data-form="group-add"])');
+    : '#scr-settings .card.form:not([data-form="group-add"])');
   const domKey = form ? (form.dataset.form === 'add' ? 'add' : form.dataset.form + ':' + form.dataset.id) : null;
   if (domKey !== key) {
     if (ui[slot] && ui[slot].key !== key) ui[slot] = null; // открыли другую форму
@@ -1963,7 +2210,7 @@ function restoreOpenForm() {
 /* Редактор блоков: строка — имя и стрелки, правка раскрывается тапом по
    имени (механика формы правки пункта). Перетаскивание — отдельная задача. */
 function groupEditor() {
-  let h = `<h2>Блоки</h2>`;
+  let h = '';
   if (!store.groups.length) {
     h += `<p class="muted">Блоков пока нет — пункты идут одним списком.</p>`;
   }
@@ -2002,30 +2249,43 @@ function groupEditor() {
   return h;
 }
 
-function renderItems() {
+/* Сворачиваемая секция «Настроек» на нативном details: раскрытие —
+   дело браузера, ui хранит только состояние, чтобы перерисовка после
+   действия внутри секции её не захлопнула. */
+function sect(key, title, body) {
+  return `
+    <details class="sect"${ui.settingsOpen[key] ? ' open' : ''}>
+      <summary data-act="sect" data-sect="${key}">${title}<span class="chev" aria-hidden="true">&rsaquo;</span></summary>
+      <div class="sect-b">${body}</div>
+    </details>`;
+}
+
+/* Экран 5 — «Настройки»: четыре секции по порядку (задача 16B) */
+function renderSettings() {
   snapshotOpenForm();
-  let h = `<header class="page"><p class="overline">Настройка блоков</p><h1>Пункты</h1></header>`;
+  let h = `<header class="page"><p class="overline">Устройство приложения</p><h1>Настройки</h1></header>`;
   if (ui.savedFlash) { // тихое подтверждение сохранения — гаснет само (CSS), показывается один раз
     h += `<p class="flash" role="status">Сохранено</p>`;
     ui.savedFlash = false;
   }
 
-  h += groupEditor();
+  h += sect('groups', 'Блоки', groupEditor());
 
   // две группы: минимум и привычки, у каждой своя кнопка добавления
   const groups = [
     ['Минимум', 'min', 'Добавить пункт'],
     ['Привычки', 'habit', 'Добавить привычку']
   ];
+  let body = '';
   for (const [title, area, addLabel] of groups) {
     const items = store.items.filter(i => i.area === area);
-    h += `<h2>${title}</h2>`;
-    h += `<div class="list">`;
+    body += `<h2>${title}</h2>`;
+    body += `<div class="list">`;
     items.forEach((it, gi) => {
       const vu = it.type === 'param' ? `порог ${fmtParam(it)}` : valUnit(it);
       const meta = [vu, it.type === 'weekly' ? `цель ${it.goal || 0} / нед.` : '', (it.group || '').trim()]
         .filter(Boolean).join(' · ');
-      h += `
+      body += `
       <div class="rowwrap${it.active ? '' : ' off'}">
         <div class="row item">
           <button class="itxt" data-act="edit-open" data-id="${esc(it.id)}" aria-label="изменить «${esc(it.name)}»">
@@ -2046,15 +2306,16 @@ function renderItems() {
         ${ui.editingId === it.id ? editForm(it) : ''}
       </div>`;
     });
-    h += `</div>`;
-    h += (ui.addOpen && ui.addArea === area)
+    body += `</div>`;
+    body += (ui.addOpen && ui.addArea === area)
       ? addForm()
       : `<button class="btn wide" data-act="add-open" data-area="${area}">${addLabel}</button>`;
   }
 
+  // граница дня — механика самих пунктов, поэтому живёт в их секции
   const hours = [];
   for (let i = 0; i <= 8; i++) hours.push(`<option value="${i}"${store.settings.dayBoundary === i ? ' selected' : ''}>${pad2(i)}:00</option>`);
-  h += `
+  body += `
     <h2>Граница дня</h2>
     <label class="field inline">
       <span>Смена дня в</span>
@@ -2062,12 +2323,13 @@ function renderItems() {
     </label>
     <p class="muted">Отметки до этого часа относятся к предыдущему дню.</p>`;
 
+  h += sect('items', 'Пункты', body);
+
   const exp = (typeof store.settings.exportedAt === 'number' && isFinite(store.settings.exportedAt))
     // логический день — как в имени файла экспорта (инвариант 1)
     ? `Последний экспорт: ${esc(fmtShort(dateKeyShift(new Date(store.settings.exportedAt), store.settings.dayBoundary)))}`
     : 'Экспорта ещё не было';
-  h += `
-    <h2>Данные</h2>
+  h += sect('data', 'Данные', `
     <div class="btns">
       <button class="btn" data-act="export">Экспорт JSON</button>
       <button class="btn" data-act="import">Импорт JSON</button>
@@ -2076,9 +2338,11 @@ function renderItems() {
     <p class="muted">${exp}</p>
     <p class="muted" id="mirror-note" hidden></p>
     <input type="file" id="import-file" accept="application/json,.json" hidden>
-    <p class="muted">Все данные — на этом устройстве: рабочая копия и автоматическая резервная. Экспорт — способ сохранить их вне приложения.</p>`;
+    <p class="muted">Все данные — на этом устройстве: рабочая копия и автоматическая резервная. Экспорт — способ сохранить их вне приложения.</p>`);
 
-  el('scr-items').innerHTML = h;
+  h += sect('system', 'Система', systemSection());
+
+  el('scr-settings').innerHTML = h;
   restoreOpenForm();
   updateMirrorNote();
 }
@@ -2209,8 +2473,9 @@ function addForm() {
 }
 
 /* Экран 4 — «Система» */
-function renderSystem() {
-  let h = `<header class="page"><p class="overline">Как это устроено</p><h1>Система</h1></header>`;
+/* Тексты «Системы» — секция «Настроек» (задача 16B), не отдельный экран */
+function systemSection() {
+  let h = '';
   for (const s of SYSTEM_TEXTS) {
     h += `<section class="sys"><h2>${esc(s.title)}</h2>`;
     if (s.kind === 'rules') {
@@ -2222,7 +2487,7 @@ function renderSystem() {
     }
     h += `</section>`;
   }
-  el('scr-system').innerHTML = h;
+  return h;
 }
 
 /* ── Обработчики ───────────────────────────────────────────── */
@@ -2258,6 +2523,12 @@ function closeDetail() {
   ui.detailDraft = null;
 }
 
+/* Лист разбора закрывается и таб-баром — как лист детали */
+function closeReview() {
+  ui.reviewOpen = false;
+  ui.reviewFrom = null;
+}
+
 function onClick(e) {
   const b = e.target.closest('[data-act]');
   if (!b) return;
@@ -2269,11 +2540,30 @@ function onClick(e) {
   const item = id ? store.items.find(i => i.id === id) : null;
 
   switch (act) {
+    // разбор — лист поверх вкладки: помним, откуда открыт и с каким скроллом
     case 'goto-review':
-      ui.missOpen = {}; // смена вкладки — как в таб-баре
+      ui.missOpen = {}; // уход с дневного экрана — как в таб-баре
       ui.raiseEdit = {};
-      ui.tab = 'review';
+      ui.reviewScroll = window.scrollY || 0;
+      ui.reviewFrom = ui.tab;
+      ui.reviewOpen = true;
       renderAll();
+      break;
+
+    case 'review-done': {
+      const back = ui.reviewFrom, y = ui.reviewScroll;
+      ui.reviewOpen = false;
+      ui.reviewFrom = null;
+      if (back) ui.tab = back;
+      renderAll();
+      window.scrollTo(0, y); // прежняя вкладка с прежним скроллом
+      break;
+    }
+
+    // сворачивание секции «Настроек»: раскрытие делает сам details,
+    // здесь только запоминается состояние — перерисовка его не теряет
+    case 'sect':
+      if (b.dataset.sect in ui.settingsOpen) ui.settingsOpen[b.dataset.sect] = !ui.settingsOpen[b.dataset.sect];
       break;
 
     case 'miss-note': {
@@ -2385,9 +2675,9 @@ function onClick(e) {
     case 'move-up':
     case 'move-down': {
       if (!moveItem(id, act === 'move-up' ? 'up' : 'down')) break;
-      renderItems();
+      renderSettings();
       // вернуть фокус кнопке того же действия и пункта; на краю списка — парной
-      const find = a => [...el('scr-items').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.id === id);
+      const find = a => [...el('scr-settings').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.id === id);
       let btn = find(act);
       if (!btn || btn.disabled) btn = find(act === 'move-up' ? 'move-down' : 'move-up');
       if (btn && !btn.disabled) btn.focus();
@@ -2398,9 +2688,9 @@ function onClick(e) {
     case 'group-down': {
       if (!moveGroup(b.dataset.name, act === 'group-up' ? 'up' : 'down')) break;
       ui.groupDelete = null;
-      renderItems();
+      renderSettings();
       // фокус на кнопке того же действия и той же группы; на краю — парной
-      const find = a => [...el('scr-items').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.name === b.dataset.name);
+      const find = a => [...el('scr-settings').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.name === b.dataset.name);
       let btn = find(act);
       if (!btn || btn.disabled) btn = find(act === 'group-up' ? 'group-down' : 'group-up');
       if (btn && !btn.disabled) btn.focus();
@@ -2409,37 +2699,37 @@ function onClick(e) {
     case 'group-open':
       ui.groupRename = ui.groupRename === b.dataset.name ? null : b.dataset.name; // раскрыт один
       ui.groupDelete = null;
-      renderItems();
+      renderSettings();
       break;
-    case 'group-cancel': ui.groupRename = null; ui.groupDelete = null; renderItems(); break;
+    case 'group-cancel': ui.groupRename = null; ui.groupDelete = null; renderSettings(); break;
     case 'group-save': {
       const inp = el('g-name');
       if (inp) renameGroup(b.dataset.name, inp.value); // пустое или занятое имя — тихий отказ
       ui.groupRename = null;
       ui.groupDelete = null;
-      renderItems();
+      renderSettings();
       break;
     }
     case 'group-del': {
-      if (ui.groupDelete !== b.dataset.name) { ui.groupDelete = b.dataset.name; renderItems(); break; }
+      if (ui.groupDelete !== b.dataset.name) { ui.groupDelete = b.dataset.name; renderSettings(); break; }
       deleteGroup(b.dataset.name); // пункты остаются, отметки не трогаются
       ui.groupDelete = null;
       ui.groupRename = null;
-      renderItems();
+      renderSettings();
       break;
     }
-    case 'group-add-open': ui.groupAdd = true; ui.groupDelete = null; renderItems(); break;
-    case 'group-add-cancel': ui.groupAdd = false; renderItems(); break;
+    case 'group-add-open': ui.groupAdd = true; ui.groupDelete = null; renderSettings(); break;
+    case 'group-add-cancel': ui.groupAdd = false; renderSettings(); break;
     case 'group-add-save': {
       const inp = el('g-add');
       if (inp && !addGroup(inp.value)) { inp.focus(); break; } // пустое или дубль — форма остаётся
       ui.groupAdd = false;
-      renderItems();
+      renderSettings();
       break;
     }
 
-    case 'edit-open': ui.editingId = id; ui.addOpen = false; ui.editNorm = null; ui.groupDelete = null; renderItems(); break;
-    case 'edit-cancel': ui.editingId = null; ui.editNorm = null; renderItems(); break;
+    case 'edit-open': ui.editingId = id; ui.addOpen = false; ui.editNorm = null; ui.groupDelete = null; renderSettings(); break;
+    case 'edit-cancel': ui.editingId = null; ui.editNorm = null; renderSettings(); break;
 
     case 'norm-dec':
     case 'norm-inc': {
@@ -2448,9 +2738,9 @@ function onClick(e) {
       const next = Math.max(1, Math.min(7, cur + (act === 'norm-inc' ? 1 : -1)));
       if (next === cur) break;
       ui.editNorm = next;
-      renderItems();
+      renderSettings();
       // вернуть фокус кнопке того же действия; на границе — парной (как у «выше/ниже»)
-      const find = a => [...el('scr-items').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.id === id);
+      const find = a => [...el('scr-settings').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.id === id);
       let btn = find(act);
       if (!btn || btn.disabled) btn = find(act === 'norm-inc' ? 'norm-dec' : 'norm-inc');
       if (btn && !btn.disabled) btn.focus();
@@ -2499,7 +2789,7 @@ function onClick(e) {
       ui.editingId = null;
       ui.editNorm = null;
       ui.savedFlash = true; // тихое подтверждение (движение, задача 12)
-      renderItems();
+      renderSettings();
       break;
     }
 
@@ -2510,10 +2800,10 @@ function onClick(e) {
       // Подсказка «одна новая привычка за раз» видима все 14 дней после добавления пункта
       const newest = store.items.reduce((a, x) => (!a || x.addedAt > a.addedAt) ? x : a, null);
       ui.addHint = !!(newest && diffDays(todayKey(), newest.addedAt) < 14);
-      renderItems();
+      renderSettings();
       break;
     }
-    case 'add-cancel': ui.addOpen = false; ui.addHint = false; renderItems(); break;
+    case 'add-cancel': ui.addOpen = false; ui.addHint = false; renderSettings(); break;
     case 'add-save': {
       const name = el('f-name').value.trim();
       if (!name) { el('f-name').focus(); break; }
@@ -2568,16 +2858,16 @@ function onClick(e) {
       save();
       ui.addOpen = false;
       ui.savedFlash = true; // тихое подтверждение (движение, задача 12)
-      renderItems();
+      renderSettings();
       break;
     }
 
     case 'export':
       exportJSON();
-      renderItems(); // обновить строку «Последний экспорт» (и погасить строку импорта)
+      renderSettings(); // обновить строку «Последний экспорт» (и погасить строку импорта)
       break;
     case 'import':
-      if (hadImportNote) renderItems(); // до открытия диалога: file-input должен остаться в живом DOM
+      if (hadImportNote) renderSettings(); // до открытия диалога: file-input должен остаться в живом DOM
       el('import-file').click();
       break;
   }
@@ -2614,10 +2904,10 @@ function onChange(e) {
     }
   } else if (act === 'add-type') {
     ui.addType = t.value;
-    renderItems(); // снимок/восстановление формы — внутри renderItems, цель не сбрасывается
+    renderSettings(); // снимок/восстановление формы — внутри renderSettings, цель не сбрасывается
   } else if (act === 'add-pkind') {
     ui.addPkind = t.value === 'number' ? 'number' : 'time';
-    renderItems();
+    renderSettings();
   } else if (t.id === 'import-file') {
     if (t.files && t.files[0]) importJSON(t.files[0]);
     t.value = '';
@@ -2661,7 +2951,8 @@ async function init() {
     b.addEventListener('click', () => {
       ui.importNote = null;
       if (b.dataset.tab !== ui.tab) { ui.missOpen = {}; ui.raiseEdit = {}; }
-      closeDetail(); // таб-бар уводит с листа детали, черновик формы не переносится
+      closeDetail(); // таб-бар уводит с листов, черновик формы не переносится
+      closeReview();
       ui.tab = b.dataset.tab;
       if (!syncDay()) renderAll(); // при смене дня syncDay уже перерисовал новую вкладку
     }));
@@ -2695,7 +2986,10 @@ if (typeof module !== 'undefined' && module.exports) {
     setLadder, clearLadder, setFormula, normFormula, normLadder,
     // блоки (инвариант 13)
     findGroup, groupOf, addGroup, moveGroup, renameGroup,
-    deleteGroup, groupedItems, groupList
+    deleteGroup, groupedItems, groupList,
+    // прогресс (инвариант 14)
+    minDayItems, minDayMarks, minDayClosed, daysInSystem, dayStreak,
+    chainWeeks, marksInSystem, riseSeries, risePath
   };
 } else if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', init);

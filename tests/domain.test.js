@@ -1805,3 +1805,181 @@ test('И7: точка-маркер — пункт существовал вче�
   app.toggleMark(app.addDays(t, -1), it.id);
   assert.equal(app.missedYesterday(it, t), false);
 });
+
+/* ── Задача 16, фаза B. Прогресс (инвариант 14) ────────────── */
+
+/* Пункт минимума в канонической форме */
+function mkMin(id, addedAt, area = 'min') {
+  return {
+    id, name: id, value: null, unit: '', type: 'daily', area, normPerWeek: 7,
+    goal: null, note: '', group: '', active: true, addedAt, raiseAfter: 0,
+    history: [], formula: null, ladder: null, ladderLog: []
+  };
+}
+
+/* Один пункт минимума, заведённый давно; календарь начался 60 дней назад */
+function progressStore() {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const t = app.todayKey();
+  s.items = [mkMin('m1', app.addDays(t, -60))];
+  s.days = {};
+  s.settings.calendarSince = app.addDays(t, -60);
+  return s;
+}
+
+test('З16B: «в системе» — от calendarSince до сегодня включительно', () => {
+  const s = progressStore();
+  const t = app.todayKey();
+
+  s.settings.calendarSince = t;
+  assert.equal(app.daysInSystem(), 1, 'сегодня входит');
+  s.settings.calendarSince = app.addDays(t, -9);
+  assert.equal(app.daysInSystem(), 10);
+  // эпоха ещё не наступила (миграция ставит ближайший понедельник) — ноль, не минус
+  s.settings.calendarSince = app.addDays(t, 3);
+  assert.equal(app.daysInSystem(), 0);
+  s.settings.calendarSince = 'не дата';
+  assert.equal(app.daysInSystem(), 0);
+});
+
+test('З16B: день закрыт по всем активным пунктам минимума, существовавшим в тот день', () => {
+  const s = progressStore();
+  const t = app.todayKey();
+  const y = app.addDays(t, -1);
+  s.items.push(mkMin('m2', app.addDays(t, -60)));
+
+  assert.equal(app.minDayClosed(y), false);
+  app.toggleMark(y, 'm1');
+  assert.deepEqual(app.minDayMarks(y), { done: 1, total: 2 });
+  assert.equal(app.minDayClosed(y), false, 'отмечено не всё');
+  app.toggleMark(y, 'm2');
+  assert.equal(app.minDayClosed(y), true);
+
+  // привычка в планку минимума не входит (инвариант 10)
+  s.items.push(mkMin('h1', app.addDays(t, -60), 'habit'));
+  assert.equal(app.minDayClosed(y), true);
+  // как и недельный счётчик
+  s.items.push(Object.assign(mkMin('w1', app.addDays(t, -60)), { type: 'weekly', goal: 3 }));
+  assert.equal(app.minDayClosed(y), true);
+
+  // выключенный пункт из расчёта выпадает
+  s.items.find(i => i.id === 'm2').active = false;
+  assert.deepEqual(app.minDayMarks(y), { done: 1, total: 1 });
+
+  // пунктов нет — день не закрыт: закрывать было нечего
+  s.items = [];
+  assert.equal(app.minDayClosed(y), false);
+  assert.equal(app.dayStreak(), 0, 'пустые данные — ноль');
+});
+
+test('З16B: серия — амнистия одного пропуска, обрыв на двух, незакрытый сегодня не рвёт', () => {
+  const s = progressStore();
+  const t = app.todayKey();
+  const mark = n => app.toggleMark(app.addDays(t, -n), 'm1');
+
+  assert.equal(app.dayStreak(), 0);
+
+  mark(1); mark(2);
+  assert.equal(app.dayStreak(), 2, 'сегодня не закрыт — пропускается, серию не обрывает');
+
+  mark(0);
+  assert.equal(app.dayStreak(), 3, 'закрытый сегодня идёт в счёт');
+
+  // день −3 пуст: амнистия, в счёт не идёт; −4 и −5 закрыты
+  mark(4); mark(5);
+  assert.equal(app.dayStreak(), 5);
+
+  // −6 и −7 пусты подряд — обрыв: −8 в серию уже не входит
+  mark(8);
+  assert.equal(app.dayStreak(), 5);
+
+  // дно — calendarSince: дни до эпохи в серию не идут
+  s.settings.calendarSince = app.addDays(t, -2);
+  assert.equal(app.dayStreak(), 3);
+});
+
+test('З16B: серия — пункт, заведённый сегодня, прошлые дни не переписывает', () => {
+  const s = progressStore();
+  const t = app.todayKey();
+  s.items.push(mkMin('m2', t)); // заведён сегодня
+  for (let i = 0; i <= 3; i++) app.toggleMark(app.addDays(t, -i), 'm1');
+
+  // вчера и раньше m2 не существовал — те дни закрыты одним m1
+  assert.equal(app.dayStreak(), 3, 'сегодня не закрыт (m2 не отмечен) и пропускается');
+  app.toggleMark(t, 'm2');
+  assert.equal(app.dayStreak(), 4);
+});
+
+test('З16B: цепь дней — восемь недель подряд, последняя текущая', () => {
+  progressStore();
+  const w = app.chainWeeks(8);
+  assert.equal(w.length, 8);
+  assert.equal(w[7], app.weekStartOf(app.todayKey()), 'последняя строка — текущая неделя');
+  assert.equal(w[0], app.addDays(w[7], -49));
+  for (let i = 1; i < w.length; i++) assert.equal(app.diffDays(w[i], w[i - 1]), 7);
+});
+
+test('З16B: отметки считаются в окне calendarSince…сегодня', () => {
+  const s = progressStore();
+  const t = app.todayKey();
+  const it = s.items[0];
+
+  app.toggleMark(app.addDays(t, -1), 'm1');
+  app.toggleMark(t, 'm1');
+  assert.equal(app.marksInSystem(it), 2);
+
+  // отметка до начала эпохи и отметка в будущем в окно не попадают
+  app.toggleMark(app.addDays(t, -70), 'm1');
+  app.toggleMark(app.addDays(t, 1), 'm1');
+  assert.equal(app.marksInSystem(it), 2);
+});
+
+test('З16B: подъём — ряд от двух записей, ступенька даёт 2N−1 сегментов', () => {
+  const s = progressStore();
+  const t = app.todayKey();
+  const it = s.items[0];
+
+  it.history = [{ date: app.addDays(t, -20), value: 5 }];
+  assert.equal(app.riseSeries(it), null, 'одна запись — ряда нет');
+
+  it.history.push({ date: app.addDays(t, -10), value: 8 });
+  const ser = app.riseSeries(it);
+  assert.equal(ser.kind, 'bar');
+  assert.deepEqual(ser.points.map(p => p.value), [5, 8]);
+  assert.equal((app.risePath(ser.points).match(/[HV]/g) || []).length, 3); // 2·2−1
+
+  it.history.push({ date: app.addDays(t, -6), value: 6 });
+  it.history.push({ date: app.addDays(t, -3), value: 9 });
+  it.history.push({ date: t, value: 11 });
+  const d = app.risePath(app.riseSeries(it).points);
+  assert.equal((d.match(/[HV]/g) || []).length, 9); // 2·5−1
+  assert.match(d, /^M0 /, 'первая запись — левый край');
+  assert.match(d, /H100$/, 'последнее значение держится до правого края');
+  // ось Y в границах поля: 2…42 при высоте 44
+  for (const y of d.match(/V([\d.]+)/g).map(v => Number(v.slice(1)))) {
+    assert.ok(y >= 2 && y <= 42, 'значение внутри поля: ' + y);
+  }
+
+  // лестница даёт ряд только у пункта без истории значений
+  const l = mkMin('l1', app.addDays(t, -30));
+  l.ladderLog = [
+    { date: app.addDays(t, -30), step: 0, text: 'первая', start: true },
+    { date: app.addDays(t, -10), step: 1, text: 'вторая' }
+  ];
+  const ls = app.riseSeries(l);
+  assert.equal(ls.kind, 'ladder');
+  assert.deepEqual(ls.points.map(p => p.value), [1, 2], 'ступени человеку — с единицы');
+  l.history = [{ date: app.addDays(t, -30), value: 1 }, { date: t, value: 3 }];
+  assert.equal(app.riseSeries(l).kind, 'bar', 'история планки первична');
+
+  // все записи одним днём: путь строится по индексу, деления на ноль нет
+  const same = mkMin('s1', t);
+  same.ladderLog = [
+    { date: t, step: 0, text: 'а', start: true },
+    { date: t, step: 1, text: 'б' }
+  ];
+  const sd = app.risePath(app.riseSeries(same).points);
+  assert.equal((sd.match(/[HV]/g) || []).length, 3);
+  assert.doesNotMatch(sd, /NaN|Infinity/);
+});
