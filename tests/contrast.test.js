@@ -78,6 +78,22 @@ for (const [theme, vars] of Object.entries(THEMES)) {
   });
 }
 
+/* Задача 16, фаза A: тон цепочки поярче прежнего в обеих темах. Прежние
+   значения зафиксированы здесь же — тест ловит откат к ним и требует, чтобы
+   новый тон был светлее (в тёмной теме — ярче на фоне, в светлой — насыщеннее
+   и светлее прежнего); порог ≥3:1 проверяется ниже общим списком. */
+const CHAIN_WAS = { light: '#9c5a44', dark: '#d29684' };
+
+test('цепочка: тон отличается от прежнего и светлее его в обеих темах', () => {
+  for (const [theme, vars] of Object.entries(THEMES)) {
+    const was = CHAIN_WAS[theme];
+    assert.ok(vars.chain, `--chain определён в теме ${theme}`);
+    assert.notEqual(vars.chain.toLowerCase(), was, `--chain в теме ${theme} остался прежним`);
+    assert.ok(luminance(vars.chain) > luminance(was),
+      `--chain ${vars.chain} не светлее прежнего ${was} (тема ${theme})`);
+  }
+});
+
 for (const [theme, vars] of Object.entries(THEMES)) {
   test(`контраст (${theme}): muted/faint ≥4.5, dot/control-border ≥3 против --bg`, () => {
     assert.ok(vars.bg, '--bg определён');

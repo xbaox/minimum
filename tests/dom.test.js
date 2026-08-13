@@ -2079,6 +2079,25 @@ test('черновик правки переживает уход в лист д
   assert.equal(document.getElementById('e-note').value, 'черновик подписи');
 });
 
+/* Задача 16, фаза A: линия толще, но по-прежнему идёт через центры кругов.
+   Обе величины берутся из CSS и сверяются между собой — левый отступ линии
+   не константа в тесте, а следствие диаметра круга и толщины линии. */
+test('цепочка: линия 3px и проходит через центр круга', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const seg = (css.match(/\.cseg\s*\{([^}]*)\}/) || [])[1];
+  assert.ok(seg, 'правило .cseg на месте');
+  const width = parseFloat((seg.match(/width:\s*([\d.]+)px/) || [])[1]);
+  const left = parseFloat((seg.match(/left:\s*([\d.]+)px/) || [])[1]);
+  const box = (css.match(/\.check \.box\s*\{([^}]*)\}/) || [])[1];
+  const dia = parseFloat((box.match(/width:\s*([\d.]+)px/) || [])[1]);
+  assert.equal(width, 3, 'толщина линии');
+  assert.equal(dia, 26, 'диаметр круга не менялся');
+  assert.equal(left + width / 2, dia / 2, 'центр линии совпадает с центром круга');
+  // обводка круга в блоке — тот же токен, толщина обводки не менялась
+  assert.match(css, /\.chain \.check:not\(\.on\) \.box\s*\{[^}]*border-color:\s*var\(--chain\)/);
+  assert.match(css, /\.check \.box\s*\{[^}]*border:\s*1\.5px solid var\(--control-border\)/);
+});
+
 test('источники: ни --warn и .broken, ни признака цепочки, ни слов «группа» и «модуль»', () => {
   const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
   const js = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
