@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -181,16 +181,22 @@ function normLadder(l, today) {
   };
 }
 
-/* Журнал шагов: записи с валидным днём, неотрицательной ступенью и текстом */
+/* Журнал шагов: записи с валидным днём, неотрицательной ступенью и текстом.
+   Флаг start (стартовая запись создания лестницы) сохраняется, если он есть,
+   и только в виде true — иначе поле не появляется вовсе. */
 function normLadderLog(log) {
   if (!Array.isArray(log)) return [];
   return log
     .filter(e => e && typeof e === 'object' && !Array.isArray(e) && isDayKey(e.date))
-    .map(e => ({
-      date: e.date,
-      step: Math.max(0, Math.round(numOr(e.step, 0))),
-      text: typeof e.text === 'string' ? e.text : ''
-    }));
+    .map(e => {
+      const out = {
+        date: e.date,
+        step: Math.max(0, Math.round(numOr(e.step, 0))),
+        text: typeof e.text === 'string' ? e.text : ''
+      };
+      if (e.start === true) out.start = true;
+      return out;
+    });
 }
 
 /* Миграции схемы. При изменении структуры: поднять SCHEMA_VERSION
@@ -262,6 +268,22 @@ function migrate(s) {
     if (!keeper || it.ladder.startedAt > keeper.ladder.startedAt) keeper = it;
   }
   for (const it of s.items) if (it.ladder && it !== keeper) it.ladder = null;
+
+  // v7 → v8: живой лестнице с пустым журналом дописывается стартовая запись
+  // от startedAt. Непустой журнал не трогается: исходная ступень пути в нём
+  // неизвестна, домысливать её нельзя. Идёт после разрешения конфликта —
+  // снятой лестнице старт не пишется.
+  if (s.schemaVersion < 8) {
+    for (const it of s.items) {
+      if (!it.ladder || it.ladderLog.length) continue;
+      it.ladderLog.push({
+        date: isDayKey(it.ladder.startedAt) ? it.ladder.startedAt : today,
+        step: it.ladder.step,
+        text: it.ladder.steps[it.ladder.step] || '',
+        start: true
+      });
+    }
+  }
 
   // отметки: ключ — валидный день, значение — непустой объект с булевыми
   // полями (как их оставляет toggleMark); иначе запись отбрасывается
@@ -846,15 +868,21 @@ function ladderStatus(item) {
   return 'Две полные недели нормы ещё не набраны';
 }
 
-/* Запись шага в журнал: повторное изменение в тот же логический день
-   заменяет последнюю запись (как в recordBar). Схлопывания «туда-обратно»
-   здесь нет — журнал фиксирует движение, а не значение планки. */
-function recordLadderStep(item) {
+/* Запись в журнал: повторное изменение в тот же логический день заменяет
+   последнюю запись (как в recordBar). Схлопывания «туда-обратно» здесь нет —
+   журнал фиксирует движение, а не значение планки. Стартовая запись
+   (start: true, создание лестницы) неприкосновенна: иначе создание и первый
+   шаг в один день схлопнулись бы и путь читался бы с середины. */
+function recordLadderStep(item, start) {
   if (!Array.isArray(item.ladderLog)) item.ladderLog = [];
   const L = item.ladder;
   const entry = { date: todayKey(), step: L.step, text: L.steps[L.step] || '' };
+  if (start) entry.start = true;
   const last = item.ladderLog[item.ladderLog.length - 1];
-  if (last && last.date === entry.date) item.ladderLog[item.ladderLog.length - 1] = entry;
+  // замена — только между двумя нестартовыми записями одного дня: стартовую
+  // нельзя ни затереть, ни затереть ею (повторное создание в день последнего
+  // шага съело бы конец прошлого пути)
+  if (last && last.date === entry.date && !last.start && !start) item.ladderLog[item.ladderLog.length - 1] = entry;
   else item.ladderLog.push(entry);
 }
 
@@ -902,6 +930,7 @@ function setLadder(itemId, text) {
     if (item.ladder.step > steps.length - 1) item.ladder.step = steps.length - 1;
   } else {
     item.ladder = { steps, step: 0, steppedWeek: null, startedAt: todayKey() };
+    recordLadderStep(item, true); // старт пути: путь читается с первой ступени
   }
   save();
   return true;
@@ -1249,7 +1278,7 @@ function dailyRow(it, t, habit) {
   const L = it.ladder;
   const sub = L ? L.steps[L.step] : it.note;  // ступень вместо подписи
   return `
-      <div class="rowwrap${habit ? ' hrow' : ''}${on ? ' on' : ''}">
+      <div class="rowwrap${habit ? ' hrow' : ''}">
         <label class="row check${on ? ' on' : ''}">
           <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}>
           <span class="box" aria-hidden="true"></span>
@@ -1399,10 +1428,6 @@ function updateTodayMark(input) {
   input.checked = on;
   const label = input.closest('label.check');
   if (label) { label.classList.toggle('on', on); tapPop(label.querySelector('.box')); } // scale-отклик круга (12.1)
-  const wrap = input.closest('.rowwrap');
-  // хук уровня строки: цвет названия снова даёт .check.on, но класс сохранён
-  // как единственная зацепка для оформления всей строки, включая хвост
-  if (wrap) wrap.classList.toggle('on', on);
   const scr = input.closest('section.screen');
   if (scr && scr.id === 'scr-habits') { updateHabitsDayline(); updateHabitWeekRow(input); }
   else updateDayline();
@@ -1755,7 +1780,9 @@ function currentFormKey() {
 function snapshotOpenForm() {
   const key = currentFormKey();
   if (!key) { ui.formDraft = null; return; }
-  const form = document.querySelector('.card.form'); // одновременно открыта только одна
+  // форма ищется на том экране, которому принадлежит ключ: лист открывается
+  // поверх «Пунктов», где форма правки остаётся в DOM и стоит в разметке выше
+  const form = document.querySelector(ui.detailId ? '#scr-detail .card.form' : '#scr-items .card.form');
   const domKey = form ? (form.dataset.form === 'add' ? 'add' : form.dataset.form + ':' + form.dataset.id) : null;
   if (domKey !== key) {
     if (ui.formDraft && ui.formDraft.key !== key) ui.formDraft = null; // открыли другую форму
@@ -1824,7 +1851,6 @@ function renderItems() {
             ${it.type === 'param' ? paramHistory(it) : barHistory(it)}
           </button>
           <span class="ictl">
-            ${it.type === 'daily' ? `<button class="btn icon quiet" data-act="item-detail" data-id="${esc(it.id)}" aria-label="подробно: «${esc(it.name)}»">&rsaquo;</button>` : ''}
             <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${gi === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
             <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${gi === items.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
             <label class="switch" aria-label="включён: «${esc(it.name)}»">
@@ -1900,7 +1926,12 @@ function editForm(it) {
       <label class="field"><span>Название</span><input type="text" id="e-name" value="${esc(it.name)}"></label>
       <label class="field"><span>Подпись</span><input type="text" id="e-note" value="${esc(it.note || '')}" placeholder="необязательная строка под названием"></label>
       ${it.ladder ? `<p class="hint">Пока у пункта есть лестница, на дневных экранах вместо подписи показывается текущая ступень. Подпись видна в листе пункта.</p>` : ''}`;
-  const foot = `
+  // вход в лист детали — из формы правки, а не из строки списка: кнопка в
+  // строке сужала текстовую колонку и переносила длинные названия (14.2)
+  const detail = it.type === 'daily'
+    ? `<div class="btns dfoot"><button class="btn quiet" data-act="item-detail" data-id="${esc(it.id)}">Формула и лестница &rsaquo;</button></div>`
+    : '';
+  const foot = detail + `
       <div class="btns">
         <button class="btn primary" data-act="edit-save" data-id="${esc(it.id)}">Сохранить</button>
         <button class="btn quiet" data-act="edit-cancel">Отмена</button>

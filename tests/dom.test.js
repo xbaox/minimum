@@ -1148,6 +1148,25 @@ test('движение: reduced-motion в CSS отключает transition и a
   assert.doesNotMatch(m[1], /transform:\s*none/); // положение тумблера/галочки не обнуляется
 });
 
+test('мёртвый хук: класса on на .rowwrap нет ни в CSS, ни в JS, ни в разметке', async () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const js = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  // ни одного селектора .rowwrap...on — гашение названия даёт только .check.on
+  assert.doesNotMatch(css, /\.rowwrap[^\s,{]*\.on\b/, 'селектор .rowwrap.on в CSS');
+  assert.match(css, /\.check\.on \.tname/, '.check.on .tname — единственный источник гашения');
+  // ни шаблона со строкой rowwrap ... on, ни переключения класса на .rowwrap
+  assert.doesNotMatch(js, /class="rowwrap[^"]*\bon\b/, 'шаблон rowwrap с классом on');
+  assert.doesNotMatch(js, /wrap\.classList\.toggle\('on'/, 'toggle on на узле строки');
+
+  // и в живом DOM: отметка класс на строке не ставит
+  const { document } = await boot();
+  const cb = document.querySelector('#scr-today input[data-act="mark"]');
+  const wrap = cb.closest('.rowwrap');
+  cb.click();
+  assert.equal(cb.closest('label.check').classList.contains('on'), true, 'label помечен');
+  assert.equal(wrap.classList.contains('on'), false, 'строка класса не получает');
+});
+
 test('движение 12.1: scale-отклик круга — класс .pop на тап, отсутствует при первичном рендере', async () => {
   const { document } = await boot();
   const cb = document.querySelector('#scr-today input[data-act="mark"]');
@@ -1402,7 +1421,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 7);
+  assert.equal(snap.schemaVersion, 8);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1478,7 +1497,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 7);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, 8);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1524,12 +1543,13 @@ test('строка «Резервная копия» подставляется 
 
 const LADDER = { steps: ['в кровати в 23:30', '+10 минут без экрана', '+15 минут раньше'], step: 1, steppedWeek: null, startedAt: null };
 
-/* Вход в лист с «Пунктов» — работает для любого ежедневного пункта */
+/* Вход в лист с «Пунктов» — из формы правки пункта (задача 14.2) */
 function openDetailFromItems(document, name) {
   document.querySelector('#tabs button[data-tab="items"]').click();
   const row = [...document.querySelectorAll('#scr-items .rowwrap')]
     .find(r => r.querySelector('.tname').textContent === name);
-  row.querySelector('[data-act="item-detail"]').click();
+  row.querySelector('[data-act="edit-open"]').click();
+  document.querySelector('#scr-items .card.form [data-act="item-detail"]').click();
   return document.getElementById('scr-detail');
 }
 
@@ -1602,7 +1622,13 @@ test('хвостовая кнопка: нет без лестницы и фор�
   assert.equal(tail.querySelector('.lstep'), null, 'метки положения без лестницы нет');
   assert.match(tail.getAttribute('aria-label'), /^подробно: «С формулой»$/);
 
-  // вход с «Пунктов» открывает лист любому ежедневному пункту
+  // в строке «Пунктов» кнопки листа нет — вход через форму правки (14.2)
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const itemsRow = [...document.querySelectorAll('#scr-items .rowwrap')]
+    .find(r => r.querySelector('.tname').textContent === 'Тестовый пункт');
+  assert.equal(itemsRow.querySelector('[data-act="item-detail"]'), null, 'в строке списка кнопки нет');
+  assert.equal(itemsRow.querySelectorAll('.ictl .btn').length, 2, 'в кластере только стрелки');
+
   const d = openDetailFromItems(document, 'Тестовый пункт');
   assert.equal(d.hidden, false);
   assert.equal(d.querySelector('.ladder'), null, 'блока лестницы нет');
@@ -1612,14 +1638,41 @@ test('хвостовая кнопка: нет без лестницы и фор�
   assert.deepEqual(laws, ['Очевидно', 'Привлекательно', 'Легко', 'Приятно']);
   assert.ok(d.querySelector('[data-act="ladder-open"]'));
 
-  // «Готово» возвращает на «Пункты»
+  // «Готово» возвращает на «Пункты», и форма правки осталась открытой (14.2)
   d.querySelector('[data-act="detail-done"]').click();
   assert.equal(document.getElementById('scr-items').hidden, false);
   assert.equal(d.hidden, true);
-  // у параметра входа в лист нет — формула и лестница только у ежедневных
-  const paramRow = [...document.querySelectorAll('#scr-items .rowwrap')]
-    .find(r => r.textContent.includes('порог'));
-  if (paramRow) assert.equal(paramRow.querySelector('[data-act="item-detail"]'), null);
+  assert.ok(document.getElementById('e-name'), 'форма правки осталась открытой');
+  assert.equal(document.getElementById('e-name').value, 'Тестовый пункт');
+});
+
+test('«Пункты»: кнопка листа есть в форме daily, нет у weekly и param', async () => {
+  const { document, window } = await boot(); // дефолт: daily, weekly «Тренировка», param «Отбой»
+  document.querySelector('#tabs button[data-tab="items"]').click();
+  const openEdit = name => {
+    const cancel = document.querySelector('[data-act="edit-cancel"]');
+    if (cancel) cancel.click();
+    [...document.querySelectorAll('#scr-items .rowwrap')]
+      .find(r => r.querySelector('.tname').textContent === name)
+      .querySelector('[data-act="edit-open"]').click();
+    return document.querySelector('#scr-items .card.form');
+  };
+
+  const daily = openEdit('Умыться');
+  const btn = daily.querySelector('[data-act="item-detail"]');
+  assert.ok(btn, 'у ежедневного пункта кнопка есть');
+  assert.match(btn.textContent, /^Формула и лестница/);
+  // стоит над кластером «Сохранить / Отмена», отделена от полей
+  assert.ok(btn.closest('.btns').classList.contains('dfoot'));
+  assert.equal(btn.closest('.btns').nextElementSibling.querySelector('[data-act="edit-save"]') !== null, true);
+
+  assert.equal(openEdit('Тренировка').querySelector('[data-act="item-detail"]'), null, 'у weekly кнопки нет');
+  assert.equal(openEdit('Отбой').querySelector('[data-act="item-detail"]'), null, 'у param кнопки нет');
+
+  // ни в одной строке списка кнопки листа нет
+  document.querySelector('[data-act="edit-cancel"]').click();
+  assert.equal(document.querySelectorAll('#scr-items .row.item [data-act="item-detail"]').length, 0);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 8);
 });
 
 test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
@@ -1650,22 +1703,30 @@ test('лестница на привычке: «Шагнуть» по двум �
   assert.match(d.querySelector('.ladder li.cur').textContent, /\+10 минут без экрана/);
   assert.match(d.textContent, /Шаг уже сделан на этой неделе/);
   assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true, 'второй шаг за неделю закрыт');
+  // журнал: старт достроен миграцией v7→v8 (у сида ladderLog пуст), шаг — рядом
   let saved = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'h1');
   assert.equal(saved.ladder.step, 1);
   assert.equal(saved.ladder.steppedWeek, curMonday());
-  assert.deepEqual(saved.ladderLog, [{ date: daysAgo(0), step: 1, text: '+10 минут без экрана' }]);
+  assert.deepEqual(saved.ladderLog, [
+    { date: daysAgo(0), step: 0, text: 'в кровати в 23:30', start: true },
+    { date: daysAgo(0), step: 1, text: '+10 минут без экрана' }
+  ]);
 
-  // шаг назад доступен всегда и неделю не тратит; запись того же дня заменяется
+  // шаг назад доступен всегда и неделю не тратит; запись того же дня заменяется,
+  // но стартовая неприкосновенна — она остаётся первой
   d.querySelector('[data-act="ladder-back"]').click();
   saved = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'h1');
   assert.equal(saved.ladder.step, 0);
   assert.equal(saved.ladder.steppedWeek, curMonday());
-  assert.deepEqual(saved.ladderLog, [{ date: daysAgo(0), step: 0, text: 'в кровати в 23:30' }]);
+  assert.deepEqual(saved.ladderLog, [
+    { date: daysAgo(0), step: 0, text: 'в кровати в 23:30', start: true },
+    { date: daysAgo(0), step: 0, text: 'в кровати в 23:30' }
+  ]);
   assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true);
 
   // журнал шагов — типографской строкой, только в листе (задача 14.1).
-  // Оба шага сделаны в один логический день, поэтому запись одна — итоговая
-  assert.equal(d.querySelector('.lhist').textContent, `Ступень: 1 · с ${fmtShortKey(daysAgo(0))}`);
+  // Старт показывается обычной ступенью; шаги того же дня схлопнулись в один
+  assert.equal(d.querySelector('.lhist').textContent, `Ступень: 1 → 1 · с ${fmtShortKey(daysAgo(0))}`);
   assert.equal(document.getElementById('scr-habits').querySelector('.lhist'), null,
     'на дневной экран журнал не выносится');
 
@@ -1676,8 +1737,10 @@ test('лестница на привычке: «Шагнуть» по двум �
 });
 
 test('журнал лестницы: строки нет при пустом ladderLog, при длинной истории — последние 6', async () => {
-  const seed = dueSeed();
+  // схема уже v8 — шаг миграции пропущен, журнал остаётся пустым
+  const seed = Object.assign(dueSeed(), { schemaVersion: 8 });
   seed.items[0].ladder = JSON.parse(JSON.stringify({ ...LADDER, step: 0 }));
+  seed.items[0].ladderLog = [];
   const { document } = await boot({ seed });
   let d = document.getElementById('scr-detail');
   document.querySelector('#scr-today [data-act="item-detail"]').click();
@@ -1763,8 +1826,10 @@ test('лист детали: форма лестницы — предзапол�
   assert.equal(a.ladder.step, 0);
   assert.equal(a.ladder.steppedWeek, null);
   assert.equal(a.ladder.startedAt, daysAgo(0));
-  assert.deepEqual(a.ladderLog, []); // создание лестницы шагом не считается
+  // создание пишет стартовую запись: путь читается с первой ступени (14.2)
+  assert.deepEqual(a.ladderLog, [{ date: daysAgo(0), step: 0, text: 'раз', start: true }]);
   assert.equal(d.querySelectorAll('.ladder li').length, 3);
+  assert.equal(d.querySelector('.lhist').textContent, `Ступень: 1 · с ${fmtShortKey(daysAgo(0))}`);
 
   // второй пункт: слот занят — textarea и сохранение недоступны, строка объясняет
   const busy = openByName('Принять душ');
