@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -79,13 +79,13 @@ function nextCalendarMonday(k) {
 function seedHabits(today) {
   const habit = (name) => ({
     id: uid(), name, value: null, unit: '', type: 'daily', area: 'habit', normPerWeek: 7,
-    goal: null, note: '', group: '', active: true, addedAt: today, raiseAfter: 0, history: [],
+    goal: null, note: '', group: '', active: true, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
     formula: null, ladder: null, ladderLog: []
   });
   return [
     { id: uid(), name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
       pkind: 'time', pvalue: 0, pstep: -15, goal: null, note: '', group: '',
-      active: true, addedAt: today, raiseAfter: 0, history: [{ date: today, value: 0 }],
+      active: true, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [{ date: today, value: 0 }],
       formula: null, ladder: null, ladderLog: [] },
     habit('Перестать грызть ногти'),
     habit('Ловить импульс трат → алгоритм')
@@ -97,7 +97,7 @@ function defaultStore() {
   const mk = (name, value, unit, type, goal, note) => ({
     id: uid(), name, value, unit, type, area: 'min',
     goal: goal || null, note: note || '', group: DEFAULT_GROUPS[name] || '',
-    active: true, addedAt: today, raiseAfter: 0,
+    active: true, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
     history: (typeof value === 'number') ? [{ date: today, value }] : [],
     formula: null, ladder: null, ladderLog: []
   });
@@ -120,6 +120,7 @@ function defaultStore() {
     weekLog: [],       // инкременты недельных счётчиков текущей календарной недели
     reviews: [],       // закрытые недели
     pendingRaises: [], // принятые повышения, ещё не записанные в разбор
+    pendingLowers: [], // принятые понижения, ещё не записанные в разбор
     paramDecided: {},  // itemId -> {week, from, to|null}: решения по параметрам, привязанные к разбираемой неделе
     draftOneChange: '',
     weekStart: today,  // историческая отсечка скользящей эпохи
@@ -252,6 +253,12 @@ function migrate(s) {
     const g = numOr(it.goal, null);
     it.goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : null;
     it.raiseAfter = Math.max(0, Math.round(numOr(it.raiseAfter, 0)));
+    // v10 → v11 (задача 16C): якоря обеих механик планки — понедельник недели
+    // последнего решения либо null. raiseAfter остаётся историческим полем:
+    // счёт по массиву reviews пропущенные разборы блокировали навсегда.
+    // Рукотворный не-понедельник приводится к своему понедельнику, как steppedWeek.
+    it.raiseAfterWeek = isDayKey(it.raiseAfterWeek) ? weekStartOf(it.raiseAfterWeek) : null;
+    it.lowerAfterWeek = isDayKey(it.lowerAfterWeek) ? weekStartOf(it.lowerAfterWeek) : null;
     if (!Array.isArray(it.history)) it.history = [];
     it.history = it.history
       .filter(h => h && typeof h === 'object' && !Array.isArray(h) && isDayKey(h.date))
@@ -322,6 +329,8 @@ function migrate(s) {
   s.reviews = s.reviews.filter(r => r && typeof r === 'object' && !Array.isArray(r));
   if (!Array.isArray(s.pendingRaises)) s.pendingRaises = [];
   s.pendingRaises = s.pendingRaises.filter(e => e && typeof e === 'object' && !Array.isArray(e));
+  if (!Array.isArray(s.pendingLowers)) s.pendingLowers = [];
+  s.pendingLowers = s.pendingLowers.filter(e => e && typeof e === 'object' && !Array.isArray(e));
   if (!s.paramDecided || typeof s.paramDecided !== 'object' || Array.isArray(s.paramDecided)) s.paramDecided = {};
   for (const k of Object.keys(s.paramDecided)) {
     const d = s.paramDecided[k];
@@ -346,7 +355,7 @@ function migrate(s) {
       const shower = {
         id: uid(), name: 'Принять душ', value: null, unit: '', type: 'daily', area: 'min',
         goal: null, note: '', group: 'Тело', active: true,
-        addedAt: dateKeyShift(new Date(), s.settings.dayBoundary), raiseAfter: 0, history: [],
+        addedAt: dateKeyShift(new Date(), s.settings.dayBoundary), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
         // вставка идёт после валидации пунктов — каноническая форма задаётся здесь
         formula: null, ladder: null, ladderLog: []
       };
@@ -701,28 +710,71 @@ function currentOneChange() {
   return s || null;
 }
 
-/* ── Повышение минимума ────────────────────────────────────── */
+/* ── Планка: повышение и понижение (инвариант 4) ─────────────
+   Обе механики считают по КАЛЕНДАРНЫМ неделям и отметкам в days{},
+   а не по массиву reviews: пропущенный разбор недели не съедает —
+   она просто проходит тихо (инвариант 2), а механика продолжает
+   работать. Якорь решения — понедельник недели, в которую оно
+   принято; следующее предложение возможно, когда все нужные недели
+   строго позже якоря. */
 
-/* Критерий: в каждой из 3 последних закрытых недель пункт отмечен ≥6/7,
-   и с момента якоря (raiseAfter) закрыто не меньше 3 недель.
-   «Не сейчас» и «Принять» сдвигают якорь — отсчёт трёх недель начинается заново. */
+/* Критерий повышения: 3 последние закрытые недели, в каждой ≥6 из 7 */
 function raiseEligible(item) {
   if (item.type !== 'daily' || !item.active || item.area !== 'min') return false; // повышение — только минимум
   if (!(typeof item.value === 'number' && isFinite(item.value) && item.value > 0)) return false;
-  const R = store.reviews;
-  if (R.length < (item.raiseAfter || 0) + 3) return false;
-  return R.slice(-3).every(r => {
-    const p = r.perItem && r.perItem[item.id];
-    return p && p.count >= 6;
-  });
+  // пункт с лестницей повышения не получает: шаг ступени и шаг планки в одну
+  // неделю — два изменения за раз (инвариант 4, задача 16C)
+  if (item.ladder) return false;
+  const W = closedWeeks(3);
+  if (W.length < 3) return false;
+  if (!W.every(w => itemWeekCount(item, w) >= 6)) return false;
+  return item.raiseAfterWeek === null || W[0] > item.raiseAfterWeek;
+}
+
+/* Критерий понижения: 2 последние закрытые недели, в каждой ≤3 из 7.
+   Значения планки критерий не требует: пункт без числа тоже может
+   не держаться — решение по нему сводится к «Оставить». */
+function lowerEligible(item) {
+  if (item.type !== 'daily' || !item.active || item.area !== 'min') return false;
+  const W = closedWeeks(2);
+  if (W.length < 2) return false;
+  if (!W.every(w => itemWeekCount(item, w) <= 3)) return false;
+  return item.lowerAfterWeek === null || W[0] > item.lowerAfterWeek;
 }
 
 function raiseSuggest(v) {
   return v <= 12 ? v + 1 : Math.round(v * 1.1);
 }
 
+/* Насколько легче: крупная планка — на четверть, мелкая — на единицу,
+   единице и ниже облегчать нечего (null — кнопки шага нет) */
+function lowerSuggest(v) {
+  if (!(typeof v === 'number' && isFinite(v))) return null;
+  if (v > 12) return Math.round(v * 0.75);
+  if (v >= 2) return v - 1;
+  return null;
+}
+
+/* Якорь недели решения: и «Принять», и «Не сейчас» ставят его одинаково —
+   отсчёт трёх недель начинается заново, с недели строго после текущей */
 function resetRaiseCount(item) {
-  item.raiseAfter = store.reviews.length + 1; // ждать 3 закрытий после текущей (ещё не закрытой) недели
+  item.raiseAfterWeek = currentWeekStart();
+  save();
+}
+
+/* Понижение: планка меняется немедленно и попадает в срез разбора */
+function acceptLower(item, newValue) {
+  const from = item.value;
+  item.value = newValue;
+  recordBar(item, newValue);
+  store.pendingLowers.push({ itemId: item.id, name: item.name, from, to: newValue });
+  item.lowerAfterWeek = currentWeekStart();
+  save();
+}
+
+/* «Оставить»: планка не меняется, решение по неделе зафиксировано */
+function keepBar(item) {
+  item.lowerAfterWeek = currentWeekStart();
   save();
 }
 
@@ -747,7 +799,7 @@ function acceptRaise(item, newValue) {
   item.value = newValue;
   recordBar(item, newValue);
   store.pendingRaises.push({ itemId: item.id, name: item.name, from, to: newValue });
-  item.raiseAfter = store.reviews.length + 1;
+  item.raiseAfterWeek = currentWeekStart();
   save();
 }
 
@@ -1205,12 +1257,14 @@ function closeWeek() {
     trainings,
     oneChange: (store.draftOneChange || '').trim(),
     raises: store.pendingRaises,
+    lowers: [...store.pendingLowers],
     // в срез идут только решения разобранной недели; чистится paramDecided целиком
     params: Object.entries(store.paramDecided)
       .filter(([, d]) => d.week === week)
       .map(([id, d]) => ({ id, from: d.from, to: d.to }))
   });
   store.pendingRaises = [];
+  store.pendingLowers = [];
   store.draftOneChange = '';
   store.paramDecided = {};
   // счётчик «Сегодня» обнуляется сменой недели, не закрытием: чистим только прошлое
@@ -1312,6 +1366,8 @@ const ui = {
   groupRename: null,    // имя блока с раскрытой правкой
   groupDelete: null,    // блок ждёт подтверждения удаления вторым тапом
   groupAdd: false,      // открыто поле «Добавить блок»
+  weekOpen: false,      // свёртка «Показать неделю» в разборе (задача 16C)
+  ladderStay: false,    // «Остаться»: решение по ступени принято, карточка уступает строке состояния
   reviewOpen: false,    // разбор открыт поверх вкладки (с таб-бара он ушёл, задача 16B)
   reviewFrom: null,     // вкладка, на которую вернёт «Готово»
   reviewScroll: 0,      // её скролл — возвращается вместе с ней
@@ -2003,8 +2059,8 @@ function renderReview() {
   const habitItems = store.items.filter(it => it.type === 'daily' && it.area === 'habit' && inWeek(it));
 
   h += `<p class="muted">Неделя ${esc(fmtShort(keys[0]))} — ${esc(fmtShort(keys[6]))}</p>`;
-  const oc = currentOneChange();
-  if (oc) h += `<p class="muted">Изменение этой недели: „${esc(oc)}“</p>`;
+  // одна строка итога вместо чтения сетки: закрытых дней минимума за неделю
+  h += `<p class="lead">Минимум закрыт ${keys.filter(k => minDayClosed(k)).length} из 7 дней</p>`;
 
   // Сетка 7 дней × пункты: кружки и числа скрыты от AT (aria-hidden-обёртки
   // с display:contents), итог строки — визуально скрытым счётчиком в имени
@@ -2033,22 +2089,15 @@ function renderReview() {
     return c + `</div>`;
   };
 
-  // Секция «Минимум»: сетка, тренировки, консистентность, повышения
-  h += `<h2>Минимум</h2>`;
-  h += weekGrid(minItems);
-  for (const w of store.items.filter(i => i.type === 'weekly' && i.active)) {
-    // счёт разбираемой недели — тот же интервал, что уйдёт в срез closeWeek
-    const n = store.weekLog.filter(e => e.itemId === w.id && e.date >= keys[0] && e.date <= keys[6]).length;
-    h += `<p class="line">${esc(w.name)}: ${n} из ${w.goal || 0}</p>`;
-  }
-  h += `<h2>Три закрытые недели</h2>`;
-  h += consist(minItems);
-
+  // ── Решение 1: планка. Повышение и понижение — карточки, больше
+  // ничего; если предложений нет, решение сводится к одной строке.
+  h += `<h2>Решение 1 · Планка</h2>`;
+  let bar = '';
   for (const it of minItems) {
     if (!raiseEligible(it)) continue;
     const sug = raiseSuggest(it.value);
     const editing = ui.raiseEdit[it.id];
-    h += `
+    bar += `
       <div class="card raise" data-raise="${esc(it.id)}">
         <p>${esc(it.name)}: три недели подряд не меньше 6 из 7.</p>
         <p class="raise-line">Повысить ${esc(String(it.value))} →
@@ -2064,11 +2113,69 @@ function renderReview() {
         </div>
       </div>`;
   }
+  const lowW = closedWeeks(2);
+  for (const it of minItems) {
+    if (!lowerEligible(it)) continue;
+    const to = lowerSuggest(it.value);
+    const counts = lowW.map(w => itemWeekCount(it, w)).join(' и ');
+    bar += `
+      <div class="card lower" data-lower="${esc(it.id)}">
+        <p>Сделать легче</p>
+        <p class="muted">${esc(it.name)} — ${counts} из 7 за две недели</p>
+        <div class="btns">
+          ${to === null ? '' : `<button class="btn" data-act="lower-ok" data-id="${esc(it.id)}">Сделать легче ${esc(String(it.value))} → ${esc(String(to))}${it.unit ? ' ' + esc(it.unit) : ''}</button>`}
+          <button class="btn quiet" data-act="lower-keep" data-id="${esc(it.id)}">Оставить</button>
+        </div>
+      </div>`;
+  }
+  h += bar || `<p class="muted">Планка держится, менять нечего</p>`;
 
-  // Секция «Привычки»: сетка той же недели, консистентность, параметры, готовность
-  h += `<h2>Привычки</h2>`;
+  // ── Решение 2: ступень. Кнопки — только когда шаг доступен; иначе
+  // та же строка состояния, что в листе детали.
+  h += `<h2>Решение 2 · Ступень</h2>`;
+  const L = activeLadderItem();
+  if (!L) {
+    h += `<p class="muted">Лестницы сейчас нет</p>`;
+  } else if (canStepForward(L) && !ui.ladderStay) {
+    const ld = L.ladder;
+    h += `
+      <div class="card step" data-step="${esc(L.id)}">
+        <p>${esc(L.name)}: ${esc(ld.steps[ld.step])}</p>
+        <p class="muted">Следующая ступень: ${esc(ld.steps[ld.step + 1])}</p>
+        <div class="btns">
+          <button class="btn" data-act="ladder-fwd" data-id="${esc(L.id)}">Шагнуть</button>
+          <button class="btn quiet" data-act="ladder-stay">Остаться</button>
+        </div>
+      </div>`;
+  } else {
+    h += `<p class="muted">${esc(L.name)} · ${esc(ladderStatus(L))}</p>`;
+  }
+
+  // ── Решение 3: одно изменение на следующую неделю
+  h += `<h2>Решение 3 · Одно изменение</h2>`;
+  const oc = currentOneChange();
+  if (oc) h += `<p class="muted">Изменение этой недели: „${esc(oc)}“</p>`;
+  h += `
+    <label class="field">
+      <span>Одно изменение на следующую неделю</span>
+      <input type="text" data-bind="one-change" value="${esc(store.draftOneChange)}" placeholder="необязательно">
+    </label>`;
+
+  // ── Неделя целиком: сетки, счётчики, параметры и готовность — под
+  // свёрткой. Решения выше не требуют её открывать.
+  let wk = `<h2>Минимум</h2>`;
+  wk += weekGrid(minItems);
+  for (const w of store.items.filter(i => i.type === 'weekly' && i.active)) {
+    // счёт разбираемой недели — тот же интервал, что уйдёт в срез closeWeek
+    const n = store.weekLog.filter(e => e.itemId === w.id && e.date >= keys[0] && e.date <= keys[6]).length;
+    wk += `<p class="line">${esc(w.name)}: ${n} из ${w.goal || 0}</p>`;
+  }
+  wk += `<h2>Три закрытые недели</h2>`;
+  wk += consist(minItems);
+
+  wk += `<h2>Привычки</h2>`;
   if (habitItems.length) {
-    h += weekGrid(habitItems);
+    wk += weekGrid(habitItems);
     // норма и серия разбираемой недели: read-only справка, закрытие данных не меняет
     for (const hb of habitItems) {
       const x = habitWeekCount(hb, keys[0]);
@@ -2076,21 +2183,21 @@ function renderReview() {
       // строка прерывания серии упразднена (задача 15): невыполненная неделя
       // сообщается счётом «x из normPerWeek» и молчанием, без тона и оценки
       const tail = x >= norm ? ` · серия ${habitStreakFrom(hb, keys[0])} нед` : '';
-      h += `<p class="muted">${esc(hb.name)}: ${x} из ${norm}${tail}</p>`;
+      wk += `<p class="muted">${esc(hb.name)}: ${x} из ${norm}${tail}</p>`;
     }
-    h += consist(habitItems);
+    wk += consist(habitItems);
   } else {
-    h += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
+    wk += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
   }
 
   for (const p of store.items.filter(i => i.type === 'param' && i.active)) {
     const decided = paramDecision(p.id); // решение чужой недели карточку не гасит
     if (decided) {
-      h += `<p class="muted">${esc(p.name)}: ${decided.to === null
+      wk += `<p class="muted">${esc(p.name)}: ${decided.to === null
         ? `${esc(fmtParam(p, decided.from))}, без шага`
         : `${esc(fmtParam(p, decided.from))} → ${esc(fmtParam(p, decided.to))}`}</p>`;
     } else {
-      h += `
+      wk += `
       <div class="card param">
         <p>«${esc(p.name)} · ${esc(fmtParam(p))}» — как прошла неделя?</p>
         <div class="btns">
@@ -2102,16 +2209,16 @@ function renderReview() {
   }
 
   if (habitsSteady()) {
-    h += `<p class="muted">Привычки устойчивы 2 недели — можно добавить новую</p>`;
+    wk += `<p class="muted">Привычки устойчивы 2 недели — можно добавить новую</p>`;
   }
 
-  // Одно изменение
   h += `
-    <label class="field">
-      <span>Одно изменение на следующую неделю</span>
-      <input type="text" data-bind="one-change" value="${esc(store.draftOneChange)}" placeholder="необязательно">
-    </label>
-    <button class="btn primary wide" data-act="close-week">Закрыть неделю</button>` + REVIEW_DONE;
+    <details class="sect week"${ui.weekOpen ? ' open' : ''}>
+      <summary data-act="week-fold">Показать неделю<span class="chev" aria-hidden="true">&rsaquo;</span></summary>
+      <div class="sect-b">${wk}</div>
+    </details>`;
+
+  h += `<button class="btn primary wide" data-act="close-week">Закрыть неделю</button>` + REVIEW_DONE;
 
   el('scr-review').innerHTML = h;
 }
@@ -2652,6 +2759,32 @@ function onClick(e) {
     case 'raise-later':
       if (item) { resetRaiseCount(item); delete ui.raiseEdit[id]; motionLeave(b.closest('.card'), renderReview); }
       break;
+    // понижение планки: шаг применяется немедленно и уходит в срез недели,
+    // «Оставить» просто фиксирует решение — обе кнопки ставят якорь недели
+    case 'lower-ok': {
+      if (!item) break;
+      const to = lowerSuggest(item.value);
+      if (to === null) break;
+      acceptLower(item, to);
+      motionLeave(b.closest('.card'), renderReview);
+      break;
+    }
+
+    case 'lower-keep':
+      if (item) { keepBar(item); motionLeave(b.closest('.card'), renderReview); }
+      break;
+
+    // «Остаться»: ступень не двигается, карточка уступает место строке
+    // состояния до конца сеанса — в данных решение не отражается
+    case 'ladder-stay':
+      ui.ladderStay = true;
+      renderReview();
+      break;
+
+    case 'week-fold': // раскрытие свёртки делает сам details, здесь — только память
+      ui.weekOpen = !ui.weekOpen;
+      break;
+
     case 'raise-ok': {
       if (!item) break;
       const input = el('raise-' + id);
@@ -2826,14 +2959,14 @@ function onClick(e) {
           note, group: '',
           type: 'param', area: 'habit', pkind, pvalue,
           pstep: st !== null ? Math.round(st) : 0,
-          goal: null, active: true, addedAt: todayKey(), raiseAfter: 0,
+          goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
           history: [{ date: todayKey(), value: pvalue }]
         };
       } else if (ui.addArea === 'habit') {
         item = {
           id: uid(), name, value: null, unit: '', note, group: '',
           type: 'daily', area: 'habit', normPerWeek: 7, // каноническая форма привычки (инвариант 11)
-          goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, history: []
+          goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: []
         };
       } else {
         const type = el('f-type').value === 'weekly' ? 'weekly' : 'daily';
@@ -2849,7 +2982,7 @@ function onClick(e) {
           note,
           group: el('f-group').value.trim(),
           type, area: 'min', goal,
-          active: true, addedAt: todayKey(), raiseAfter: 0,
+          active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
           history: (typeof value === 'number') ? [{ date: todayKey(), value }] : []
         };
       }
@@ -2976,6 +3109,8 @@ if (typeof module !== 'undefined' && module.exports) {
     toggleMark, isMarked, incTrain, undoTrain, trainCount,
     reviewDue, windowKeys, currentOneChange, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, markYesterday, plural, parseNum,
+    // планка вниз (задача 16C)
+    lowerEligible, lowerSuggest, acceptLower, keepBar,
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, recordBar, parsePositive, isDayKey, load,

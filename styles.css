@@ -524,8 +524,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .c-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-val { color: var(--muted); white-space: nowrap; }
 
-.card.raise { margin-top: 20px; }
-.card.raise p { font-size: 15px; margin-bottom: 8px; }
+.card.raise, .card.lower, .card.step { margin-top: 20px; }
+.card.raise p, .card.lower p, .card.step p { font-size: 15px; margin-bottom: 8px; }
+/* понижение и ступень — тот же тихий тон, что у повышения: ни --chain,
+   ни цветового давления; решение остаётся за владельцем (задача 16C) */
+.card.lower .btns, .card.step .btns { margin-top: 12px; }
 .raise-line { font-size: 17px; }
 .raise-line b { color: var(--accent); }
 .raise-line .num {
@@ -614,6 +617,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .sect[open] > summary .chev { transform: rotate(-90deg); }
 .sect-b { padding-bottom: var(--gap-block); }
 .sect-b > h2:first-child { margin-top: 12px; }
+/* свёртка недели в разборе стоит между решениями и «Закрыть неделю» */
+.sect.week { margin-top: var(--gap-section); border-top: 1px solid var(--line); }
 
 /* ── Лист детали пункта (задача 14) ────────────────────────── */
 

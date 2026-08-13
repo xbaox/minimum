@@ -1456,7 +1456,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 10);
+  assert.equal(snap.schemaVersion, 11);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1532,7 +1532,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 10);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, 11);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1707,7 +1707,7 @@ test('«Пункты»: кнопка листа есть в форме daily, н
   // ни в одной строке списка кнопки листа нет
   document.querySelector('[data-act="edit-cancel"]').click();
   assert.equal(document.querySelectorAll('#scr-settings .row.item [data-act="item-detail"]').length, 0);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 10);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 11);
 });
 
 test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
@@ -2303,4 +2303,123 @@ test('«Настройки»: четыре секции по порядку, р�
   sects()[2].querySelector('summary').click();
   document.querySelector('#scr-settings [data-act="add-open"]').click(); // перерисовка «Настроек»
   assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, true, false]);
+});
+
+/* ── Задача 16, фаза C. Разбор как три решения ─────────────── */
+
+test('разбор: три решения сверху, неделя — под свёрткой, итог одной строкой', async () => {
+  const seed = dueSeed();
+  // параметр недели: он живёт внутри свёртки и даёт действие, перерисовывающее разбор
+  seed.items.push({
+    id: 'pp', name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
+    pkind: 'time', pvalue: 1380, pstep: -15, goal: null, note: '', group: '',
+    active: true, addedAt: addKey(prevMonday(), -14), raiseAfter: 0, history: []
+  });
+  // по 5 отметок в каждой из двух закрытых недель: для повышения мало
+  // (нужно ≥6 три недели), для понижения много (нужно ≤3) — предложений нет
+  seed.days = {};
+  for (const mon of [prevMonday(), addKey(prevMonday(), -7)]) {
+    for (let i = 0; i < 5; i++) seed.days[addKey(mon, i)] = { it1: true };
+  }
+  const { document } = await boot({ seed });
+  openReview(document);
+  const scr = document.getElementById('scr-review');
+
+  // итог недели одной строкой: пять закрытых дней из семи
+  assert.match(scr.textContent, /Минимум закрыт 5 из 7 дней/);
+
+  const h2 = [...scr.querySelectorAll(':scope > h2')].map(x => x.textContent);
+  assert.deepEqual(h2, ['Решение 1 · Планка', 'Решение 2 · Ступень', 'Решение 3 · Одно изменение']);
+
+  // сетка недели уехала под закрытую свёртку, но осталась в разметке
+  const fold = scr.querySelector('details.sect.week');
+  assert.ok(fold, 'свёртка «Показать неделю»');
+  assert.equal(fold.hasAttribute('open'), false, 'по умолчанию закрыта');
+  assert.match(fold.querySelector('summary').textContent, /Показать неделю/);
+  assert.ok(fold.querySelector('.grid'), 'сетка галочек внутри свёртки');
+  assert.equal(scr.querySelector(':scope > .grid'), null, 'снаружи сетки нет');
+  // параметры и готовность к привычке остались внутри свёртки
+  assert.ok(fold.querySelector('[data-act="param-step"]'), 'карточка параметра внутри');
+
+  // решения без предложений — тихие строки, а не пустота
+  assert.match(scr.textContent, /Планка держится, менять нечего/);
+  assert.match(scr.textContent, /Лестницы сейчас нет/);
+  assert.ok(scr.querySelector('input[data-bind="one-change"]'));
+
+  // свёртка запоминается: перерисовка разбора её не захлопывает
+  fold.querySelector('summary').click();
+  document.querySelector('[data-act="param-keep"]').click();
+  await settle();
+  assert.equal(document.querySelector('details.sect.week').hasAttribute('open'), true);
+});
+
+test('разбор: карточка «Сделать легче» — шаг применяется, «Оставить» гасит предложение', async () => {
+  const seed = dueSeed();
+  seed.items[0].value = 20;
+  seed.items[0].history = [{ date: addKey(prevMonday(), -14), value: 20 }];
+  seed.days = {}; // две закрытые недели без отметок — планка не держится
+  const { document, window } = await boot({ seed });
+  openReview(document);
+  const scr = () => document.getElementById('scr-review');
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+
+  const card = scr().querySelector('.card.lower');
+  assert.ok(card, 'карточка понижения');
+  assert.match(card.textContent, /Сделать легче/);
+  assert.match(card.textContent, /Тестовый пункт — 0 и 0 из 7 за две недели/);
+  const step = card.querySelector('[data-act="lower-ok"]');
+  assert.match(step.textContent, /Сделать легче 20 → 15 мин/);
+
+  step.click();
+  await settle();
+  const it = saved().items[0];
+  assert.equal(it.value, 15);
+  assert.equal(it.history[it.history.length - 1].value, 15);
+  assert.equal(it.lowerAfterWeek, curMonday());
+  assert.deepEqual(saved().pendingLowers, [{ itemId: 'it1', name: 'Тестовый пункт', from: 20, to: 15 }]);
+  assert.equal(scr().querySelector('.card.lower'), null, 'решение принято — карточки нет');
+
+  // «Оставить» на свежем сиде: планка не меняется, предложение гаснет
+  const b = await boot({ seed });
+  openReview(b.document);
+  b.document.querySelector('[data-act="lower-keep"]').click();
+  await settle();
+  const bs = JSON.parse(b.window.localStorage.getItem(NS));
+  assert.equal(bs.items[0].value, 20, 'планка не тронута');
+  assert.equal(bs.items[0].lowerAfterWeek, curMonday());
+  assert.deepEqual(bs.pendingLowers, []);
+  assert.equal(b.document.getElementById('scr-review').querySelector('.card.lower'), null);
+});
+
+test('разбор: решение «Ступень» — «Шагнуть» и «Остаться» при доступном шаге', async () => {
+  const seed = dueSeed();
+  const old = addKey(prevMonday(), -14);
+  seed.items[0].ladder = { steps: ['первая', 'вторая', 'третья'], step: 0, steppedWeek: null, startedAt: old };
+  seed.items[0].ladderLog = [{ date: old, step: 0, text: 'первая', start: true }];
+  // две последние завершённые недели по 6 из 7 — шаг доступен
+  seed.days = {};
+  for (const mon of [prevMonday(), addKey(prevMonday(), -7)]) {
+    for (let i = 0; i < 6; i++) seed.days[addKey(mon, i)] = { it1: true };
+  }
+  const { document, window } = await boot({ seed });
+  openReview(document);
+  const card = document.querySelector('.card.step');
+  assert.ok(card, 'карточка ступени');
+  assert.match(card.textContent, /Следующая ступень: вторая/);
+
+  // «Остаться» — ступень не двигается, место занимает строка состояния
+  card.querySelector('[data-act="ladder-stay"]').click();
+  const scr = document.getElementById('scr-review');
+  assert.equal(scr.querySelector('.card.step'), null);
+  assert.match(scr.textContent, /можно шагнуть/);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].ladder.step, 0);
+
+  // «Шагнуть» на свежем сиде двигает ступень и пишет журнал
+  const b = await boot({ seed });
+  openReview(b.document);
+  b.document.querySelector('.card.step [data-act="ladder-fwd"]').click();
+  const bi = JSON.parse(b.window.localStorage.getItem(NS)).items[0];
+  assert.equal(bi.ladder.step, 1);
+  assert.equal(bi.ladder.steppedWeek, curMonday());
+  assert.equal(bi.ladderLog.length, 2);
 });

@@ -61,6 +61,16 @@ function markPrevWeek(itemId, count = 6) {
   for (let i = 0; i < count; i++) app.toggleMark(app.addDays(prev, i), itemId);
 }
 
+/* Ровно count отметок в календарной неделе mon (задача 16C: механика
+   планки считает по days{}, а не по массиву reviews). Не toggle, а
+   установка состояния — вызывать можно повторно с любым count. */
+function setWeekMarks(itemId, mon, count) {
+  for (let i = 0; i < 7; i++) {
+    const k = app.addDays(mon, i);
+    if (app.isMarked(k, itemId) !== (i < count)) app.toggleMark(k, itemId);
+  }
+}
+
 /* ── Инвариант 1. Логический день ──────────────────────────── */
 
 test('И1: dateKeyShift — время до границы относится к предыдущему дню', () => {
@@ -248,74 +258,103 @@ test('И3: undoTrain не достаёт записи прошлой недел�
 
 /* ── Инвариант 4. Повышение планки ─────────────────────────── */
 
-test('И4: полный цикл — три закрытые недели ≥6/7 дают предложение', () => {
+test('И4: три закрытые календарные недели ≥6/7 дают предложение — без единого разбора', () => {
   setNow(2026, 7, 1, 12, 0);
   const s = freshStore();
   calendarPast(s);
   const item = s.items.find(i => i.name === 'Подтягивания + отжимания'); // value: 5
-  s.reviews.push({ week: app.previousWeekStart() }); // прошлая неделя уже разобрана
-  assert.equal(app.raiseEligible(item), false);
-  s.reviews = [];
+  const W = app.closedWeeks(3);
+  assert.equal(W.length, 3);
 
-  for (let w = 0; w < 3; w++) {
-    markPrevWeek(item.id, 6);
-    app.closeWeek();
-    advanceDays(7);
-  }
-  assert.equal(s.reviews.length, 3);
+  setWeekMarks(item.id, W[1], 6);
+  setWeekMarks(item.id, W[2], 6);
+  assert.equal(app.raiseEligible(item), false, 'двух недель мало');
+
+  setWeekMarks(item.id, W[0], 6);
   assert.equal(app.raiseEligible(item), true);
+  // регрессия задачи 16C: механика считает по days{}, массив reviews не
+  // участвует — пропущенные разборы её больше не блокируют
+  assert.deepEqual(s.reviews, []);
   assert.equal(app.raiseSuggest(item.value), 6); // 5 → 6
+
+  // и наоборот: закрытые разборы права не дают, если недели не набраны
+  setWeekMarks(item.id, W[0], 5);
+  s.reviews = [{ week: W[0] }, { week: W[1] }, { week: W[2] }];
+  assert.equal(app.raiseEligible(item), false);
 });
 
-test('И4: «Не сейчас» сдвигает якорь — отсчёт трёх недель заново', () => {
+test('И4: якорь — понедельник недели решения; нужны три недели строго после него', () => {
   setNow(2026, 7, 1, 12, 0);
   const s = freshStore();
   calendarPast(s);
   const item = s.items.find(i => i.name === 'Подтягивания + отжимания');
-  for (let w = 0; w < 3; w++) { markPrevWeek(item.id, 6); app.closeWeek(); advanceDays(7); }
+  for (const w of app.closedWeeks(3)) setWeekMarks(item.id, w, 6);
   assert.equal(app.raiseEligible(item), true);
 
-  app.resetRaiseCount(item);
-  assert.equal(item.raiseAfter, 4); // reviews.length (3) + 1: текущая открытая неделя не в счёт
+  app.resetRaiseCount(item); // «Не сейчас»
+  const anchor = app.currentWeekStart();
+  assert.equal(item.raiseAfterWeek, anchor);
   assert.equal(app.raiseEligible(item), false);
 
-  // ещё 3 закрытия — рано: нужно ≥ raiseAfter + 3 = 7 закрытых недель
-  for (let w = 0; w < 3; w++) { markPrevWeek(item.id, 6); app.closeWeek(); advanceDays(7); }
-  assert.equal(s.reviews.length, 6);
-  assert.equal(app.raiseEligible(item), false);
-
-  markPrevWeek(item.id, 6); app.closeWeek();
-  assert.equal(s.reviews.length, 7);
+  // неделя решения в тройку не годится — нужны три следующие за ней
+  for (let i = 0; i < 4; i++) {
+    advanceDays(7);
+    setWeekMarks(item.id, app.addDays(anchor, 7 * i), 6);
+    if (i < 3) assert.equal(app.raiseEligible(item), false, 'неделя решения ещё в тройке');
+  }
   assert.equal(app.raiseEligible(item), true);
+  assert.equal(app.closedWeeks(3)[0], app.addDays(anchor, 7), 'тройка строго после якоря');
 });
 
 test('И4: неделя с 5 отметками в тройке последних ломает право на повышение', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
+  calendarPast(s);
   const item = s.items.find(i => i.name === 'Подтягивания + отжимания');
-  s.reviews = [fakeReview(item, 6), fakeReview(item, 7), fakeReview(item, 5)];
-  assert.equal(app.raiseEligible(item), false);
-  s.reviews = [fakeReview(item, 5), fakeReview(item, 6), fakeReview(item, 7)];
-  assert.equal(app.raiseEligible(item), false); // и в середине/начале тройки тоже
-  s.reviews = [fakeReview(item, 5), fakeReview(item, 6), fakeReview(item, 6), fakeReview(item, 7)];
-  assert.equal(app.raiseEligible(item), true); // считаются 3 ПОСЛЕДНИЕ закрытые
+  const W = app.closedWeeks(3);
+
+  setWeekMarks(item.id, W[0], 6);
+  setWeekMarks(item.id, W[1], 7);
+  setWeekMarks(item.id, W[2], 5);
+  assert.equal(app.raiseEligible(item), false, 'провал в последней неделе тройки');
+
+  setWeekMarks(item.id, W[2], 6);
+  setWeekMarks(item.id, W[1], 5);
+  assert.equal(app.raiseEligible(item), false, 'и в середине тройки');
+
+  setWeekMarks(item.id, W[1], 6);
+  assert.equal(app.raiseEligible(item), true);
+  // четвёртая неделя назад в счёт не идёт: считаются 3 ПОСЛЕДНИЕ закрытые
+  setWeekMarks(item.id, app.addDays(W[0], -7), 0);
+  assert.equal(app.raiseEligible(item), true);
 });
 
-test('И4: повышение только для активных дневных пунктов с числовой планкой', () => {
+test('И4: повышение — активный дневной пункт минимума с числовой планкой и без лестницы', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
+  calendarPast(s);
   const item = s.items.find(i => i.name === 'Подтягивания + отжимания');
   const noValue = s.items.find(i => i.name === 'Умыться');   // value: null
   const weekly = s.items.find(i => i.type === 'weekly');
-  s.reviews = [fakeReview(item, 7), fakeReview(item, 7), fakeReview(item, 7)];
-  s.reviews.forEach(r => {
-    r.perItem[noValue.id] = { name: noValue.name, marks: [1, 1, 1, 1, 1, 1, 1].map(Boolean), count: 7 };
-  });
+  const habit = s.items.find(i => i.type === 'daily' && i.area === 'habit');
+  habit.value = 5;
+  for (const w of app.closedWeeks(3)) {
+    for (const x of [item, noValue, weekly, habit]) setWeekMarks(x.id, w, 7);
+  }
+
   assert.equal(app.raiseEligible(noValue), false); // нет числовой планки
   assert.equal(app.raiseEligible(weekly), false);  // недельный тип
+  assert.equal(app.raiseEligible(habit), false);   // область привычек
   item.active = false;
   assert.equal(app.raiseEligible(item), false);    // выключен
   item.active = true;
+  assert.equal(app.raiseEligible(item), true);
+
+  // лестница на пункте гасит предложение: шаг ступени и шаг планки в одну
+  // неделю — два изменения за раз (C.1.7)
+  app.setLadder(item.id, 'первая\nвторая');
+  assert.equal(app.raiseEligible(item), false);
+  app.clearLadder(item.id);
   assert.equal(app.raiseEligible(item), true);
 });
 
@@ -327,12 +366,12 @@ test('И4: raiseSuggest — +1 до 12 включительно, дальше +1
   assert.equal(app.raiseSuggest(500), 550);
 });
 
-test('И4: accept — history, pendingRaises, новый якорь и попадание в разбор', () => {
+test('И4: accept — history, pendingRaises, якорь недели и попадание в разбор', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   calendarPast(s);
   const item = s.items.find(i => i.name === 'Подтягивания + отжимания');
-  s.reviews = [fakeReview(item, 6), fakeReview(item, 6), fakeReview(item, 6)];
+  for (const w of app.closedWeeks(3)) setWeekMarks(item.id, w, 6);
   assert.equal(app.raiseEligible(item), true);
 
   app.acceptRaise(item, 6);
@@ -340,7 +379,7 @@ test('И4: accept — history, pendingRaises, новый якорь и попа�
   assert.equal(item.value, 6);
   assert.deepEqual(item.history[item.history.length - 1], { date: app.todayKey(), value: 6 });
   assert.deepEqual(s.pendingRaises, [{ itemId: item.id, name: item.name, from: 5, to: 6 }]);
-  assert.equal(item.raiseAfter, 4); // reviews.length (3) + 1
+  assert.equal(item.raiseAfterWeek, app.currentWeekStart());
   assert.equal(app.raiseEligible(item), false); // отсчёт заново
 
   app.closeWeek(); // повышение попадает в срез закрытой недели
@@ -398,7 +437,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -429,7 +468,7 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 10);
+    assert.equal(m.schemaVersion, 11);
     assert.equal(Array.isArray(m.items), true);
     assert.equal(m.items.length, 10); // дефолтный набор: 7 минимум + 3 привычки
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);
@@ -546,7 +585,7 @@ test('З2: мусорный schemaVersion трактуется как v1 — в�
   const src = v1Store();
   src.schemaVersion = 'мусор';
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
   assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
@@ -574,7 +613,7 @@ test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпоте
     ]
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   assert.equal(m.reviews[0].weekStart, '2026-06-01');
   assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
@@ -679,7 +718,7 @@ test('З4: миграция v3→v4 — exportedAt с мягким дефолт�
     settings: { dayBoundary: 4, hintShownForItemId: null }
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   assert.equal(m.settings.exportedAt, null);
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
   assert.deepEqual(again, m);
@@ -932,7 +971,7 @@ test('З9: повышение игнорирует привычки; ретро-
   calendarPast(s);
   const habit = s.items.find(i => i.type === 'daily' && i.area === 'habit');
   habit.value = 5; // даже с числом и идеальными неделями
-  s.reviews = [fakeReview(habit, 7), fakeReview(habit, 7), fakeReview(habit, 7)];
+  for (const w of app.closedWeeks(3)) markWeek(habit.id, w, 7);
   assert.equal(app.raiseEligible(habit), false); // area habit — повышения нет
 
   habit.addedAt = app.addDays(app.todayKey(), -5);
@@ -970,6 +1009,8 @@ test('З9/З11: habitsSteady — 2 недели каждая активная п
 /* ── Задача 11. Норма и серия привычек (инвариант 11) ──────── */
 
 /* Отметить привычке первые count дней недели с понедельником mon */
+/* Отметить первые count дней недели toggle'ом — от чистого листа.
+   Для повторной установки состояния есть setWeekMarks выше. */
 function markWeek(id, mon, count) {
   for (let i = 0; i < count; i++) app.toggleMark(app.addDays(mon, i), id);
 }
@@ -1083,7 +1124,7 @@ test('З11: миграция v6 — норма достроена и валид�
     settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
   };
   const m = app.migrate(v5);
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   assert.equal(m.items.find(i => i.id === 'h1').normPerWeek, 7); // достроена умолчанием
   assert.equal(m.items.find(i => i.id === 'h2').normPerWeek, 7); // мусор → умолчание
   assert.equal(m.items.find(i => i.id === 'h3').normPerWeek, 1); // к ближайшему допустимому
@@ -1152,7 +1193,7 @@ test('З10: hintShownForItemId мёртв — нет в defaultStore, v5-миг�
     pendingRaises: [], draftOneChange: '', weekStart: '2026-07-13',
     settings: { dayBoundary: 4, hintShownForItemId: 'x1', exportedAt: null }
   });
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   assert.equal('hintShownForItemId' in m.settings, false);
 });
 
@@ -1465,7 +1506,7 @@ test('З14: миграция v6→v7 — поля достроены, лестн
   const m = app.migrate(v6);
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   assert.equal(byId.i1.formula, null);           // достроено умолчанием
   assert.equal(byId.i1.ladder, null);
   assert.deepEqual(byId.i1.ladderLog, []);
@@ -1551,7 +1592,7 @@ test('З14.2: миграция v7→v8 — пустому журналу жив�
   const m = app.migrate(mkV7());
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   // старт от startedAt, ступень и текст — те, на которых лестница стоит сейчас
   assert.deepEqual(byId.i1.ladderLog, [{ date: '2026-07-02', step: 1, text: 'два', start: true }]);
   assert.deepEqual(byId.i2.ladderLog, []); // без лестницы журнал не заводится
@@ -1663,7 +1704,7 @@ test('З15: миграция v8→v9 — группы в порядке перв
   });
 
   const m = app.migrate(mkV8());
-  assert.equal(m.schemaVersion, 10);
+  assert.equal(m.schemaVersion, 11);
   assert.deepEqual(m.groups, [{ name: 'Сон' }, { name: 'Тело' }]); // порядок первого появления
   assert.deepEqual(m.days, days);       // миграция аддитивна
   assert.deepEqual(m.reviews, reviews);
@@ -1982,4 +2023,124 @@ test('З16B: подъём — ряд от двух записей, ступен�
   const sd = app.risePath(app.riseSeries(same).points);
   assert.equal((sd.match(/[HV]/g) || []).length, 3);
   assert.doesNotMatch(sd, /NaN|Infinity/);
+});
+
+/* ── Задача 16, фаза C. Планка вниз и якоря недель ─────────── */
+
+test('З16C: lowerSuggest — крупная планка на четверть, мелкая на единицу, единице некуда', () => {
+  assert.equal(app.lowerSuggest(20), 15);
+  assert.equal(app.lowerSuggest(13), 10);   // round(9.75)
+  assert.equal(app.lowerSuggest(12), 11);
+  assert.equal(app.lowerSuggest(2), 1);
+  assert.equal(app.lowerSuggest(1), null);
+  assert.equal(app.lowerSuggest(0), null);
+  assert.equal(app.lowerSuggest(null), null);
+  assert.equal(app.lowerSuggest('12'), null); // строка планкой не считается
+});
+
+test('З16C: lowerEligible — две недели по ≤3 из 7, границы 3 и 4', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const item = s.items.find(i => i.name === 'Подтягивания + отжимания');
+  const W = app.closedWeeks(2);
+
+  assert.equal(app.lowerEligible(item), true, 'две пустые недели — планка не держится');
+
+  setWeekMarks(item.id, W[0], 3);
+  setWeekMarks(item.id, W[1], 3);
+  assert.equal(app.lowerEligible(item), true, '3 из 7 — граница включительно');
+
+  setWeekMarks(item.id, W[1], 4);
+  assert.equal(app.lowerEligible(item), false, '4 из 7 — уже держится');
+
+  setWeekMarks(item.id, W[1], 3);
+  setWeekMarks(item.id, W[0], 4);
+  assert.equal(app.lowerEligible(item), false, 'вторая неделя тоже считается');
+  setWeekMarks(item.id, W[0], 0);
+
+  // одной закрытой недели мало
+  s.settings.calendarSince = W[1];
+  assert.equal(app.closedWeeks(2).length, 1);
+  assert.equal(app.lowerEligible(item), false);
+  calendarPast(s);
+  assert.equal(app.lowerEligible(item), true);
+
+  // область привычек и выключённый пункт предложения не получают
+  const habit = s.items.find(i => i.type === 'daily' && i.area === 'habit');
+  assert.equal(app.lowerEligible(habit), false);
+  item.active = false;
+  assert.equal(app.lowerEligible(item), false);
+  item.active = true;
+
+  // пункт без числовой планки предложение получает — решение сводится
+  // к «Оставить», кнопки шага у него нет (lowerSuggest === null)
+  const noValue = s.items.find(i => i.name === 'Умыться');
+  assert.equal(app.lowerEligible(noValue), true);
+  assert.equal(app.lowerSuggest(noValue.value), null);
+});
+
+test('З16C: понижение — планка, история, срез недели и якорь; «Оставить» гасит до недели после', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const item = s.items.find(i => i.name === 'Пешком'); // value 500
+  assert.equal(app.lowerEligible(item), true);
+
+  app.acceptLower(item, app.lowerSuggest(item.value));
+  assert.equal(item.value, 375);
+  assert.deepEqual(item.history[item.history.length - 1], { date: app.todayKey(), value: 375 });
+  assert.deepEqual(s.pendingLowers, [{ itemId: item.id, name: item.name, from: 500, to: 375 }]);
+  assert.equal(item.lowerAfterWeek, app.currentWeekStart());
+  assert.equal(app.lowerEligible(item), false, 'решение недели принято');
+
+  app.closeWeek();
+  const r = s.reviews[s.reviews.length - 1];
+  assert.deepEqual(r.lowers, [{ itemId: item.id, name: item.name, from: 500, to: 375 }]);
+  assert.deepEqual(s.pendingLowers, [], 'pendingLowers очищен закрытием недели');
+
+  // якорь: нужны две недели строго после недели решения — то есть ещё
+  // три смены недели (неделя решения закрывается последней из «старых»)
+  const anchor = item.lowerAfterWeek;
+  advanceDays(7);
+  assert.equal(app.lowerEligible(item), false, 'неделя решения ещё не закрыта');
+  advanceDays(7);
+  assert.equal(app.lowerEligible(item), false, 'неделя решения в паре');
+  advanceDays(7);
+  assert.equal(app.closedWeeks(2)[0], app.addDays(anchor, 7));
+  assert.equal(app.lowerEligible(item), true);
+
+  // «Оставить» ставит тот же якорь, планку не трогая
+  const before = item.value;
+  app.keepBar(item);
+  assert.equal(item.value, before);
+  assert.equal(item.lowerAfterWeek, app.currentWeekStart());
+  assert.equal(app.lowerEligible(item), false);
+});
+
+test('З16C: миграция v10→v11 — якоря недель и pendingLowers, идемпотентно', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const v10 = app.defaultStore();
+  v10.schemaVersion = 10;
+  delete v10.pendingLowers;
+  for (const it of v10.items) { delete it.raiseAfterWeek; delete it.lowerAfterWeek; }
+  v10.items[0].raiseAfterWeek = '2026-07-15';  // рукотворная середина недели
+  v10.items[1].lowerAfterWeek = 'мусор';
+
+  const m = app.migrate(JSON.parse(JSON.stringify(v10)));
+  assert.equal(m.schemaVersion, 11);
+  assert.deepEqual(m.pendingLowers, []);
+  assert.equal(m.items[0].raiseAfterWeek, '2026-07-13', 'не-понедельник приведён к своему понедельнику');
+  assert.equal(m.items[1].lowerAfterWeek, null);
+  assert.equal(m.items.every(i => 'raiseAfterWeek' in i && 'lowerAfterWeek' in i), true);
+  assert.equal(m.items.every(i => 'raiseAfter' in i), true, 'историческое поле не удаляется');
+  // миграция аддитивна: отметки и разборы не тронуты
+  assert.deepEqual(m.days, v10.days);
+  assert.deepEqual(m.reviews, v10.reviews);
+  assert.deepEqual(app.migrate(JSON.parse(JSON.stringify(m))), m);
+
+  // мусор в pendingLowers отфильтровывается
+  const dirty = JSON.parse(JSON.stringify(m));
+  dirty.pendingLowers = [null, 'строка', { itemId: 'x' }];
+  assert.deepEqual(app.migrate(dirty).pendingLowers, [{ itemId: 'x' }]);
 });
