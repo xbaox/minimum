@@ -279,7 +279,12 @@ function migrate(s, opts) {
 
   // настройки — первыми: от dayBoundary зависит «сегодня» для достройки дат
   if (!s.settings || typeof s.settings !== 'object' || Array.isArray(s.settings)) s.settings = {};
-  if (typeof s.settings.dayBoundary !== 'number' || !isFinite(s.settings.dayBoundary)) s.settings.dayBoundary = 4;
+  // граница дня — час суток: целое 0..23. Без рамки импортированное
+  // значение вроде 1e6 уводило логический день на десятилетия назад и
+  // currentWeekStart навсегда становился null (аудит, находка 28).
+  s.settings.dayBoundary = (typeof s.settings.dayBoundary === 'number' && isFinite(s.settings.dayBoundary))
+    ? Math.min(23, Math.max(0, Math.round(s.settings.dayBoundary)))
+    : 4;
   // v13 → v14 (задача 17): порог зачёта дня — доля отмеченного, шаг 0,1
   s.settings.dayThreshold = clampThreshold(s.settings.dayThreshold);
   const today = dateKeyShift(new Date(), s.settings.dayBoundary);
@@ -752,11 +757,6 @@ function addDays(k, n) {
 
 function diffDays(a, b) {
   return Math.round((keyToDate(a) - keyToDate(b)) / 86400000);
-}
-
-function fmtLong(k) {
-  const s = keyToDate(k).toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
-  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function fmtWeekday(k) {
@@ -1376,12 +1376,6 @@ function findGroup(name) {
   return store.groups.find(g => g.name === n) || null;
 }
 
-/* Блок пункта или null, если имя пустое либо не заведено */
-function groupOf(it) {
-  const n = groupNameOf(it);
-  return n ? findGroup(n) : null;
-}
-
 function addGroup(name) {
   const n = String(name ?? '').trim();
   if (!n || findGroup(n)) return false;
@@ -1946,6 +1940,13 @@ function importJSON(file) {
     ui.groupAdd = false;
     ui.groupPick = null;
     ui.groupNew = false;
+    // заметки принадлежали прежним данным — форма, подтверждение и черновик
+    ui.noteAdd = false;
+    ui.noteEditingId = null;
+    ui.noteDelete = null;
+    ui.noteDraft = null;
+    ui.exEditingId = null;
+    ui.exAddOpen = false;
     closeDetail(); // лист детали принадлежал прежним данным (и чистит свой черновик)
     ui.renderedDayKey = todayKey();
     armDayTimer();
@@ -2004,6 +2005,7 @@ const ui = {
   noteDelete: null,     // заметка ждёт подтверждения удаления вторым тапом
   noteDraft: null,      // черновик формы заметки — свой слот, как у листа детали
   wipeOpen: false,      // раскрыто предупреждение «Начать с чистого листа» (16.1)
+  wipeFailed: false,    // копию некуда положить — чистка не выполнена (19, C.6.4)
   wipeConfirm: false,   // «Стереть» ждёт подтверждения вторым тапом
   wipeDropConfirm: false, // «Убрать копию» — тоже вторым тапом
   // свёрнутые секции «Настроек»: по умолчанию раскрыты только «Пункты»
@@ -2069,6 +2071,20 @@ function tapPop(node) {
    шлёт, reduced-motion отключает переход), поэтому done гарантирован
    fallback-таймаутом и вызывается ровно один раз. При reduced-motion —
    сразу, без ожидания: конечное состояние достижимо мгновенно. */
+/* Тихое подтверждение «Сохранено» обычно гаснет ключевыми кадрами. При
+   reduced-motion анимация выключена глобальным блоком, и узел остался бы
+   невидимым (opacity: 0) — CSS показывает его статично, а убрать его после
+   паузы может только JS: конечное состояние должно быть достижимо и здесь
+   (задача 19, C.6.3). */
+const FLASH_MS = 1200;
+
+function armFlash() {
+  if (!prefersReducedMotion()) return;
+  const n = document.querySelector('.flash');
+  if (!n) return;
+  setTimeout(() => { if (n.isConnected) n.remove(); }, FLASH_MS);
+}
+
 function motionLeave(node, done) {
   if (!node || prefersReducedMotion()) { done(); return; }
   // зафиксировать текущую высоту как старт схлопывания (в конце — max-height:0)
@@ -2160,7 +2176,9 @@ function renderToday() {
     h += `<p class="muted">Пунктов пока нет — добавить можно в «Пунктах».</p>`;
   }
 
-  for (const w of activeWeekly().filter(i => i.area === 'min')) {
+  // area у недельного счётчика не проверяется: migrate принудительно ставит
+  // ему min (инвариант 10), другого значения в данных не бывает (C.5.4)
+  for (const w of activeWeekly()) {
     const n = trainCount(w.id);
     h += `
       <div class="weekcount">
@@ -2451,7 +2469,10 @@ function renderProgress() {
       ${best ? `<span class="muted rec">рекорд ${best} ${plural(best, 'день', 'дня', 'дней')}</span>` : ''}
     </p>` + dayBar() +
     (streak || best
-      ? `<p class="muted">Один пропуск в неделю не обнуляет. Два подряд — начинают заново.</p>`
+      // правда о правиле, а не приблизительная (задача 19, C.7.1): прощается
+      // пропуск, если предыдущий прощённый был БОЛЬШЕ недели назад; ровно
+      // через неделю — уже обрыв. «Раз в неделю» звучало мягче, чем работает.
+      ? `<p class="muted">Пропуск прощается, если прошлый был больше недели назад. Иначе счёт начинается заново.</p>`
       : `<p class="muted">Серия начнётся с первого зачтённого дня.</p>`));
 
   h += pcard('Цепь дней', chainGrid());
@@ -2580,6 +2601,7 @@ function renderNotes() {
 
   el('scr-notes').innerHTML = h;
   restoreOpenForm();
+  armFlash();
 }
 
 /* ── Точечные обновления «Сегодня» и «Привычек» (горячие пути) ──
@@ -2599,7 +2621,7 @@ function updateDayline() {
   const note = document.querySelector('#scr-today .bar-note');
   if (note) {
     note.classList.toggle('ok', closed);
-    note.innerHTML = closed ? 'День закрыт' : (total ? `<b>${done}</b>&nbsp;из&nbsp;${total}` : 'Нет активных пунктов');
+    note.innerHTML = closed ? 'День закрыт' : `<b>${done}</b>&nbsp;из&nbsp;${total}`;
   }
 }
 
@@ -2615,7 +2637,7 @@ function updateHabitsDayline() {
   const note = document.querySelector('#scr-habits .bar-note');
   if (note) {
     note.classList.toggle('ok', allDone);
-    note.innerHTML = allDone ? 'Все отмечены' : (total ? `сегодня <b>${done}</b>&nbsp;из&nbsp;${total}` : '');
+    note.innerHTML = allDone ? 'Все отмечены' : `сегодня <b>${done}</b>&nbsp;из&nbsp;${total}`;
   }
 }
 
@@ -2794,7 +2816,7 @@ function ladderForm(it) {
   const busy = ladderBlockedBy(it); // слот занят другим пунктом
   const text = it.ladder ? it.ladder.steps.join('\n') : (busy ? '' : LADDER_START);
   return `
-    <div class="card form ladder" data-form="ladder" data-id="${esc(it.id)}">
+    <div class="card form ladder-form" data-form="ladder" data-id="${esc(it.id)}">
       ${busy ? `<p class="muted">Лестница уже есть у пункта «${esc(busy.name)}». Снимите её там, чтобы начать здесь.</p>` : ''}
       <label class="field"><span>Ступени — по одной на строку</span>
         <textarea id="fx-steps" rows="6"${busy ? ' disabled' : ''}>${esc(text)}</textarea></label>
@@ -3249,6 +3271,7 @@ function wipeBlock() {
   return `
     <div class="danger">
       <p class="lead">Начать с чистого листа</p>
+      ${ui.wipeFailed ? `<p class="muted" role="status">Не удалось сохранить копию — чистка отменена</p>` : ''}
       <p class="muted">Будут стёрты: ${line}.</p>
       <p class="muted">Копия останется в приложении — вернуть можно, пока она не убрана.${wipedCopy() ? ' Прежняя копия будет заменена новой: хранится одна, последняя.' : ''}</p>
       <div class="btns">
@@ -3365,6 +3388,7 @@ function renderSettings() {
 
   el('scr-settings').innerHTML = h;
   restoreOpenForm();
+  armFlash();
   updateMirrorNote();
 }
 
@@ -3615,6 +3639,7 @@ const DRAG_OUT = 60;     // px вбок от списка — отмена
 
 let drag = null;
 let dragSuppressClick = false; // тап после перетаскивания не открывает форму
+let dragClickTimer = null;     // страховка: флаг снимается, если клика не последовало
 
 function dragSiblings(row) {
   const kind = row.dataset.drag;
@@ -3737,6 +3762,11 @@ function dragStop() {
   if (drag.raf !== null) (window.cancelAnimationFrame || clearTimeout)(drag.raf);
   if (drag.active) {
     dragSuppressClick = true;
+    // клик приходит сразу за отпусканием пальца; если его не будет вовсе
+    // (pointercancel, отмена с клавиатуры), флаг снимается сам и не глотает
+    // следующий, уже не связанный с перетаскиванием тап (аудит, находка 29)
+    clearTimeout(dragClickTimer);
+    dragClickTimer = setTimeout(() => { dragSuppressClick = false; }, 300);
     drag.row.classList.remove('drag-live');
     drag.row.style.transform = '';
     drag.sibs.forEach(n => { n.style.transform = ''; });
@@ -4273,7 +4303,10 @@ function onClick(e) {
 
     case 'wipe-do': {
       if (!ui.wipeConfirm) { ui.wipeConfirm = true; renderSettings(); break; } // второй тап
-      if (!wipeAll()) { ui.wipeConfirm = false; renderSettings(); break; }     // копию некуда положить
+      // копию некуда положить — чистка не выполнена; молчать об этом нельзя:
+      // владелец видел бы, что «Стереть» ничего не сделало (аудит, находка 20)
+      if (!wipeAll()) { ui.wipeConfirm = false; ui.wipeFailed = true; renderSettings(); break; }
+      ui.wipeFailed = false;
       // экран после чистки — «Сегодня» с пустым списком; ui-состояние,
       // указывавшее на исчезнувшие записи, снимается целиком
       ui.wipeOpen = false;
@@ -4469,7 +4502,7 @@ if (typeof module !== 'undefined' && module.exports) {
     canStepForward, canStepBack, ladderStatus, ladderStep, ladderBlockedBy,
     setLadder, clearLadder, setFormula, normFormula, normLadder,
     // блоки (инвариант 13)
-    findGroup, groupOf, addGroup, moveGroup, renameGroup,
+    findGroup, addGroup, moveGroup, renameGroup,
     deleteGroup, groupedItems, groupList,
     // прогресс (инвариант 14)
     minDayItems, minDayMarks, minDayClosed, daysInSystem, dayStreak,

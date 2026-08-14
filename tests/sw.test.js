@@ -65,16 +65,42 @@ async function dispatchFetch(listeners, request) {
   return res;
 }
 
+/* Файлы деплоя на диске: всё в корне репозитория, что уезжает пользователю.
+   Служебное (тесты, инструменты, конфиги, README, сам sw.js) отсеивается по
+   расширению и по явному списку — расширения деплоя в проекте всего четыре:
+   html, css, js, json, png. */
+const NOT_DEPLOYED = new Set([
+  'sw.js',              // сам себя не кэширует
+  'package.json', 'package-lock.json', 'CLAUDE.md', 'README.md', '.gitattributes'
+]);
+const DEPLOY_EXT = new Set(['.html', '.css', '.js', '.json', '.png']);
+
+function deployFilesOnDisk() {
+  return fs.readdirSync(ROOT, { withFileTypes: true })
+    .filter(d => d.isFile())
+    .map(d => d.name)
+    .filter(n => DEPLOY_EXT.has(path.extname(n)) && !NOT_DEPLOYED.has(n))
+    .sort();
+}
+
+/* Задача 19, C.3: тест назывался «совпадает с фактическим набором файлов на
+   диске», а сверял с захардкоженным списком — забытый в ASSETS файл он не
+   ловил (аудит, находка 14). Теперь диск читается по-настоящему. */
 test('sw: ASSETS совпадает с фактическим набором файлов деплоя на диске', () => {
   const { assets } = bootSW();
-  const expected = [
-    './', './index.html', './styles.css', './app.js', './manifest.json',
-    './icon-180.png', './icon-192.png', './icon-512.png',
-    './icon-192-maskable.png', './icon-512-maskable.png'
-  ];
-  assert.deepEqual([...assets].sort(), [...expected].sort());
-  for (const a of assets) {
-    if (a === './') continue;
+  const onDisk = deployFilesOnDisk();
+  const listed = [...assets].filter(a => a !== './').map(a => a.replace(/^\.\//, '')).sort();
+
+  const forgotten = onDisk.filter(f => !listed.includes(f));
+  assert.deepEqual(forgotten, [],
+    `файлы деплоя есть на диске, но не перечислены в ASSETS: ${forgotten.join(', ')}`);
+  const phantom = listed.filter(f => !onDisk.includes(f));
+  assert.deepEqual(phantom, [],
+    `в ASSETS перечислено то, чего на диске нет: ${phantom.join(', ')}`);
+
+  assert.ok(assets.includes('./'), 'корень кэшируется отдельной записью — навигация офлайн');
+  assert.equal(new Set(assets).size, assets.length, 'без дублей');
+  for (const a of listed) {
     assert.equal(fs.existsSync(path.join(ROOT, a)), true, `${a} существует на диске`);
   }
 });
@@ -130,5 +156,63 @@ test('sw: не-GET и чужой origin не перехватываются', as
   ]) {
     const res = await dispatchFetch(listeners, request);
     assert.equal(res, null); // respondWith не вызывался
+  }
+});
+
+/* ── Задача 19, C.1.4: VERSION обязан подниматься вместе с деплоем ──
+   «Изменил любой файл деплоя → подними VERSION в sw.js» — правило из
+   CLAUDE.md, которое не проверял никто: мутация «VERSION не поднят»
+   пережила всю батарею аудита. Проверяем без обращения к git (в CI
+   бывает поверхностный клон): tests/releases.json хранит отпечаток
+   выпущенных версий. Файлы деплоя изменились, а VERSION остался прежним —
+   отпечаток не сойдётся и тест упадёт. VERSION поднят и в списке ещё не
+   значится — это невыпущенная версия, она проходит; запись о ней
+   добавляется в releases.json в релизном коммите. */
+
+const crypto = require('node:crypto');
+
+const DEPLOY_FILES = [
+  'index.html', 'styles.css', 'app.js', 'sw.js', 'manifest.json',
+  'icon-180.png', 'icon-192.png', 'icon-512.png',
+  'icon-192-maskable.png', 'icon-512-maskable.png'
+];
+
+function deployHash() {
+  const h = crypto.createHash('sha256');
+  for (const f of [...DEPLOY_FILES].sort()) {
+    h.update(f); h.update('\0');
+    h.update(fs.readFileSync(path.join(ROOT, f)));
+    h.update('\0');
+  }
+  return h.digest('hex');
+}
+
+const swVersion = () => (fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8')
+  .match(/const VERSION = '([^']+)'/) || [])[1];
+
+test('sw: VERSION поднят относительно предыдущего релиза', () => {
+  const version = swVersion();
+  assert.ok(version, 'VERSION задан строкой');
+  assert.match(version, /^minimum-v\d+$/, 'формат имени версии');
+
+  const releases = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests', 'releases.json'), 'utf8'));
+  assert.ok(Array.isArray(releases) && releases.length, 'список релизов не пуст');
+  const names = releases.map(r => r.version);
+  assert.equal(new Set(names).size, names.length, 'версии в списке уникальны');
+
+  const known = releases.find(r => r.version === version);
+  if (!known) return; // невыпущенная версия: правило соблюдено, отпечатка ещё нет
+
+  assert.equal(deployHash(), known.hash,
+    `файлы деплоя изменились, а VERSION остался ${version}. Подними VERSION в sw.js ` +
+    'и добавь запись в tests/releases.json (см. tools/release-lock.mjs).');
+});
+
+test('sw: список ASSETS покрывает все файлы отпечатка, кроме самого sw.js', () => {
+  const { assets } = bootSW();
+  const listed = new Set([...assets].map(a => a.replace(/^\.\//, '')));
+  for (const f of DEPLOY_FILES) {
+    if (f === 'sw.js') continue;
+    assert.ok(listed.has(f), `${f} входит в отпечаток релиза, но не в ASSETS`);
   }
 });

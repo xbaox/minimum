@@ -508,7 +508,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .form .overline { margin-top: 18px; }
 .form .overline:first-child { margin-top: 0; }
 
-.field.check-line { flex-direction: row; align-items: center; gap: 10px; }
 
 /* ── Разбор недели ─────────────────────────────────────────── */
 
@@ -543,11 +542,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .c-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-val { color: var(--muted); white-space: nowrap; }
 
-.card.raise, .card.lower, .card.step { margin-top: 20px; }
-.card.raise p, .card.lower p, .card.step p { font-size: 15px; margin-bottom: 8px; }
+.card.raise, .card.lower, .card.step, .card.param { margin-top: 20px; }
+.card.raise p, .card.lower p, .card.step p, .card.param p { font-size: 15px; margin-bottom: 8px; }
 /* понижение и ступень — тот же тихий тон, что у повышения: ни --chain,
    ни цветового давления; решение остаётся за владельцем (задача 16C) */
-.card.lower .btns, .card.step .btns { margin-top: 12px; }
+.card.lower .btns, .card.step .btns, .card.param .btns { margin-top: 12px; }
 .raise-line { font-size: 17px; }
 .raise-line b { color: var(--accent); }
 /* поле числа: карточка повышения и строка упражнения в листе тренировки */
@@ -941,4 +940,7 @@ body.dragging { -webkit-user-select: none; user-select: none; }
     animation: none !important;
     scroll-behavior: auto !important;
   }
+  /* «Сохранено» держится на ключевых кадрах; без анимации узел остался бы
+     невидимым. Показываем статично — убирает его по паузе armFlash (C.6.3) */
+  .flash { opacity: 1; max-height: 4em; margin: 6px 0; }
 }

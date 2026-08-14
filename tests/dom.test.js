@@ -2306,7 +2306,9 @@ test('«Прогресс»: «в системе», серия, цепь дней
   assert.match(stats[0], new RegExp('^' + total + ' '));
   assert.match(stats[1], /^1 /, 'серия: сегодня зачтён, вчера — амнистия, позавчера обрыв');
   // формулировка п. 4.6: амнистия теперь одна на неделю, а не «одна подряд»
-  assert.match(scr.textContent, /Один пропуск в неделю не обнуляет\. Два подряд — начинают заново\./);
+  // подпись обязана совпадать с правилом амнистии: разрыв РОВНО в неделю
+  // уже обрывает, поэтому «раз в неделю» заменено на «больше недели назад»
+  assert.match(scr.textContent, /Пропуск прощается, если прошлый был больше недели назад\. Иначе счёт начинается заново\./);
 
   // цепь дней: 8 строк по 7 ячеек и строка подписей
   const cells = [...scr.querySelectorAll('.cdays i')];
@@ -2602,7 +2604,10 @@ test('«Настройки»: упражнения добавляются, пр�
   const { document, window } = await boot({ seed: trainSeed() });
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  const sect = () => [...document.querySelectorAll('#scr-settings details.sect')][2];
+  // секция по заголовку, а не по номеру: вставка новой секции не должна
+  // молча переадресовать тест на соседнюю (задача 19, C.4.1)
+  const sect = () => [...document.querySelectorAll('#scr-settings details.sect')]
+    .find(d => /Упражнения/.test(d.querySelector('summary').textContent));
   const rows = () => [...sect().querySelectorAll('.row.item')];
 
   assert.deepEqual(rows().map(r => r.querySelector('.tname').textContent), ['Жим', 'Тяга']);
@@ -3227,7 +3232,8 @@ test('«Прогресс» 17: карточки блоков, рекорд, по
     new RegExp('^' + t17Days() + ' (день|дня|дней)$'));
 
   // серия: сегодня зачтён, вчера ниже порога — амнистия, позавчера обрыв
-  const streak = scr.querySelectorAll('.stat')[1];
+  const streakCard = [...scr.querySelectorAll('.pcard')].find(c => c.querySelector('h2').textContent === 'Серия');
+  const streak = streakCard.querySelector('.stat');
   assert.match(streak.textContent, /^1 день$/);
   assert.match(scr.querySelector('.rec').textContent, /^рекорд 1 день$/);
 
@@ -3237,7 +3243,7 @@ test('«Прогресс» 17: карточки блоков, рекорд, по
   assert.equal(scr.querySelector('.dbar-note').textContent.trim(), 'День закрыт');
   assert.equal(scr.querySelector('.dbar').getAttribute('aria-hidden'), 'true');
 
-  assert.match(scr.textContent, /Один пропуск в неделю не обнуляет\./);
+  assert.match(scr.textContent, /Пропуск прощается, если прошлый был больше недели назад\./);
   // ни эмодзи, ни очков, ни наград (анти-требования конституции)
   assert.doesNotMatch(scr.textContent, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
 });
@@ -3252,7 +3258,10 @@ test('«Прогресс» 17: ячейка цепи — три состояни
   assert.equal(cells.filter(c => c.classList.contains('part')).length, 1, 'отмечено ниже порога — контур');
   assert.ok(cells.filter(c => c.classList.contains('pre')).length > 0, 'дни до эпохи скрыты');
   // пустые ячейки внутри эпохи: ни full, ни part, ни pre, ни fut
-  const plain = cells.filter(c => c.className === 'cd');
+  // по составу классов, а не по точной строке: добавление любого класса
+  // ячейке не должно ронять тест о её состоянии (задача 19, C.4.2)
+  const plain = cells.filter(c => !c.classList.contains('full') && !c.classList.contains('part')
+    && !c.classList.contains('fut') && !c.classList.contains('pre'));
   assert.ok(plain.length > 0);
 
   // порог влияет на состояние: при 0,3 вчерашние 2 из 5 становятся зачтёнными
@@ -3641,4 +3650,246 @@ test('B.2: тач-таргет .itxt — min-height 44px в правиле', () 
   const rule = (css.match(/\.itxt\s*\{([^}]*)\}/) || [])[1] || '';
   assert.match(rule, /min-height:\s*44px/, '.itxt не ниже тач-таргета');
   assert.match(rule, /justify-content:\s*center/, 'текст остаётся по центру строки');
+});
+
+/* ── Задача 19, C.2: непокрытые утверждения инвариантов ───────── */
+
+test('C.2 (И3): черновик «одного изменения» пишется вводом и переживает перерисовку', async () => {
+  const seed = dueSeed();
+  const { document, window } = await boot({ seed });
+  openReview(document);
+  const inp = document.querySelector('[data-bind="one-change"]');
+  assert.ok(inp, 'поле «одного изменения» на месте');
+
+  inp.value = 'ложиться раньше';
+  inp.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).draftOneChange, 'ложиться раньше',
+    'ввод сохраняется сразу, а не при закрытии недели');
+
+  // перерисовка разбора черновик не теряет
+  document.querySelector('[data-act="week-fold"]').click();
+  assert.equal(document.querySelector('[data-bind="one-change"]').value, 'ложиться раньше');
+
+  // и уходит в срез при закрытии недели
+  document.querySelector('[data-act="close-week"]').click();
+  const st = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(st.reviews[st.reviews.length - 1].oneChange, 'ложиться раньше');
+  assert.equal(st.draftOneChange, '', 'после закрытия черновик чист');
+});
+
+test('C.2 (И8): смена дня блокирует click, но НЕ прерывает непрерывный ввод', async () => {
+  const seed = dueSeed();
+  const { document, window } = await boot({ seed });
+  openReview(document);
+
+  // экран устарел: логический день сменился при открытом приложении
+  shiftWindowDate(window, 26 * 3600000);
+
+  const inp = document.querySelector('[data-bind="one-change"]');
+  inp.value = 'черновик принадлежит неделе, а не дню';
+  inp.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).draftOneChange,
+    'черновик принадлежит неделе, а не дню',
+    'onInput guard\'ом не прерывается (инвариант 8)');
+
+  // а дискретное действие на устаревшем экране не применяется: сначала
+  // перерисовка. Проверяем на отметке — она пишет в конкретный день.
+  const b = await boot({ seed });
+  const before = JSON.stringify(JSON.parse(b.window.localStorage.getItem(NS)).days);
+  shiftWindowDate(b.window, 26 * 3600000);
+  const cb = b.document.querySelector('input[data-act="mark"]');
+  cb.checked = true;
+  cb.dispatchEvent(new b.window.Event('change', { bubbles: true }));
+  assert.equal(JSON.stringify(JSON.parse(b.window.localStorage.getItem(NS)).days), before,
+    'отметка со stale-экрана не применилась');
+});
+
+test('C.2 (И12): метка ступени не окрашена акцентом и не влияет на порядок пунктов', async () => {
+  const seed = dueSeed();
+  seed.items[0].ladder = { steps: ['первая', 'вторая', 'третья'], step: 1, steppedWeek: null, startedAt: daysAgo(30) };
+  seed.items[0].ladderLog = [{ date: daysAgo(30), step: 0, text: 'первая', start: true }];
+  seed.items.push({
+    id: 'it2', name: 'Второй пункт', value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', active: true, addedAt: daysAgo(30), raiseAfter: 0, history: []
+  });
+  const { document } = await boot({ seed });
+  const scr = document.getElementById('scr-today');
+  const step = scr.querySelector('.lstep');
+  assert.ok(step, 'метка положения на лестнице показана');
+  assert.equal(step.textContent, '2/3');
+
+  // цвет метки — не акцентный: она операционная, а не достижение
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  const rule = (css.match(/\.lstep\s*\{([^}]*)\}/) || [])[1] || '';
+  assert.ok(rule, 'у .lstep есть правило');
+  assert.doesNotMatch(rule, /var\(--accent\)/, 'метка не окрашивается акцентом');
+
+  // порядок строк — как в items[], лестница на него не влияет
+  const names = [...scr.querySelectorAll('.rowwrap .tname')].map(x => x.textContent.split(' ')[0]);
+  assert.equal(names[0], 'Тестовый', 'пункт с лестницей остался первым — где и был в items[]');
+  assert.ok(names.includes('Второй'), 'второй пункт на месте');
+});
+
+test('C.2 (И16): вид записи задан при создании и не меняется правкой', async () => {
+  const { document, window } = await boot();
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+
+  // создаём выписку
+  [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'quote').click();
+  document.getElementById('n-text').value = 'Капля точит камень';
+  document.getElementById('n-source').value = 'Овидий';
+  document.querySelector('[data-act="note-save"]').click();
+
+  const added = JSON.parse(window.localStorage.getItem(NS)).notes.find(n => n.text === 'Капля точит камень');
+  assert.equal(added.kind, 'quote');
+
+  // открываем её на правку: поля вида нет, есть только источник
+  [...document.querySelectorAll('[data-act="note-open"]')].find(b => b.dataset.id === added.id).click();
+  assert.equal(document.querySelector('#scr-notes select'), null, 'вида записи в форме правки нет');
+  assert.ok(document.getElementById('n-source'), 'у выписки правится источник');
+  document.getElementById('n-text').value = 'Капля точит камень иначе';
+  document.getElementById('n-source').value = 'Овидий, Письма';
+  [...document.querySelectorAll('[data-act="note-save"]')].find(b => b.dataset.id === added.id).click();
+
+  const after = JSON.parse(window.localStorage.getItem(NS)).notes.find(n => n.id === added.id);
+  assert.equal(after.kind, 'quote', 'вид пережил правку');
+  assert.equal(after.text, 'Капля точит камень иначе');
+  assert.equal(after.source, 'Овидий, Письма');
+
+  // и у заметки источник не заводится правкой
+  document.querySelector('[data-act="note-cancel"]') && document.querySelector('[data-act="note-cancel"]').click();
+  [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'note').click();
+  document.getElementById('n-text').value = 'Просто мысль';
+  assert.equal(document.getElementById('n-source'), null, 'у заметки поля «Источник» нет');
+  document.querySelector('[data-act="note-save"]').click();
+  const plain = JSON.parse(window.localStorage.getItem(NS)).notes.find(n => n.text === 'Просто мысль');
+  assert.equal(plain.kind, 'note');
+  assert.equal(plain.source, '');
+});
+
+test('C.2 (И18): чистка сбрасывает зеркало немедленно, без ожидания дебаунса', async () => {
+  const idb = new IDBFactory();
+  const seed = trainSeed();
+  const { document, window } = await boot({ idb, seed });
+  await window.flushMirror();               // в зеркале — данные владельца
+  const before = JSON.parse((await idbGet(idb)).json);
+  assert.ok(before.items.length > 0, 'снапшот с данными на месте');
+
+  wipeThroughUi(document);
+  // ждём заметно меньше дебаунса (500 мс) и НЕ зовём flushMirror руками:
+  // сброс обязан быть немедленным, иначе следующий старт при пропавшем
+  // localStorage восстановил бы стёртое из старого снапшота
+  await new Promise(r => setTimeout(r, 60));
+  const after = JSON.parse((await idbGet(idb)).json);
+  assert.deepEqual(after.items, [], 'зеркало уже пусто');
+  assert.equal(after.settings.seed17, true, 'и несёт флаг посева');
+});
+
+test('C.6.3: при reduced-motion «Сохранено» видно, потом исчезает', async () => {
+  const { document, window } = await boot();
+  window.matchMedia = q => ({ matches: /prefers-reduced-motion/.test(q), media: q, addListener() {}, removeListener() {} });
+
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('[data-act="edit-open"]').click();
+  document.getElementById('e-name').value = 'Переименованный';
+  document.querySelector('[data-act="edit-save"]').click();
+
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.ok(flash, 'подтверждение показано');
+  assert.equal(flash.textContent, 'Сохранено');
+  // CSS обязан показывать его статично: в блоке reduced-motion есть правило
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  const block = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(block, /\.flash\s*\{[^}]*opacity:\s*1/, 'при reduced-motion .flash показан');
+
+  // и убирается сам, без анимации
+  await new Promise(r => setTimeout(r, 1400));
+  assert.equal(document.querySelector('#scr-settings .flash'), null, 'подтверждение ушло');
+});
+
+test('C.6.4: копию некуда положить — чистка отменена и об этом сказано', async () => {
+  const { document, window } = await boot();
+  // Квота кончилась ровно на записи копии; сам store сохраняться может.
+  // Подменять метод на самом объекте нельзя: localStorage в jsdom — Proxy,
+  // и присваивание свойства кладёт значение в хранилище, а не переопределяет
+  // метод. Подменяем на прототипе и возвращаем обратно в конце.
+  const proto = Object.getPrototypeOf(window.localStorage);
+  const real = proto.setItem;
+  proto.setItem = function (k, v) {
+    if (k === NS + ':wiped') throw new Error('QuotaExceeded');
+    return real.call(this, k, v);
+  };
+  const before = window.localStorage.getItem(NS);
+
+  openData(document);
+  document.querySelector('[data-act="wipe-open"]').click();
+  document.querySelector('[data-act="wipe-do"]').click(); // первый тап — подтверждение
+  document.querySelector('[data-act="wipe-do"]').click(); // второй — сама чистка
+
+  assert.equal(window.localStorage.getItem(NS), before, 'данные не стёрты');
+  assert.match(document.getElementById('scr-settings').textContent,
+    /Не удалось сохранить копию — чистка отменена/, 'отказ показан владельцу');
+  proto.setItem = real;
+});
+
+/* ── Задача 19, C.8: закрытие двух дыр, найденных батареей ──── */
+
+test('A.1.2: при недочитанном зеркале действие владельца в него НЕ пишет', async () => {
+  const real = new IDBFactory();
+  await idbPut(real, { json: JSON.stringify(mirrorStore()), savedAt: 777, schemaVersion: 4 });
+
+  // localStorage пуст, IndexedDB отвечает позже стартового таймаута
+  const { document, window } = await boot({ idb: slowIdb(real, 1800) });
+  await new Promise(r => setTimeout(r, 2200)); // медленный open дошёл
+
+  // владелец отмечает пункт: обычный save() → scheduleMirror(). Зеркало
+  // объявлено непроверенным, писать в него нельзя — иначе снапшот владельца
+  // затрётся дефолтной программой при первом же тапе.
+  const cb = document.querySelector('input[data-act="mark"]');
+  cb.click();
+  assert.ok(window.localStorage.getItem(NS), 'в localStorage отметка сохранилась');
+
+  await new Promise(r => setTimeout(r, 900)); // дольше дебаунса зеркала (500 мс)
+  const snap = await idbGet(real);
+  assert.equal(snap.savedAt, 777, 'снапшот не переписан');
+  assert.equal(JSON.parse(snap.json).items[0].name, 'Восстановленный', 'данные владельца целы');
+  assert.equal(await window.flushMirror(), false, 'принудительный сброс тоже ничего не пишет');
+});
+
+test('C.6.7: импорт сбрасывает форму и черновик заметки', async () => {
+  const { document, window } = await boot();
+  window.confirm = () => true;
+  window.alert = m => { throw new Error('alert при импорте: ' + m); };
+
+  // открыта форма новой заметки с начатым текстом
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'note').click();
+  document.getElementById('n-text').value = 'начатая мысль';
+  document.getElementById('n-text').dispatchEvent(new window.Event('input', { bubbles: true }));
+  document.querySelector('#tabs button[data-tab="notes"]').click(); // перерисовка снимает черновик в слот
+  assert.ok(document.getElementById('n-text'), 'форма заметки открыта');
+
+  // импорт чужого состояния
+  const payload = {
+    schemaVersion: 14, items: [{ id: 'x1', name: 'Чужой пункт', type: 'daily', area: 'min', addedAt: daysAgo(3) }],
+    days: {}, groups: [], notes: [], settings: { dayBoundary: 4, seed17: true }
+  };
+  openData(document);
+  const inp = document.getElementById('import-file');
+  const file = new window.File([JSON.stringify(payload)], 'x.json', { type: 'application/json' });
+  Object.defineProperty(inp, 'files', { value: [file], configurable: true });
+  inp.dispatchEvent(new window.Event('change', { bubbles: true }));
+  for (let i = 0; i < 100 && !JSON.parse(window.localStorage.getItem(NS)).items.some(x => x.id === 'x1'); i++) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  // форма заметки принадлежала прежним данным — её и черновика больше нет
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  assert.equal(document.getElementById('n-text'), null, 'форма заметки закрыта импортом');
+  const cards = document.querySelectorAll('#scr-notes .card.note');
+  assert.equal(cards.length, 0, 'заметок из файла нет — список пуст');
+
+  // и черновик не всплывает при следующем открытии формы
+  [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'note').click();
+  assert.equal(document.getElementById('n-text').value, '', 'черновик прежних данных не перенесён');
 });
