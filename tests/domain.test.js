@@ -2355,3 +2355,76 @@ test('З16E: миграция v12→v13 и экспорт → импорт за�
   const roundTrip = app.migrate(JSON.parse(JSON.stringify(app.store)));
   assert.deepEqual(roundTrip.notes, m2.notes);
 });
+
+/* ── Задача 16, фаза F. Порядок внутри блока ───────────────── */
+
+test('З16F: стрелки двигают пункт только среди соседей по блоку', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const t = app.todayKey();
+  const mk = (id, group, area = 'min') => Object.assign(mkMin(id, t, area), { group });
+  // блоки перемежаются: A1 A2 B1 A3 — так их и держит store.items
+  s.items = [mk('a1', 'A'), mk('a2', 'A'), mk('b1', 'Б'), mk('a3', 'A'), mk('h1', 'A', 'habit')];
+  const ids = () => s.items.map(i => i.id);
+
+  assert.equal(app.canMoveItem('a1', 'up'), false, 'первый в блоке');
+  assert.equal(app.canMoveItem('a3', 'down'), false, 'последний в блоке');
+  assert.equal(app.canMoveItem('b1', 'up'), false, 'единственный в своём блоке');
+  assert.equal(app.canMoveItem('b1', 'down'), false);
+  assert.equal(app.canMoveItem('h1', 'up'), false, 'другая область — не сосед');
+
+  // «ниже» у a2 меняет местами с a3 через чужой блок, b1 не двигается
+  assert.equal(app.moveItem('a2', 'down'), true);
+  assert.deepEqual(ids(), ['a1', 'a3', 'b1', 'a2', 'h1']);
+  assert.equal(s.items[2].id, 'b1', 'чужой блок остался на месте');
+
+  assert.equal(app.moveItem('b1', 'up'), false, 'двигать некуда — порядок не тронут');
+  assert.deepEqual(ids(), ['a1', 'a3', 'b1', 'a2', 'h1']);
+
+  // пункт не покидает блок ни при какой последовательности стрелок
+  for (let k = 0; k < 6; k++) app.moveItem('a1', 'down');
+  assert.deepEqual(s.items.map(i => i.group), ['A', 'A', 'Б', 'A', 'A']);
+  assert.equal(s.items.find(i => i.id === 'a1').group, 'A');
+});
+
+test('З16F: перетаскивание ставит пункт на позицию среди соседей блока', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const t = app.todayKey();
+  const mk = (id, group) => Object.assign(mkMin(id, t), { group });
+  s.items = [mk('a1', 'A'), mk('b1', 'Б'), mk('a2', 'A'), mk('a3', 'A')];
+  const ids = () => s.items.map(i => i.id);
+
+  assert.equal(app.reorderItem('a1', 2), true); // первый среди A в конец
+  assert.deepEqual(ids(), ['a2', 'b1', 'a3', 'a1']);
+  assert.equal(s.items[1].id, 'b1', 'чужой блок на своём месте');
+
+  assert.equal(app.reorderItem('a1', 0), true);
+  assert.deepEqual(ids(), ['a1', 'b1', 'a2', 'a3']);
+
+  assert.equal(app.reorderItem('a1', 0), false, 'та же позиция — не изменение');
+  assert.equal(app.reorderItem('a1', 5), false, 'за границами блока');
+  assert.equal(app.reorderItem('нет такого', 1), false);
+  assert.equal(app.reorderItem('b1', 0), false, 'в блоке из одного двигать нечего');
+});
+
+test('З16F: перетаскивание блоков и упражнений', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  s.groups = [{ name: 'Раз' }, { name: 'Два' }, { name: 'Три' }];
+  assert.equal(app.reorderGroup('Три', 0), true);
+  assert.deepEqual(s.groups.map(g => g.name), ['Три', 'Раз', 'Два']);
+  assert.equal(app.reorderGroup('Три', 0), false);
+  assert.equal(app.reorderGroup('нет такого', 1), false);
+  assert.equal(app.reorderGroup('Раз', 9), false);
+
+  const a = app.addExercise('Жим', 'кг', 40);
+  const b = app.addExercise('Тяга', 'кг', 60);
+  const c = app.addExercise('Присед', 'кг', 80);
+  assert.equal(app.reorderExercise(c.id, 0), true);
+  assert.deepEqual(s.exercises.map(e => e.name), ['Присед', 'Жим', 'Тяга']);
+  assert.equal(app.reorderExercise(a.id, 2), true);
+  assert.deepEqual(s.exercises.map(e => e.name), ['Присед', 'Тяга', 'Жим']);
+  assert.equal(app.reorderExercise('нет такого', 0), false);
+  assert.equal(app.reorderExercise(b.id, -1), false);
+});

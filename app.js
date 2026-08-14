@@ -1295,17 +1295,73 @@ function groupedItems(items) {
   return out;
 }
 
-/* Перестановка пункта в пределах своей области (секции экрана «Пункты») */
+/* Соседи пункта по перестановке — пункты того же блока и той же области
+   (задача 16F). Блок пункт меняет полем «Блок» в форме правки, а не
+   стрелками и не перетаскиванием: порядок и принадлежность — разные
+   решения. Возвращает индексы в store.items по возрастанию. */
+function siblingIndexes(item) {
+  const g = groupNameOf(item);
+  const out = [];
+  store.items.forEach((x, i) => {
+    if (x.area === item.area && groupNameOf(x) === g) out.push(i);
+  });
+  return out;
+}
+
+/* Перестановка пункта в пределах своего блока: обмен с ближайшим
+   соседом. Границы блока — первый и последний его пункт. */
 function moveItem(id, dir) {
   const i = store.items.findIndex(x => x.id === id);
   if (i < 0) return false;
-  const step = dir === 'up' ? -1 : 1;
-  let j = i + step;
-  while (j >= 0 && j < store.items.length && store.items[j].area !== store.items[i].area) j += step;
-  if (j < 0 || j >= store.items.length) return false;
+  const idxs = siblingIndexes(store.items[i]);
+  const at = idxs.indexOf(i);
+  const j = idxs[at + (dir === 'up' ? -1 : 1)];
+  if (j === undefined) return false;
   const t = store.items[i];
   store.items[i] = store.items[j];
   store.items[j] = t;
+  save();
+  return true;
+}
+
+/* Есть ли куда двигать — тем же правилом рисуется disabled у стрелок */
+function canMoveItem(id, dir) {
+  const i = store.items.findIndex(x => x.id === id);
+  if (i < 0) return false;
+  const idxs = siblingIndexes(store.items[i]);
+  return idxs[idxs.indexOf(i) + (dir === 'up' ? -1 : 1)] !== undefined;
+}
+
+/* Перестановка перетаскиванием: пункт встаёт на позицию to среди своих
+   соседей по блоку, порядок остальных не меняется. */
+function reorderItem(id, to) {
+  const item = store.items.find(x => x.id === id);
+  if (!item) return false;
+  const idxs = siblingIndexes(item);
+  const list = idxs.map(i => store.items[i]);
+  const from = list.indexOf(item);
+  if (from < 0 || to < 0 || to >= list.length || to === from) return false;
+  list.splice(from, 1);
+  list.splice(to, 0, item);
+  idxs.forEach((pos, k) => { store.items[pos] = list[k]; });
+  save();
+  return true;
+}
+
+function reorderGroup(name, to) {
+  const from = store.groups.findIndex(g => g.name === name);
+  if (from < 0 || to < 0 || to >= store.groups.length || to === from) return false;
+  const [g] = store.groups.splice(from, 1);
+  store.groups.splice(to, 0, g);
+  save();
+  return true;
+}
+
+function reorderExercise(id, to) {
+  const from = store.exercises.findIndex(e => e.id === id);
+  if (from < 0 || to < 0 || to >= store.exercises.length || to === from) return false;
+  const [e] = store.exercises.splice(from, 1);
+  store.exercises.splice(to, 0, e);
   save();
   return true;
 }
@@ -2601,7 +2657,7 @@ function groupEditor() {
   }
   store.groups.forEach((g, i) => {
     h += `
-      <div class="rowwrap">
+      <div class="rowwrap drag-row" data-drag="group" data-drag-id="${esc(g.name)}">
         <div class="row item">
           <button class="itxt" data-act="group-open" data-name="${esc(g.name)}" aria-label="изменить «${esc(g.name)}»">
             <span class="tname">${esc(g.name)}</span>
@@ -2645,7 +2701,7 @@ function exerciseEditor() {
   store.exercises.forEach((ex, i) => {
     const meta = [valUnit(ex)].filter(Boolean).join(' · ');
     h += `
-      <div class="rowwrap${ex.active ? '' : ' off'}">
+      <div class="rowwrap drag-row${ex.active ? '' : ' off'}" data-drag="ex" data-drag-id="${esc(ex.id)}">
         <div class="row item">
           <button class="itxt" data-act="ex-open" data-id="${esc(ex.id)}" aria-label="изменить «${esc(ex.name)}»">
             <span class="tname">${esc(ex.name)}</span>
@@ -2718,12 +2774,12 @@ function renderSettings() {
     const items = store.items.filter(i => i.area === area);
     body += `<h2>${title}</h2>`;
     body += `<div class="list">`;
-    items.forEach((it, gi) => {
+    items.forEach((it) => {
       const vu = it.type === 'param' ? `порог ${fmtParam(it)}` : valUnit(it);
       const meta = [vu, it.type === 'weekly' ? `цель ${it.goal || 0} / нед.` : '', (it.group || '').trim()]
         .filter(Boolean).join(' · ');
       body += `
-      <div class="rowwrap${it.active ? '' : ' off'}">
+      <div class="rowwrap drag-row${it.active ? '' : ' off'}" data-drag="item" data-drag-id="${esc(it.id)}" data-dgroup="${esc((it.group || '').trim())}">
         <div class="row item">
           <button class="itxt" data-act="edit-open" data-id="${esc(it.id)}" aria-label="изменить «${esc(it.name)}»">
             <span class="tname">${esc(it.name)}</span>
@@ -2732,8 +2788,8 @@ function renderSettings() {
             ${it.type === 'param' ? paramHistory(it) : barHistory(it)}
           </button>
           <span class="ictl">
-            <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${gi === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
-            <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${gi === items.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
+            <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${canMoveItem(it.id, 'up') ? '' : ' disabled'} aria-label="выше">&uarr;</button>
+            <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${canMoveItem(it.id, 'down') ? '' : ' disabled'} aria-label="ниже">&darr;</button>
             <label class="switch" aria-label="включён: «${esc(it.name)}»">
               <input type="checkbox" data-act="toggle-active" data-id="${esc(it.id)}"${it.active ? ' checked' : ''}>
               <span></span>
@@ -2974,7 +3030,159 @@ function closeTrain() {
   ui.trainNote = '';
 }
 
+/* ── Перетаскивание (задача 16F) ───────────────────────────────
+   Pointer Events без библиотек. Захват — долгим нажатием (250 мс):
+   до него любое движение считается скроллом. Соседи раздвигаются
+   CSS-переходом (при reduced-motion — мгновенно, глобальный блок).
+   Стрелки ↑↓ остаются: перетаскивание их не заменяет, а дополняет.
+   Пункт двигается только среди соседей по блоку — как и стрелками. */
+
+const DRAG_HOLD = 250;   // мс удержания до захвата
+const DRAG_SLOP = 8;     // px до захвата: это скролл, а не перетаскивание
+const DRAG_EDGE = 64;    // px от края экрана, где включается автоскролл
+const DRAG_SPEED = 12;   // px за кадр автоскролла
+const DRAG_OUT = 60;     // px вбок от списка — отмена
+
+let drag = null;
+let dragSuppressClick = false; // тап после перетаскивания не открывает форму
+
+function dragSiblings(row) {
+  const kind = row.dataset.drag;
+  const g = row.dataset.dgroup;
+  return [...row.parentElement.children].filter(n =>
+    n.dataset && n.dataset.drag === kind && (kind !== 'item' || n.dataset.dgroup === g));
+}
+
+function dragDown(e) {
+  if (drag || (typeof e.button === 'number' && e.button > 0)) return;
+  const row = e.target.closest ? e.target.closest('[data-drag]') : null;
+  if (!row) return;
+  // стрелки, тумблер и открытая форма живут своей жизнью
+  if (e.target.closest('.ictl, .card.form, input, textarea, select')) return;
+  drag = {
+    row, kind: row.dataset.drag, id: row.dataset.dragId || '',
+    x: e.clientX, y: e.clientY, startY: e.clientY, startX: e.clientX,
+    active: false, from: -1, to: -1, sibs: [], mids: [], h: 0, listRect: null,
+    raf: null,
+    timer: setTimeout(dragActivate, DRAG_HOLD)
+  };
+  document.addEventListener('pointermove', dragMove, { passive: false });
+  document.addEventListener('pointerup', dragUp);
+  document.addEventListener('pointercancel', dragStop);
+  document.addEventListener('keydown', dragKey);
+}
+
+/* Захват: замер соседей в координатах документа — автоскролл во время
+   перетаскивания не должен сбивать расчёт позиции */
+function dragActivate() {
+  if (!drag) return;
+  const sc = window.scrollY || 0;
+  drag.sibs = dragSiblings(drag.row);
+  drag.from = drag.sibs.indexOf(drag.row);
+  if (drag.sibs.length < 2 || drag.from < 0) { dragStop(); return; }
+  drag.mids = drag.sibs.map(n => {
+    const r = n.getBoundingClientRect();
+    return r.top + r.height / 2 + sc;
+  });
+  const own = drag.row.getBoundingClientRect();
+  drag.h = own.height || 56;
+  // смещение центра строки относительно пальца в момент захвата
+  drag.offset = drag.mids[drag.from] - (drag.y + sc);
+  drag.listRect = drag.row.parentElement.getBoundingClientRect();
+  drag.active = true;
+  drag.to = drag.from;
+  drag.row.classList.add('drag-live');
+  document.body.classList.add('dragging');
+  // iOS: скролл страницы во время перетаскивания глушится непассивным touchmove
+  document.addEventListener('touchmove', dragTouch, { passive: false });
+  dragFrame();
+}
+
+function dragTouch(e) { if (drag && drag.active) e.preventDefault(); }
+
+/* Автоскролл у краёв экрана — отдельным кадром, чтобы работал и когда
+   палец стоит на месте у края */
+function dragFrame() {
+  if (!drag || !drag.active) return;
+  const vh = window.innerHeight || 812;
+  let d = 0;
+  if (drag.y < DRAG_EDGE) d = -DRAG_SPEED;
+  else if (drag.y > vh - DRAG_EDGE) d = DRAG_SPEED;
+  if (d) { window.scrollBy(0, d); dragApply(); }
+  drag.raf = (window.requestAnimationFrame || setTimeout)(dragFrame, 16);
+}
+
+/* Положение перетаскиваемой строки и раздвижение соседей */
+function dragApply() {
+  if (!drag || !drag.active) return;
+  const center = drag.y + (window.scrollY || 0) + drag.offset;
+  let to = 0;
+  drag.mids.forEach((m, k) => { if (k !== drag.from && m < center) to++; });
+  drag.to = to;
+  drag.row.style.transform = `translateY(${center - drag.mids[drag.from]}px) scale(1.03)`;
+  drag.sibs.forEach((n, k) => {
+    if (k === drag.from) return;
+    let dy = 0;
+    if (to > drag.from && k > drag.from && k <= to) dy = -drag.h;
+    else if (to < drag.from && k >= to && k < drag.from) dy = drag.h;
+    n.style.transform = dy ? `translateY(${dy}px)` : '';
+  });
+}
+
+function dragMove(e) {
+  if (!drag) return;
+  drag.x = e.clientX;
+  drag.y = e.clientY;
+  if (!drag.active) {
+    // движение до захвата — это скролл: удержание отменяется
+    if (Math.abs(e.clientY - drag.startY) > DRAG_SLOP || Math.abs(e.clientX - drag.startX) > DRAG_SLOP) dragStop();
+    return;
+  }
+  e.preventDefault();
+  // уход пальца за пределы списка вбок — отмена без записи
+  if (drag.listRect && (e.clientX < drag.listRect.left - DRAG_OUT || e.clientX > drag.listRect.right + DRAG_OUT)) {
+    dragStop();
+    return;
+  }
+  dragApply();
+}
+
+function dragKey(e) { if (e.key === 'Escape') dragStop(); } // отмена с клавиатуры
+
+function dragUp() {
+  if (!drag) return;
+  const { active, kind, id, from, to } = drag;
+  dragStop();
+  if (!active || to === from || to < 0) return;
+  const ok = kind === 'item' ? reorderItem(id, to)
+    : kind === 'group' ? reorderGroup(id, to)
+      : reorderExercise(id, to);
+  if (ok) renderSettings(); // перестановка — структурное изменение
+}
+
+/* Снятие захвата: стили сняты, слушатели убраны, модель не тронута */
+function dragStop() {
+  if (!drag) return;
+  clearTimeout(drag.timer);
+  if (drag.raf !== null) (window.cancelAnimationFrame || clearTimeout)(drag.raf);
+  if (drag.active) {
+    dragSuppressClick = true;
+    drag.row.classList.remove('drag-live');
+    drag.row.style.transform = '';
+    drag.sibs.forEach(n => { n.style.transform = ''; });
+    document.body.classList.remove('dragging');
+    document.removeEventListener('touchmove', dragTouch);
+  }
+  document.removeEventListener('pointermove', dragMove);
+  document.removeEventListener('pointerup', dragUp);
+  document.removeEventListener('pointercancel', dragStop);
+  document.removeEventListener('keydown', dragKey);
+  drag = null;
+}
+
 function onClick(e) {
+  // клик, родившийся из перетаскивания, форму не открывает
+  if (dragSuppressClick) { dragSuppressClick = false; return; }
   const b = e.target.closest('[data-act]');
   if (!b) return;
   if (syncDay()) return; // stale-экран: действие не применяется (инвариант 8)
@@ -3542,6 +3750,7 @@ async function init() {
   document.addEventListener('click', onClick);
   document.addEventListener('change', onChange);
   document.addEventListener('input', onInput);
+  document.addEventListener('pointerdown', dragDown); // перетаскивание (задача 16F)
   document.querySelectorAll('#tabs button').forEach(b =>
     b.addEventListener('click', () => {
       ui.importNote = null;
@@ -3580,7 +3789,8 @@ if (typeof module !== 'undefined' && module.exports) {
     addNote, updateNote, deleteNote, notesByDate,
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
-    moveItem, recordBar, parsePositive, isDayKey, load,
+    moveItem, canMoveItem, reorderItem, reorderGroup, reorderExercise,
+    recordBar, parsePositive, isDayKey, load,
     mirrorRead, mirrorWrite, flushMirror,
     // формула и лестница (инвариант 12)
     activeLadderItem, closedWeeks, itemWeekCount, ladderNorm, ladderWeeksReady,

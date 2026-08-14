@@ -2657,3 +2657,148 @@ test('«Заметки»: экспорт → очистка → импорт в�
   assert.deepEqual([...b.document.querySelectorAll('#scr-notes .ntext')].map(x => x.textContent),
     ['свежая', 'старая']);
 });
+
+/* ── Задача 16, фаза F. Перетаскивание и порядок ───────────── */
+
+/* Сид «Настроек»: три пункта блока «Утро», один — блока «Вечер» */
+function orderSeed() {
+  const seed = dueSeed();
+  const old = addKey(prevMonday(), -14);
+  const mk = (id, name, group) => ({
+    id, name, value: null, unit: '', type: 'daily', area: 'min', goal: null, note: '',
+    group, active: true, addedAt: old, raiseAfter: 0, history: []
+  });
+  seed.items = [mk('a1', 'Первый', 'Утро'), mk('a2', 'Второй', 'Утро'),
+    mk('b1', 'Вечерний', 'Вечер'), mk('a3', 'Третий', 'Утро')];
+  seed.groups = [{ name: 'Утро' }, { name: 'Вечер' }];
+  return seed;
+}
+
+/* Событие указателя: в jsdom нет PointerEvent — тип задаётся строкой,
+   а нужные поля (clientX/clientY, button) есть у MouseEvent */
+function pointer(window, type, x, y) {
+  return new window.MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true });
+}
+
+/* Прямоугольники строк в jsdom нулевые — геометрию списка задаём сами */
+function stubRows(rows, top = 200, h = 60) {
+  rows.forEach((r, i) => {
+    r.getBoundingClientRect = () => ({
+      top: top + i * h, bottom: top + i * h + h, height: h,
+      left: 20, right: 355, width: 335, x: 20, y: top + i * h
+    });
+  });
+  rows[0].parentElement.getBoundingClientRect = () => ({
+    top, bottom: top + rows.length * h, height: rows.length * h,
+    left: 20, right: 355, width: 335, x: 20, y: top
+  });
+}
+
+const hold = () => new Promise(r => setTimeout(r, 320)); // дольше DRAG_HOLD
+
+test('перетаскивание: pointerdown → pointermove → pointerup переставляет пункт внутри блока', async () => {
+  const { document, window } = await boot({ seed: orderSeed() });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const rows = () => [...document.querySelectorAll('#scr-settings [data-drag="item"]')];
+  assert.deepEqual(rows().map(r => r.dataset.dragId), ['a1', 'a2', 'b1', 'a3']);
+
+  stubRows(rows());
+  const row = rows()[0]; // «Первый», блок «Утро»
+  row.dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  await hold();
+  assert.equal(row.classList.contains('drag-live'), true, 'захват после удержания');
+
+  // ведём палец ниже середины строки a3 (её прямоугольник 380..440)
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 415));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 415));
+
+  // среди соседей по блоку пункт встал последним; чужой блок остался
+  // на своём месте в store.items (позиции блока «Утро» — 0, 1 и 3)
+  assert.deepEqual(saved().items.map(i => i.id), ['a2', 'a3', 'b1', 'a1']);
+  assert.deepEqual(saved().items.map(i => i.group), ['Утро', 'Утро', 'Вечер', 'Утро']);
+  assert.equal(document.querySelector('.drag-live'), null, 'захват снят');
+  assert.equal(document.body.classList.contains('dragging'), false);
+});
+
+test('перетаскивание: движение до удержания — это скролл; Escape и уход вбок отменяют', async () => {
+  const { document, window } = await boot({ seed: orderSeed() });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const order = saved().items.map(i => i.id);
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const rows = () => [...document.querySelectorAll('#scr-settings [data-drag="item"]')];
+  stubRows(rows());
+
+  // движение до захвата отменяет удержание — список скроллится, а не тащится
+  rows()[0].dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 260));
+  await hold();
+  assert.equal(document.querySelector('.drag-live'), null, 'захвата не было');
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 260));
+  assert.deepEqual(saved().items.map(i => i.id), order);
+
+  // Escape отменяет уже начатое перетаскивание
+  stubRows(rows());
+  rows()[0].dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  await hold();
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 415));
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 415));
+  assert.deepEqual(saved().items.map(i => i.id), order, 'порядок не тронут');
+
+  // уход пальца за пределы списка вбок — тоже отмена
+  stubRows(rows());
+  rows()[0].dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  await hold();
+  document.dispatchEvent(pointer(window, 'pointermove', 500, 415));
+  document.dispatchEvent(pointer(window, 'pointerup', 500, 415));
+  assert.deepEqual(saved().items.map(i => i.id), order);
+});
+
+test('перетаскивание: блоки и упражнения тоже переставляются', async () => {
+  const seed = orderSeed();
+  const old = addKey(prevMonday(), -14);
+  seed.exercises = [
+    { id: 'e1', name: 'Жим', unit: 'кг', value: 40, active: true, addedAt: old, history: [] },
+    { id: 'e2', name: 'Тяга', unit: 'кг', value: 60, active: true, addedAt: old, history: [] },
+    { id: 'e3', name: 'Присед', unit: 'кг', value: 80, active: true, addedAt: old, history: [] }
+  ];
+  const { document, window } = await boot({ seed });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+
+  // блоки: второй встаёт первым
+  const gRows = () => [...document.querySelectorAll('#scr-settings [data-drag="group"]')];
+  stubRows(gRows());
+  gRows()[1].dispatchEvent(pointer(window, 'pointerdown', 100, 290));
+  await hold();
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 215));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 215));
+  assert.deepEqual(saved().groups.map(g => g.name), ['Вечер', 'Утро']);
+
+  // упражнения: третье встаёт первым
+  const xRows = () => [...document.querySelectorAll('#scr-settings [data-drag="ex"]')];
+  stubRows(xRows());
+  xRows()[2].dispatchEvent(pointer(window, 'pointerdown', 100, 350));
+  await hold();
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 215));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 215));
+  assert.deepEqual(saved().exercises.map(e => e.name), ['Присед', 'Жим', 'Тяга']);
+});
+
+test('стрелки после 16F: двигают внутри блока и отключены на его границах', async () => {
+  const { document, window } = await boot({ seed: orderSeed() });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const rowOf = id => [...document.querySelectorAll('#scr-settings [data-drag="item"]')]
+    .find(r => r.dataset.dragId === id);
+
+  assert.equal(rowOf('a1').querySelector('[data-act="move-up"]').disabled, true, 'первый в блоке');
+  assert.equal(rowOf('a3').querySelector('[data-act="move-down"]').disabled, true, 'последний в блоке');
+  assert.equal(rowOf('b1').querySelector('[data-act="move-up"]').disabled, true, 'один в блоке');
+  assert.equal(rowOf('b1').querySelector('[data-act="move-down"]').disabled, true);
+
+  rowOf('a2').querySelector('[data-act="move-down"]').click();
+  assert.deepEqual(saved().items.map(i => i.id), ['a1', 'a3', 'b1', 'a2']);
+  assert.equal(saved().items[2].id, 'b1', 'чужой блок не сдвинулся');
+});

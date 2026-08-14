@@ -603,6 +603,22 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .exctl { flex: none; display: flex; align-items: center; gap: 6px; }
 .exline .num { width: 72px; text-align: center; }
 
+/* ── Перетаскивание (задача 16F) ───────────────────────────────
+   Соседи раздвигаются переходом (180 мс, ease-out), захваченная
+   строка приподнимается и не анимируется — она под пальцем.
+   При reduced-motion переходы снимает глобальный блок ниже. */
+
+.drag-row { transition: transform .18s ease-out; }
+.drag-row.drag-live {
+  transition: none;
+  position: relative;
+  z-index: 3;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .16);
+}
+body.dragging { -webkit-user-select: none; user-select: none; }
+
 /* ── «Заметки» (задача 16E) ────────────────────────────────────
    Карточка-кнопка: дата тихой строкой, ниже текст владельца как есть. */
 
