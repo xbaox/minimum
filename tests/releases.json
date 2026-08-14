@@ -6,5 +6,9 @@
   {
     "version": "minimum-v29",
     "hash": "c1cd5c098214fb8cc4cdc9d83ee933a2f190d4f751409757f5530e1a41114aa7"
+  },
+  {
+    "version": "minimum-v30",
+    "hash": "784ac1e0495f233d944bc6d9d2ef67ae278d968553c41e95dd291e4b98a52261"
   }
 ]
