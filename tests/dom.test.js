@@ -191,7 +191,7 @@ test('вкладки переключают все 5 экранов, кажды�
     today: /Минимум выполняется/,
     habits: /Не спеши — доверься накопительному эффекту/,
     progress: /В системе/,
-    notes: /Пока пусто/,
+    notes: /Новая выписка/,
     settings: /Граница дня/
   };
   for (const b of tabs) {
@@ -500,7 +500,10 @@ test('visibilitychange после смены дня обновляет экра�
 test('фокус после «выше/ниже» возвращается кнопке, на краю — парной', async () => {
   const { document } = await boot();
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  const btn = document.querySelector('[data-act="move-down"]'); // первый пункт
+  // блок «Подряд» — три пункта: пункту есть куда шагнуть, прежде чем «ниже» погаснет
+  const row = [...document.querySelectorAll('#scr-settings .rowwrap')]
+    .find(r => r.textContent.includes('Подтягивания + отжимания'));
+  const btn = row.querySelector('[data-act="move-down"]');
   const id = btn.dataset.id;
 
   btn.click();
@@ -867,7 +870,14 @@ test('«Изменение этой недели» в обоих состоян�
 });
 
 test('«Привычки»: своя планка точечно, «Все отмечены», пороги пассивны, кредо', async () => {
-  const { document, window } = await boot(); // дефолтный store: 2 привычки + параметр «Отбой»
+  // программа посева (задача 17) несёт одну ежедневную привычку и параметр «Отбой»;
+  // планке нужны две привычки — вторую тест заводит обычной формой
+  const { document, window } = await boot();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit').click();
+  document.getElementById('f-name').value = 'Медитация';
+  document.querySelector('[data-act="add-save"]').click();
+
   document.querySelector('#tabs button[data-tab="habits"]').click();
   const scr = document.getElementById('scr-habits');
 
@@ -1383,10 +1393,10 @@ test('привычка из формы «Пункты» сразу несёт no
 });
 
 test('привычка: степпер нормы — границы 1 и 7, сохранение', async () => {
-  const { document, window } = await boot(); // дефолтный store: 2 привычки
+  const { document, window } = await boot(); // программа посева: одна ежедневная привычка
   document.querySelector('#tabs button[data-tab="settings"]').click();
   [...document.querySelectorAll('[data-act="edit-open"]')]
-    .find(b => b.textContent.includes('Перестать грызть ногти')).click();
+    .find(b => b.textContent.includes('Телефон вне кровати')).click();
   const form = () => document.querySelector('#scr-settings .card.form');
   assert.match(form().textContent, /Норма в неделю: 7/);
   assert.equal(document.querySelector('[data-act="norm-inc"]').disabled, true, 'верхняя граница 7');
@@ -1403,12 +1413,12 @@ test('привычка: степпер нормы — границы 1 и 7, с�
   document.querySelector('[data-act="norm-inc"]').click(); // 1 → 2
   document.querySelector('[data-act="edit-save"]').click();
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.items.find(i => i.name === 'Перестать грызть ногти').normPerWeek, 2);
+  assert.equal(saved.items.find(i => i.name === 'Телефон вне кровати').normPerWeek, 2);
 
   // сохранённая норма отражается на полосе «Привычек»: «X из N» с N ≠ 7
   document.querySelector('#tabs button[data-tab="habits"]').click();
   const hrow = [...document.querySelectorAll('#scr-habits .rowwrap')]
-    .find(r => r.textContent.includes('Перестать грызть ногти'));
+    .find(r => r.textContent.includes('Телефон вне кровати'));
   assert.match(hrow.querySelector('.hcount').textContent, /из 2$/);
 });
 
@@ -1467,7 +1477,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 13);
+  assert.equal(snap.schemaVersion, 14);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1498,7 +1508,7 @@ test('пустое зеркало → дефолт в зеркале; непус
   await a.window.flushMirror();
   const defSnap = await idbGet(empty);
   assert.ok(defSnap);
-  assert.equal(JSON.parse(defSnap.json).items.length, 10);
+  assert.equal(JSON.parse(defSnap.json).items.length, 9);
 
   // пустой LS + непустое зеркало: порядок bootstrap — сначала чтение, потом запись
   const seeded = new IDBFactory();
@@ -1543,7 +1553,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 13);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, 14);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1718,7 +1728,7 @@ test('«Пункты»: кнопка листа есть в форме daily, н
   // ни в одной строке списка кнопки листа нет
   document.querySelector('[data-act="edit-cancel"]').click();
   assert.equal(document.querySelectorAll('#scr-settings .row.item [data-act="item-detail"]').length, 0);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 13);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 14);
 });
 
 test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
@@ -2090,22 +2100,68 @@ test('редактор блоков: строка — имя и стрелки, 
   assert.equal(s.days[daysAgo(0)].c1, true, 'отметка не тронута');
 });
 
-test('поле «Блок»: datalist из store.groups, новое имя заводит блок в конце', async () => {
+/* Задача 17, п. 2: поле «Блок» — выбор из заведённых, а не свободный ввод.
+   Прежний тест проверял datalist; сама механика поля заменена промптом. */
+test('поле «Блок»: select из заведённых, «+ Новый блок…» заводит блок в конце', async () => {
   const { document, window } = await boot({ seed: chainSeed() });
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const sel = () => document.getElementById('e-group');
+  const openEdit = name => [...document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]')]
+    .find(b => b.querySelector('.tname').textContent === name).click();
+  const pickLast = () => {
+    sel().selectedIndex = sel().options.length - 1; // «+ Новый блок…» — всегда последний
+    sel().dispatchEvent(new window.Event('change', { bubbles: true }));
+  };
 
-  [...document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]')]
-    .find(b => b.querySelector('.tname').textContent === 'Свет').click();
-  const opts = [...document.querySelectorAll('#groups-dl option')].map(o => o.value);
-  assert.deepEqual(opts, ['Вечер', 'Утро']); // подсказки — из store.groups
+  openEdit('Свет');
+  assert.deepEqual([...sel().options].map(o => o.textContent),
+    ['— без блока', 'Вечер', 'Утро', '+ Новый блок…']);
+  assert.equal(sel().value, 'Вечер', 'выбран блок пункта');
+  assert.equal(document.querySelector('#groups-dl'), null, 'свободного ввода с datalist больше нет');
 
-  document.getElementById('e-group').value = '  Ритуал  ';
+  // пустое имя блока не заводит и принадлежность пункта не меняет
+  pickLast();
+  assert.ok(document.getElementById('e-gnew'), 'поле имени раскрылось прямо в форме');
+  document.querySelector('[data-act="edit-save"]').click();
+  assert.deepEqual(saved().groups.map(g => g.name), ['Вечер', 'Утро']);
+  assert.equal(saved().items.find(i => i.id === 'c1').group, 'Вечер');
+
+  // имя заводит блок в конце списка и сразу выбирается пунктом
+  openEdit('Свет');
+  pickLast();
+  document.getElementById('e-gnew').value = '  Ритуал  ';
   document.querySelector('[data-act="edit-save"]').click();
   const s = saved();
   assert.equal(s.items.find(i => i.id === 'c1').group, 'Ритуал');
-  assert.deepEqual(s.groups.map(g => g.name), ['Вечер', 'Утро', 'Ритуал']); // заведён в конце
+  assert.deepEqual(s.groups.map(g => g.name), ['Вечер', 'Утро', 'Ритуал']);
   assert.deepEqual(Object.keys(s.groups[2]), ['name']);
+
+  // выбор из списка — обычная смена блока
+  openEdit('Свет');
+  sel().value = 'Утро';
+  sel().dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('[data-act="edit-save"]').click();
+  assert.equal(saved().items.find(i => i.id === 'c1').group, 'Утро');
+});
+
+test('поле «Блок»: имя не из списка (импорт) видно с пометкой и остаётся выбранным', async () => {
+  const seed = chainSeed();
+  seed.items.find(i => i.id === 'c1').group = 'Чужой'; // такого блока в groups[] нет
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  [...document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]')]
+    .find(b => b.querySelector('.tname').textContent === 'Свет').click();
+
+  const sel = document.getElementById('e-group');
+  const marked = [...sel.options].find(o => o.value === 'Чужой');
+  assert.ok(marked, 'вариант с именем из импорта есть');
+  assert.equal(marked.textContent, 'Чужой (нет в списке)');
+  assert.equal(sel.value, 'Чужой', 'и он выбран');
+
+  // сохранение без правки поля принадлежность не теряет
+  document.querySelector('[data-act="edit-save"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'c1').group, 'Чужой');
 });
 
 test('черновик правки переживает уход в лист детали и возврат (14.2, вопрос 2)', async () => {
@@ -2224,8 +2280,9 @@ test('«Прогресс»: «в системе», серия, цепь дней
   const stats = [...scr.querySelectorAll('.stat')].map(x => x.textContent);
   assert.equal(stats.length, 2);
   assert.match(stats[0], new RegExp('^' + total + ' '));
-  assert.match(stats[1], /^1 /, 'серия: сегодня закрыт, вчера — амнистия, позавчера обрыв');
-  assert.match(scr.textContent, /Один пропуск не обнуляет\. Два подряд — начинают заново\./);
+  assert.match(stats[1], /^1 /, 'серия: сегодня зачтён, вчера — амнистия, позавчера обрыв');
+  // формулировка п. 4.6: амнистия теперь одна на неделю, а не «одна подряд»
+  assert.match(scr.textContent, /Один пропуск в неделю не обнуляет\. Два подряд — начинают заново\./);
 
   // цепь дней: 8 строк по 7 ячеек и строка подписей
   const cells = [...scr.querySelectorAll('.cdays i')];
@@ -2240,7 +2297,9 @@ test('«Прогресс»: «в системе», серия, цепь дней
   assert.equal(cells.filter(c => c.classList.contains('part')).length, 1, 'частично отмеченный');
   // сетка скрыта от AT, вместо неё — сводка по неделям
   assert.equal(scr.querySelector('.cdays').getAttribute('aria-hidden'), 'true');
-  assert.match(scr.querySelector('.sr-only').textContent, /Неделя с .*: закрыто \d из 7/);
+  // сводка для скринридера говорит о том же, что рисует сетка: ячейка теперь
+  // про зачёт (доля ≥ порога), а не про полное закрытие дня
+  assert.match(scr.querySelector('.sr-only').textContent, /Неделя с .*: зачтено \d из 7/);
 
   // «Отметки»: строка на каждый активный дневной пункт
   assert.match(scr.textContent, new RegExp('Первый · 2 из ' + total));
@@ -2251,7 +2310,9 @@ test('«Прогресс»: подъём — линия при двух запи
   const one = await boot({ seed: progSeed() });
   one.document.querySelector('#tabs button[data-tab="progress"]').click();
   assert.equal(one.document.querySelectorAll('#scr-progress .rise').length, 0);
-  assert.doesNotMatch(one.document.getElementById('scr-progress').textContent, /Подъём/);
+  // п. 8.3: блок «Подъём» остаётся и при пустоте — вместо линии одна строка
+  assert.match(one.document.getElementById('scr-progress').textContent,
+    /Появится, когда планка изменится во второй раз\./);
 
   const seed = progSeed();
   seed.items[0].history.push({ date: daysAgo(3), value: 14 });
@@ -2571,7 +2632,8 @@ test('«Прогресс»: упражнение с двумя записями 
 /* ── Задача 16, фаза E. Экран «Заметки» ────────────────────── */
 
 test('«Заметки»: создание, правка, удаление вторым тапом, порядок от новых', async () => {
-  const { document, window } = await boot();
+  // сид без выписок: тест про механику записей, а не про стартовый набор (задача 17)
+  const { document, window } = await boot({ seed: dueSeed() });
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
   document.querySelector('#tabs button[data-tab="notes"]').click();
   const scr = () => document.getElementById('scr-notes');
@@ -2622,7 +2684,8 @@ test('«Заметки»: создание, правка, удаление вт�
 });
 
 test('«Заметки»: черновик переживает смену логического дня, «Отмена» ничего не пишет', async () => {
-  const { document, window } = await boot();
+  // сид без выписок: «ничего не записано» проверяется на пустом списке (задача 17)
+  const { document, window } = await boot({ seed: dueSeed() });
   document.querySelector('#tabs button[data-tab="notes"]').click();
   document.querySelector('[data-act="note-add-open"]').click();
   document.getElementById('n-text').value = 'начатая мысль';
@@ -2838,12 +2901,14 @@ test('источники: новых кеглей и радиусов не за�
 });
 
 test('пустое хранилище: все экраны и листы рендерятся без исключений', async () => {
-  // store без единой записи — состояние после импорта пустого экспорта
+  // store без единой записи — состояние после импорта пустого экспорта.
+  // seed17 стоит: посев задачи 17 в такой экспорт уже заглядывал и завёл
+  // программу, иначе пустого store не бывает вовсе (см. отдельный тест посева)
   const empty = {
-    schemaVersion: 13, items: [], groups: [], days: {}, weekLog: [], reviews: [],
+    schemaVersion: 14, items: [], groups: [], days: {}, weekLog: [], reviews: [],
     pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
     paramDecided: {}, draftOneChange: '', weekStart: daysAgo(0),
-    settings: { dayBoundary: 4, exportedAt: null, calendarSince: curMonday(), habitSeeded: true }
+    settings: { dayBoundary: 4, exportedAt: null, calendarSince: curMonday(), habitSeeded: true, seed17: true }
   };
   const { document } = await boot({ seed: empty });
 
@@ -2876,7 +2941,11 @@ test('пустое хранилище: все экраны и листы рен�
   assert.match(stats[1], /^0 дней$/, 'серии на пустых данных нет');
   assert.equal(prog.querySelectorAll('.cdays i').length, 56);
   assert.equal(prog.querySelectorAll('.rise').length, 0, 'подъёма без истории нет');
-  assert.doesNotMatch(prog.textContent, /Отметки/);
+  // задача 17, п. 8.3: блок остаётся, пустоту объясняет одна muted-строка
+  assert.match(prog.textContent, /Появится, когда планка изменится во второй раз\./);
+  assert.match(prog.textContent, /Пунктов пока нет\./);
+  assert.match(prog.textContent, /Первые отметки появятся здесь\./);
+  assert.match(prog.textContent, /Серия начнётся с первого зачтённого дня\./);
 
   // «Настройки» пусты, но живы
   document.querySelector('#tabs button[data-tab="settings"]').click();
@@ -3067,7 +3136,11 @@ test('пустая эпоха: шесть экранов после чистки
   assert.equal(prog.querySelectorAll('.cdays i.full').length, 0);
   assert.equal(prog.querySelectorAll('.cdays i.part').length, 0);
   assert.equal(prog.querySelectorAll('.rise').length, 0, 'подъёма нет');
-  assert.doesNotMatch(prog.textContent, /Отметки/);
+  // блоки на месте, пустоту объясняют строки п. 8.3 (прежде блоки исчезали)
+  assert.match(prog.textContent, /Пунктов пока нет\./);
+  assert.match(prog.textContent, /Отсчёт идёт с /);
+  assert.equal(prog.querySelectorAll('.cdays i.pre').length + prog.querySelectorAll('.cdays i.fut').length, 56,
+    'вся цепь — до эпохи либо в будущем');
   assert.match(prog.textContent, /Следующий разбор — в понедельник/);
   assert.equal(prog.querySelector('[data-act="goto-review"]'), null);
 
@@ -3077,4 +3150,284 @@ test('пустая эпоха: шесть экранов после чистки
   assert.match(rev.textContent, /Разбор откроется в понедельник/);
   assert.doesNotMatch(rev.textContent, /NaN|Invalid|undefined/);
   assert.ok(rev.querySelector('[data-act="review-done"]'));
+});
+
+/* ── Задача 17. Прогресс, посев и выписка ──────────────────── */
+
+/* Пять пунктов минимума старше эпохи; эпоха — 30 дней назад.
+   Сегодня зачтён (5 из 5), вчера отмечено ниже порога (2 из 5),
+   позавчера пусто — три состояния ячейки цепи в одном сиде. */
+function t17Seed() {
+  const old = daysAgo(40);
+  const seed = {
+    schemaVersion: 14, groups: [], days: {}, weekLog: [], reviews: [],
+    pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: curMonday(),
+    settings: {
+      dayBoundary: 4, dayThreshold: 0.8, exportedAt: null,
+      calendarSince: mondayOf(daysAgo(30)), habitSeeded: true, seed17: true
+    },
+    items: Array.from({ length: 5 }, (_, i) => ({
+      id: 'm' + i, name: 'Пункт ' + i, value: null, unit: '', type: 'daily', area: 'min',
+      goal: null, note: '', group: '', active: true, addedAt: old, raiseAfter: 0,
+      history: [], formula: null, ladder: null, ladderLog: []
+    }))
+  };
+  const mark = (k, n) => {
+    seed.days[k] = {};
+    for (let i = 0; i < n; i++) seed.days[k]['m' + i] = true;
+  };
+  mark(daysAgo(0), 5);
+  mark(daysAgo(1), 2);
+  return seed;
+}
+
+const openProgress = document => document.querySelector('#tabs button[data-tab="progress"]').click();
+
+/* Дней в системе для сида t17Seed — от понедельника эпохи до сегодня */
+const t17Days = () =>
+  Math.round((new Date(daysAgo(0)) - new Date(mondayOf(daysAgo(30)))) / 86400000) + 1;
+
+test('«Прогресс» 17: карточки блоков, рекорд, полоса дня и её подпись', async () => {
+  const { document } = await boot({ seed: t17Seed() });
+  openProgress(document);
+  const scr = document.getElementById('scr-progress');
+
+  // порядок блоков: В системе → Серия → Цепь дней → Подъём → Отметки
+  assert.deepEqual([...scr.querySelectorAll('.pcard > h2')].map(x => x.textContent),
+    ['В системе', 'Серия', 'Цепь дней', 'Подъём', 'Отметки']);
+
+  // крупные числа — в масштабе h1 и только два
+  assert.equal(scr.querySelectorAll('.stat').length, 2);
+  assert.match(scr.querySelector('.pcard .stat').textContent,
+    new RegExp('^' + t17Days() + ' (день|дня|дней)$'));
+
+  // серия: сегодня зачтён, вчера ниже порога — амнистия, позавчера обрыв
+  const streak = scr.querySelectorAll('.stat')[1];
+  assert.match(streak.textContent, /^1 день$/);
+  assert.match(scr.querySelector('.rec').textContent, /^рекорд 1 день$/);
+
+  // полоса дня: заполнение — доля сегодняшнего дня, подпись под ней
+  const fill = scr.querySelector('.dbar i');
+  assert.equal(fill.style.width, '100%');
+  assert.equal(scr.querySelector('.dbar-note').textContent.trim(), 'День закрыт');
+  assert.equal(scr.querySelector('.dbar').getAttribute('aria-hidden'), 'true');
+
+  assert.match(scr.textContent, /Один пропуск в неделю не обнуляет\./);
+  // ни эмодзи, ни очков, ни наград (анти-требования конституции)
+  assert.doesNotMatch(scr.textContent, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+});
+
+test('«Прогресс» 17: ячейка цепи — три состояния, дни до эпохи не рисуются', async () => {
+  const { document } = await boot({ seed: t17Seed() });
+  openProgress(document);
+  const cells = [...document.querySelectorAll('#scr-progress .cdays i')];
+  assert.equal(cells.length, 56);
+
+  assert.equal(cells.filter(c => c.classList.contains('full')).length, 1, 'зачтён — заливка');
+  assert.equal(cells.filter(c => c.classList.contains('part')).length, 1, 'отмечено ниже порога — контур');
+  assert.ok(cells.filter(c => c.classList.contains('pre')).length > 0, 'дни до эпохи скрыты');
+  // пустые ячейки внутри эпохи: ни full, ни part, ни pre, ни fut
+  const plain = cells.filter(c => c.className === 'cd');
+  assert.ok(plain.length > 0);
+
+  // порог влияет на состояние: при 0,3 вчерашние 2 из 5 становятся зачтёнными
+  const seed = t17Seed();
+  seed.settings.dayThreshold = 0.3;
+  const low = await boot({ seed });
+  openProgress(low.document);
+  const lowCells = [...low.document.querySelectorAll('#scr-progress .cdays i')];
+  assert.equal(lowCells.filter(c => c.classList.contains('full')).length, 2);
+  assert.equal(lowCells.filter(c => c.classList.contains('part')).length, 0);
+});
+
+test('«Прогресс» 17: --chain в блоке цепи дней не используется', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(m => /\.cd[\w-]*\b/.test(m[1]));
+  assert.ok(rules.length >= 3, 'правила цепи найдены');
+  for (const [, sel, body] of rules) {
+    assert.doesNotMatch(body, /--chain/, `--chain в правиле «${sel.trim()}»`);
+  }
+  // единственный градиент приложения — полоса дня
+  const grads = [...css.matchAll(/[\w-]+gradient\(/g)];
+  assert.equal(grads.length, 1, 'градиент в приложении один');
+  const fill = (css.match(/\.dbar i\s*\{([^}]*)\}/) || [])[1] || '';
+  assert.match(fill, /linear-gradient\(90deg, var\(--accent\), var\(--chain\)\)/);
+  // переход ширины — в окне движения 180–260 мс (снимается глобальным reduced-motion)
+  const ms = Number((fill.match(/transition:[^;]*?([\d.]+)s/) || [])[1]) * 1000;
+  assert.ok(ms >= 180 && ms <= 260, `переход полосы дня ${ms} мс вне окна 180–260`);
+  assert.match((css.match(/\.dbar\s*\{([^}]*)\}/) || [])[1] || '', /border-radius:\s*var\(--radius-sm\)/);
+  assert.match((css.match(/\.dbar\s*\{([^}]*)\}/) || [])[1] || '', /height:\s*8px/);
+});
+
+test('«Прогресс» 17: знаменатель «Отметок» — по позднейшей из дат', async () => {
+  const seed = t17Seed();
+  seed.items.push({
+    id: 'fresh', name: 'Вчерашний', value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', active: true, addedAt: daysAgo(1), raiseAfter: 0,
+    history: [], formula: null, ladder: null, ladderLog: []
+  });
+  const { document } = await boot({ seed });
+  openProgress(document);
+  const scr = document.getElementById('scr-progress');
+  assert.match(scr.textContent, new RegExp('Пункт 0 · 2 из ' + t17Days()));
+  assert.match(scr.textContent, /Вчерашний · 0 из 2/);
+});
+
+test('«Прогресс» 17: выписка дня — последняя строка, детерминированная', async () => {
+  const seed = t17Seed();
+  seed.notes = [
+    { id: 'q0', date: daysAgo(3), text: 'Первая', kind: 'quote', source: 'Овидий', updatedAt: 3 },
+    { id: 'q1', date: daysAgo(4), text: 'Вторая', kind: 'quote', source: '', updatedAt: 2 },
+    { id: 'n1', date: daysAgo(5), text: 'просто мысль', kind: 'note', source: '', updatedAt: 1 }
+  ];
+  const { document } = await boot({ seed });
+  openProgress(document);
+  const scr = document.getElementById('scr-progress');
+
+  const q = scr.querySelector('.quote');
+  assert.ok(q, 'строка выписки есть');
+  assert.equal(scr.lastElementChild, scr.querySelector('.qsrc') || q, 'выписка — последней строкой');
+  assert.match(q.textContent, /^«(Первая|Вторая)»$/, 'текст в кавычках');
+  assert.doesNotMatch(scr.textContent, /просто мысль/, 'заметка на «Прогресс» не попадает');
+
+  // повторный рендер того же дня даёт ту же выписку
+  const first = q.textContent;
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  openProgress(document);
+  assert.equal(document.querySelector('#scr-progress .quote').textContent, first);
+
+  // выписок нет — строки нет, экран цел
+  const bare = await boot({ seed: t17Seed() });
+  openProgress(bare.document);
+  assert.equal(bare.document.querySelector('#scr-progress .quote'), null);
+  assert.ok(bare.document.getElementById('scr-progress').innerHTML.length > 0);
+});
+
+test('«Заметки» 17: выписка отличается источником и кавычками, удаляется как заметка', async () => {
+  const { document, window } = await boot({ seed: t17Seed() });
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const scr = document.getElementById('scr-notes');
+
+  assert.deepEqual([...scr.querySelectorAll('.nadd .btn')].map(b => b.textContent),
+    ['Новая заметка', 'Новая выписка']);
+
+  // обычная заметка поля «Источник» не имеет
+  scr.querySelector('[data-act="note-add-open"][data-kind="note"]').click();
+  assert.equal(document.getElementById('n-source'), null);
+  document.querySelector('[data-act="note-cancel"]').click();
+
+  // выписка — то же плюс источник
+  scr.querySelector('[data-act="note-add-open"][data-kind="quote"]').click();
+  document.getElementById('n-text').value = 'Кто везде — тот нигде.';
+  document.getElementById('n-source').value = '  Сенека  ';
+  document.querySelector('[data-act="note-save"]').click();
+
+  const notes = saved().notes;
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].kind, 'quote');
+  assert.equal(notes[0].source, 'Сенека');
+  assert.match(scr.querySelector('.ntext').textContent, /^«Кто везде — тот нигде\.»$/);
+  assert.equal(scr.querySelector('.nsrc').textContent, 'Сенека');
+
+  // правка выписки не теряет вид, удаление — вторым тапом
+  scr.querySelector('[data-act="note-open"]').click();
+  assert.equal(document.getElementById('n-source').value, 'Сенека');
+  document.querySelector('[data-act="note-del"]').click();
+  assert.match(document.querySelector('[data-act="note-del"]').textContent, /Подтвердить/);
+  document.querySelector('[data-act="note-del"]').click();
+  assert.deepEqual(saved().notes, []);
+});
+
+test('«Настройки» 17: степпер порога и подпись «не меньше N из M»', async () => {
+  const { document, window } = await boot({ seed: t17Seed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const scr = document.getElementById('scr-settings');
+  const line = () => [...scr.querySelectorAll('.muted')].map(p => p.textContent).join(' ');
+
+  assert.match(scr.textContent, /Отмечено не меньше\s*80%/);
+  assert.match(line(), /День зачтён, если отмечено не меньше 4 из 5\./);
+
+  document.querySelector('[data-act="thr-dec"]').click();
+  assert.equal(saved().settings.dayThreshold, 0.7);
+  assert.match(document.getElementById('scr-settings').textContent, /Отмечено не меньше\s*70%/);
+  assert.match(line(), /не меньше 4 из 5\./, '0,7 от пяти — по-прежнему четыре');
+
+  // границы диапазона: до 0,3 вниз и до 1,0 вверх, дальше кнопка отключена
+  for (let i = 0; i < 10; i++) document.querySelector('[data-act="thr-dec"]').click();
+  assert.equal(saved().settings.dayThreshold, 0.3);
+  assert.equal(document.querySelector('[data-act="thr-dec"]').disabled, true);
+  assert.match(line(), /не меньше 2 из 5\./);
+  for (let i = 0; i < 10; i++) document.querySelector('[data-act="thr-inc"]').click();
+  assert.equal(saved().settings.dayThreshold, 1);
+  assert.equal(document.querySelector('[data-act="thr-inc"]').disabled, true);
+  assert.match(line(), /не меньше 5 из 5\./);
+});
+
+test('«Настройки» 17: начало отсчёта — понедельник недели, будущее не принимается', async () => {
+  const { document, window } = await boot({ seed: t17Seed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  openData(document);
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const field = () => document.getElementById('since');
+  const set = v => {
+    field().value = v;
+    field().dispatchEvent(new window.Event('change', { bubbles: true }));
+  };
+
+  assert.equal(field().value, mondayOf(daysAgo(30)));
+  assert.match(document.getElementById('scr-settings').textContent,
+    /Меняет счёт дней в системе, серию и доступность разбора\. Отметки не затрагивает\./);
+
+  // середина недели приводится к понедельнику своей недели
+  const wed = daysAgo(9);
+  set(wed);
+  assert.equal(saved().settings.calendarSince, mondayOf(wed));
+  assert.equal(field().value, mondayOf(wed), 'поле показывает принятое значение');
+
+  // будущая дата и мусор не принимаются
+  const before = saved().settings.calendarSince;
+  set(addKey(daysAgo(0), 7));
+  assert.equal(saved().settings.calendarSince, before);
+  set('не дата');
+  assert.equal(saved().settings.calendarSince, before);
+  assert.equal(field().value, before);
+
+  // смена пересчитывает «в системе» и серию
+  openProgress(document);
+  const days = [...document.querySelectorAll('#scr-progress .stat')][0].textContent;
+  assert.match(days, new RegExp('^' + (Math.round((new Date(daysAgo(0)) - new Date(before)) / 86400000) + 1) + ' '));
+});
+
+test('посев 17 в браузере: пустой localStorage через migrate даёт программу и выписки', async () => {
+  // v13-экспорт с пустыми items — состояние владельца после чистки прежней версией
+  const raw = JSON.stringify({
+    schemaVersion: 13, items: [], groups: [], days: {}, weekLog: [], reviews: [],
+    pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: daysAgo(0),
+    settings: { dayBoundary: 4, exportedAt: null, calendarSince: curMonday(), habitSeeded: true }
+  });
+  const { document, window } = await boot({ raw });
+  const store = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(store.items.length, 9);
+  assert.equal(store.notes.length, 5);
+  assert.equal(store.settings.seed17, true);
+
+  // все шесть экранов живы на засеянных данных
+  for (const [tab, id] of Object.entries({
+    today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
+    notes: 'scr-notes', settings: 'scr-settings'
+  })) {
+    document.querySelector(`#tabs button[data-tab="${tab}"]`).click();
+    assert.equal(document.getElementById(id).hidden, false, tab);
+  }
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(document.querySelectorAll('#scr-today input[data-act="mark"]').length, 6,
+    'шесть ежедневных пунктов минимума');
+  assert.match(document.getElementById('scr-today').textContent, /Английский/);
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  assert.match(document.getElementById('scr-habits').textContent, /Телефон вне кровати/);
+  assert.match(document.getElementById('scr-habits').textContent, /Отбой/);
 });

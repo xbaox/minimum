@@ -560,14 +560,50 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 
 .field:has(> input[data-bind="one-change"]) { margin-top: 26px; display: flex; flex-direction: column; gap: 6px; }
 
-/* ── «Прогресс» (задача 16B) ───────────────────────────────────
+/* ── «Прогресс» (задачи 16B, 17) ───────────────────────────────
    Единственный экран с прошлым. Тот же язык, что в разборе: кружок
-   сетки, типографская строка. Графика — только тонкая линия. */
+   сетки, типографская строка. Графика — только тонкая линия.
+   Блоки — карточки на --surface (задача 17): между ними --gap-block,
+   заголовок блока внутри карточки собственного отступа не берёт. */
+
+.pcard {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 0 0 var(--gap-block);
+}
+.pcard > h2:first-child { margin-top: 0; }
+.pcard > *:last-child { margin-bottom: 0; }
 
 .stat { margin: 2px 0 2px; }
 .stat + .muted { margin-top: 0; }
+/* серия: число слева, рекорд тихой строкой справа */
+.statrow { display: flex; align-items: baseline; gap: 12px; margin: 2px 0; }
+.statrow .stat { margin: 0; }
+.statrow .rec { margin: 0 0 0 auto; white-space: nowrap; }
 
-/* цепь дней: 8 строк по 7 ячеек, колонки и зазоры — как в сетке разбора */
+/* полоса сегодняшнего дня: единственный градиент в приложении (задача 17).
+   Переход ширины — в окне движения 180–260 мс, снимается reduced-motion. */
+.dbar {
+  height: 8px;
+  margin: 14px 0 0;
+  border-radius: var(--radius-sm);
+  background: var(--line);
+  overflow: hidden;
+}
+.dbar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--accent), var(--chain));
+  transition: width .24s ease-out;
+}
+.dbar-note { margin-top: 8px; }
+
+/* цепь дней: 8 строк по 7 ячеек, колонки и зазоры — как в сетке разбора.
+   Тон — только акцентный: --chain закреплён за связкой блока, сетка
+   дней говорит о выполнении (задача 17, п. 5.2). */
 .cdays {
   display: grid;
   grid-template-columns: repeat(7, 26px);
@@ -577,9 +613,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   margin: 12px 0 6px;
 }
 .cd-head { font-size: var(--text-xs); color: var(--faint); text-align: center; }
-.cdays i.part { border-color: var(--chain); }        /* отмечено не всё */
-.cdays i.full { background: var(--chain); border-color: var(--chain); }
-.cdays i.fut { visibility: hidden; }                 /* будущие дни не рисуются */
+.cdays i { border-color: var(--line); }              /* день без отметок */
+.cdays i.part { border-color: var(--accent); }       /* отмечено, но ниже порога */
+.cdays i.full { background: var(--accent); border-color: var(--accent); }
+.cdays i.fut,
+.cdays i.pre { visibility: hidden; }                 /* будущее и дни до эпохи не рисуются */
+
+/* выписка дня — последняя строка экрана, тише всего остального */
+.quote { margin: var(--gap-section) 0 0; font-size: var(--text-sm); line-height: 1.5; color: var(--muted); }
+.qsrc { margin: 4px 0 0; font-size: var(--text-xs); color: var(--faint); }
 
 /* подъём: подпись и одна ступенчатая линия на пункт — ни осей, ни
    сетки, ни точек, ни подписей значений (CLAUDE.md, «Незыблемые») */
@@ -658,8 +700,11 @@ body.dragging { -webkit-user-select: none; user-select: none; }
   text-align: left;
   cursor: pointer;
 }
+/* две кнопки в ряд: заметка и выписка (задача 17) */
+.nadd { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 20px 0 0; }
 .ndate { font-size: var(--text-xs); color: var(--muted); }
 .ntext { font-size: var(--text-sm); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.nsrc { font-size: var(--text-xs); color: var(--faint); }
 
 /* ── Секции «Настроек» (задача 16B) ────────────────────────────
    Нативный details: раскрытие без JS, состояние помнит ui. */

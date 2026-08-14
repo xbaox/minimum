@@ -437,7 +437,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -468,9 +468,9 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 13);
+    assert.equal(m.schemaVersion, 14);
     assert.equal(Array.isArray(m.items), true);
-    assert.equal(m.items.length, 10); // дефолтный набор: 7 минимум + 3 привычки
+    assert.equal(m.items.length, 9); // дефолтный набор — программа посева (задача 17)
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);
   }
 });
@@ -585,7 +585,7 @@ test('З2: мусорный schemaVersion трактуется как v1 — в�
   const src = v1Store();
   src.schemaVersion = 'мусор';
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
   assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
@@ -613,7 +613,7 @@ test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпоте
     ]
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.equal(m.reviews[0].weekStart, '2026-06-01');
   assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
@@ -703,7 +703,7 @@ test('З2: load — битая строка уходит в minimum:data:corrupt
     assert.equal(app.load(), null);
     // валидная строка — store; резервный ключ не тронут
     mem['minimum:data'] = JSON.stringify(app.defaultStore());
-    assert.equal(app.load().items.length, 10);
+    assert.equal(app.load().items.length, 9);
     assert.equal(mem['minimum:data:corrupt'], '{битый json');
   } finally {
     delete global.localStorage;
@@ -718,7 +718,7 @@ test('З4: миграция v3→v4 — exportedAt с мягким дефолт�
     settings: { dayBoundary: 4, hintShownForItemId: null }
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.equal(m.settings.exportedAt, null);
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
   assert.deepEqual(again, m);
@@ -986,7 +986,10 @@ test('З9: повышение игнорирует привычки; ретро-
 test('З9/З11: habitsSteady — 2 недели каждая активная привычка выполнила норму', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
-  const [h1, h2] = s.items.filter(i => i.type === 'daily' && i.area === 'habit');
+  // в стартовой программе ежедневная привычка одна — вторую тест заводит сам
+  const h1 = s.items.find(i => i.type === 'daily' && i.area === 'habit');
+  const h2 = Object.assign(JSON.parse(JSON.stringify(h1)), { id: 'h2', name: 'Вторая привычка' });
+  s.items.push(h2);
   const wk = (c1, c2) => ({ perItem: { [h1.id]: { count: c1 }, [h2.id]: { count: c2 } } });
   assert.equal(app.habitsSteady(), false); // разборов нет
   s.reviews = [wk(7, 7)];
@@ -1124,7 +1127,7 @@ test('З11: миграция v6 — норма достроена и валид�
     settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
   };
   const m = app.migrate(v5);
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.equal(m.items.find(i => i.id === 'h1').normPerWeek, 7); // достроена умолчанием
   assert.equal(m.items.find(i => i.id === 'h2').normPerWeek, 7); // мусор → умолчание
   assert.equal(m.items.find(i => i.id === 'h3').normPerWeek, 1); // к ближайшему допустимому
@@ -1193,7 +1196,7 @@ test('З10: hintShownForItemId мёртв — нет в defaultStore, v5-миг�
     pendingRaises: [], draftOneChange: '', weekStart: '2026-07-13',
     settings: { dayBoundary: 4, hintShownForItemId: 'x1', exportedAt: null }
   });
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.equal('hintShownForItemId' in m.settings, false);
 });
 
@@ -1506,7 +1509,7 @@ test('З14: миграция v6→v7 — поля достроены, лестн
   const m = app.migrate(v6);
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.equal(byId.i1.formula, null);           // достроено умолчанием
   assert.equal(byId.i1.ladder, null);
   assert.deepEqual(byId.i1.ladderLog, []);
@@ -1592,7 +1595,7 @@ test('З14.2: миграция v7→v8 — пустому журналу жив�
   const m = app.migrate(mkV7());
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   // старт от startedAt, ступень и текст — те, на которых лестница стоит сейчас
   assert.deepEqual(byId.i1.ladderLog, [{ date: '2026-07-02', step: 1, text: 'два', start: true }]);
   assert.deepEqual(byId.i2.ladderLog, []); // без лестницы журнал не заводится
@@ -1704,7 +1707,7 @@ test('З15: миграция v8→v9 — группы в порядке перв
   });
 
   const m = app.migrate(mkV8());
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.deepEqual(m.groups, [{ name: 'Сон' }, { name: 'Тело' }]); // порядок первого появления
   assert.deepEqual(m.days, days);       // миграция аддитивна
   assert.deepEqual(m.reviews, reviews);
@@ -1753,11 +1756,12 @@ test('З15: groupedItems — порядок из store.groups, безгрупп�
   const items = s.items.filter(i => i.area === 'min' && i.type === 'daily');
 
   // порядок секций следует groups, а не порядку items[]
-  assert.deepEqual(s.groups.map(g => g.name), ['Тело', 'Движение', 'Сон', 'Развитие']);
-  app.moveGroup('Развитие', 'up'); // Тело, Движение, Развитие, Сон
+  // (задача 17: стартовый набор — программа посева, блоки Утро · Подряд · Движение)
+  assert.deepEqual(s.groups.map(g => g.name), ['Утро', 'Подряд', 'Движение']);
+  app.moveGroup('Движение', 'up'); // Утро, Движение, Подряд
   let secs = app.groupedItems(items);
-  assert.deepEqual(secs.map(x => x.group.name), ['Тело', 'Движение', 'Развитие', 'Сон']);
-  assert.deepEqual(secs[0].items.map(i => i.name), ['Умыться', 'Принять душ', 'Подтягивания + отжимания']);
+  assert.deepEqual(secs.map(x => x.group.name), ['Утро', 'Движение', 'Подряд']);
+  assert.deepEqual(secs[0].items.map(i => i.name), ['Умыться', 'Принять душ']);
 
   // пункт без группы и пункт с неизвестной группой — одной секцией без заголовка, в конце
   items[0].group = '';
@@ -1776,29 +1780,29 @@ test('З15: переименование атомарно, удаление со
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   const t = app.todayKey();
-  const body = s.items.filter(i => i.group === 'Тело');
-  const other = s.items.find(i => i.group === 'Сон');
+  const body = s.items.filter(i => i.group === 'Утро');
+  const other = s.items.find(i => i.group === 'Движение');
   for (const it of body) app.toggleMark(t, it.id);
   const daysBefore = JSON.stringify(s.days);
 
-  assert.equal(app.renameGroup('Тело', '  Утро  '), true); // trim
-  assert.equal(app.findGroup('Тело'), null);
-  assert.equal(body.every(i => i.group === 'Утро'), true); // все пункты группы
-  assert.equal(other.group, 'Сон');                        // и ни одного чужого
-  assert.equal(s.groups[0].name, 'Утро');                  // позиция в списке та же
+  assert.equal(app.renameGroup('Утро', '  Вечер  '), true); // trim
+  assert.equal(app.findGroup('Утро'), null);
+  assert.equal(body.every(i => i.group === 'Вечер'), true); // все пункты группы
+  assert.equal(other.group, 'Движение');                    // и ни одного чужого
+  assert.equal(s.groups[0].name, 'Вечер');                  // позиция в списке та же
 
-  assert.equal(app.renameGroup('Утро', '   '), false);     // пустое имя
-  assert.equal(app.renameGroup('Утро', 'Сон'), false);     // занятое имя
+  assert.equal(app.renameGroup('Вечер', '   '), false);     // пустое имя
+  assert.equal(app.renameGroup('Вечер', 'Подряд'), false);  // занятое имя
   assert.equal(app.renameGroup('Нет такой', 'X'), false);
-  assert.equal(app.findGroup('Утро').name, 'Утро');
+  assert.equal(app.findGroup('Вечер').name, 'Вечер');
 
   const n = s.items.length;
-  assert.equal(app.deleteGroup('Утро'), true);
+  assert.equal(app.deleteGroup('Вечер'), true);
   assert.equal(s.items.length, n);                          // пункты остались
   assert.equal(body.every(i => i.group === ''), true);      // имя группы очищено
-  assert.equal(app.findGroup('Утро'), null);
+  assert.equal(app.findGroup('Вечер'), null);
   assert.equal(JSON.stringify(s.days), daysBefore);         // отметки не тронуты
-  assert.equal(app.deleteGroup('Утро'), false);
+  assert.equal(app.deleteGroup('Вечер'), false);
 });
 
 test('З15: addGroup/moveGroup — границы и уникальность', () => {
@@ -1807,16 +1811,16 @@ test('З15: addGroup/moveGroup — границы и уникальность', 
   const names = () => s.groups.map(g => g.name);
 
   assert.equal(app.addGroup('  Вечер  '), true);
-  assert.deepEqual(names(), ['Тело', 'Движение', 'Сон', 'Развитие', 'Вечер']); // в конец, с trim
+  assert.deepEqual(names(), ['Утро', 'Подряд', 'Движение', 'Вечер']); // в конец, с trim
   assert.equal(app.addGroup('Вечер'), false); // дубль
   assert.equal(app.addGroup('   '), false);   // пустое
-  assert.deepEqual(Object.keys(s.groups[4]), ['name']); // блок — это только имя
+  assert.deepEqual(Object.keys(s.groups[3]), ['name']); // блок — это только имя
 
-  assert.equal(app.moveGroup('Тело', 'up'), false);        // уже первая
+  assert.equal(app.moveGroup('Утро', 'up'), false);        // уже первая
   assert.equal(app.moveGroup('Вечер', 'down'), false);     // уже последняя
   assert.equal(app.moveGroup('нет такой', 'up'), false);
   assert.equal(app.moveGroup('Вечер', 'up'), true);
-  assert.deepEqual(names(), ['Тело', 'Движение', 'Сон', 'Вечер', 'Развитие']);
+  assert.deepEqual(names(), ['Утро', 'Подряд', 'Вечер', 'Движение']);
 
   // groupList — источник подсказок поля «Блок»
   assert.deepEqual(app.groupList(), names());
@@ -2128,7 +2132,7 @@ test('З16C: миграция v10→v11 — якоря недель и pendingLo
   v10.items[1].lowerAfterWeek = 'мусор';
 
   const m = app.migrate(JSON.parse(JSON.stringify(v10)));
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.deepEqual(m.pendingLowers, []);
   assert.equal(m.items[0].raiseAfterWeek, '2026-07-13', 'не-понедельник приведён к своему понедельнику');
   assert.equal(m.items[1].lowerAfterWeek, null);
@@ -2244,7 +2248,7 @@ test('З16D: миграция v11→v12 — упражнения и сессии
   delete v11.sessions;
 
   const m = app.migrate(JSON.parse(JSON.stringify(v11)));
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.deepEqual(m.exercises, []);
   assert.deepEqual(m.sessions, []);
   assert.deepEqual(m.days, v11.days, 'аддитивность: отметки не тронуты');
@@ -2289,6 +2293,7 @@ test('З16D: упражнение с двумя записями истории 
 test('З16E: заметка — создание, правка, удаление, пустой текст = удаление', () => {
   setNow(2026, 8, 13, 12, 0);
   const s = freshStore();
+  s.notes = []; // стартовые выписки программы (задача 17) к механике заметок не относятся
 
   assert.equal(app.addNote('   '), null, 'пустая заметка не заводится');
   const n = app.addNote('  первая мысль  ');
@@ -2313,6 +2318,7 @@ test('З16E: заметка — создание, правка, удаление
 test('З16E: порядок — от новых к старым, при равном дне по времени правки', () => {
   setNow(2026, 8, 13, 12, 0);
   const s = freshStore();
+  s.notes = []; // стартовые выписки программы (задача 17) порядок бы зашумили
   const old = app.addNote('позавчерашняя');
   old.date = app.addDays(app.todayKey(), -2);
   const a = app.addNote('сегодня раньше');
@@ -2332,7 +2338,7 @@ test('З16E: миграция v12→v13 и экспорт → импорт за�
   delete v12.notes;
 
   const m = app.migrate(JSON.parse(JSON.stringify(v12)));
-  assert.equal(m.schemaVersion, 13);
+  assert.equal(m.schemaVersion, 14);
   assert.deepEqual(m.notes, []);
   assert.deepEqual(m.days, v12.days, 'аддитивность');
 
@@ -2452,7 +2458,9 @@ function filledStore() {
   const s = freshStore();
   const t = app.todayKey();
   s.settings.dayBoundary = 6;         // не дефолтная граница: должна пережить чистку
+  s.settings.dayThreshold = 0.5;      // и не дефолтный порог зачёта дня (задача 17, п. 5)
   s.settings.calendarSince = app.addDays(app.weekStartOf(t), -70);
+  s.notes = [];                       // выписки программы считаем отдельно от заметки теста
   app.toggleMark(t, s.items[0].id);
   app.toggleMark(app.addDays(t, -1), s.items[0].id);
   s.reviews.push({ closedAt: 1, week: app.addDays(app.weekStartOf(t), -7), keys: [], perItem: {}, trainings: {}, oneChange: '', raises: [], lowers: [], params: [] });
@@ -2484,7 +2492,7 @@ test('З16.1: чистка обнуляет всё, граница дня ост
   assert.deepEqual(s.pendingLowers, []);
   assert.deepEqual(s.paramDecided, {});
   assert.equal(s.draftOneChange, '');
-  assert.equal(s.schemaVersion, 13, 'схема не меняется');
+  assert.equal(s.schemaVersion, 14, 'схема не меняется');
 
   assert.equal(s.settings.dayBoundary, 6, 'граница дня — настройка устройства, не данные');
   assert.equal(s.settings.exportedAt, null);
@@ -2583,5 +2591,377 @@ test('З16.1: без места под копию чистка не выполн
   assert.deepEqual(app.store, snapshot, 'store не тронут');
 
   global.localStorage.setItem = real;
+  clearLocalStorage();
+});
+
+/* ── Задача 17. Посев, доля дня, серия, выписки ─────────────── */
+
+/* Пустой store схемы v14 без флага посева — вход migrate для п. 1 */
+function seedInput(extra) {
+  return Object.assign({
+    schemaVersion: 14, items: [], groups: [], days: {}, weekLog: [], reviews: [],
+    pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: '2026-08-13',
+    settings: { dayBoundary: 4, exportedAt: null, calendarSince: '2026-08-10', habitSeeded: true }
+  }, extra);
+}
+
+test('З17: посев — пустой store получает программу, блоки, выписки и флаг', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const m = app.migrate(seedInput());
+  const t = app.todayKey();
+
+  assert.equal(m.items.length, 9);
+  assert.deepEqual(m.groups.map(g => g.name), ['Утро', 'Подряд', 'Движение']);
+  assert.deepEqual(m.items.map(i => i.name), [
+    'Умыться', 'Принять душ', 'Подтягивания + отжимания', 'Английский',
+    'Развитие', 'Пешком', 'Тренировка', 'Телефон вне кровати', 'Отбой']);
+  assert.equal(m.items.every(i => i.addedAt === t), true, 'всё заведено сегодня');
+  assert.deepEqual(m.items.map(i => (i.group || '')), [
+    'Утро', 'Утро', 'Подряд', 'Подряд', 'Подряд', 'Движение', '', '', '']);
+
+  // числовые пункты несут стартовую запись истории (п. 1.4)
+  const byName = n => m.items.find(i => i.name === n);
+  assert.deepEqual(byName('Подтягивания + отжимания').history, [{ date: t, value: 5 }]);
+  assert.equal(byName('Английский').value, 5);
+  assert.equal(byName('Английский').unit, 'мин');
+  assert.equal(byName('Пешком').value, 500);
+  assert.equal(byName('Пешком').unit, 'м');
+  assert.deepEqual(byName('Умыться').history, [], 'пункт без числа истории не получает');
+
+  // недельный счётчик, привычка и параметр
+  const tr = byName('Тренировка');
+  assert.equal(tr.type, 'weekly');
+  assert.equal(tr.goal, 3);
+  assert.equal(tr.note, 'Полноценная тренировка, 40–50 минут');
+  const ph = byName('Телефон вне кровати');
+  assert.equal(ph.area, 'habit');
+  assert.equal(ph.type, 'daily');
+  assert.equal(ph.normPerWeek, 7);
+  const ot = byName('Отбой');
+  assert.equal(ot.type, 'param');
+  assert.equal(ot.area, 'habit');
+  assert.equal(ot.pkind, 'time');
+  assert.equal(ot.pvalue, 0);
+  assert.equal(ot.pstep, -15);
+
+  // выписки (п. 6.5) — дословно, в порядке промпта
+  assert.equal(m.notes.length, 5);
+  assert.equal(m.notes.every(n => n.kind === 'quote'), true);
+  assert.deepEqual(m.notes.map(n => [n.text, n.source]), app.SEED_QUOTES);
+  assert.equal(m.settings.seed17, true);
+});
+
+test('З17: посев одноразов — непустые данные не трогает, повтор не дублирует', () => {
+  setNow(2026, 8, 13, 12, 0);
+  // непустой store: ни программы, ни выписок, ни флага
+  const busy = app.migrate(seedInput({
+    items: [{ id: 'x1', name: 'Своё', addedAt: '2026-08-01', type: 'daily', area: 'min' }]
+  }));
+  assert.equal(busy.items.length, 1);
+  assert.deepEqual(busy.notes, []);
+  assert.equal('seed17' in busy.settings, false, 'на непустых данных флаг не ставится');
+
+  // повторный прогон migrate засеянного store ничего не добавляет
+  const once = app.migrate(seedInput());
+  const twice = app.migrate(JSON.parse(JSON.stringify(once)));
+  assert.equal(twice.items.length, 9);
+  assert.equal(twice.notes.length, 5);
+  assert.deepEqual(twice, once, 'migrate идемпотентна и после посева');
+
+  // импорт чужих данных посев не запускает
+  const foreign = app.migrate({
+    schemaVersion: 5, items: [{ id: 'f1', name: 'Чужой', addedAt: '2026-07-01' }],
+    days: {}, settings: { dayBoundary: 4 }
+  });
+  assert.deepEqual(foreign.items.map(i => i.name), ['Чужой']);
+  assert.deepEqual(foreign.notes, []);
+});
+
+test('З17: чистка ставит флаг посева — пустой лист остаётся пустым после перезапуска', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const empty = app.emptyStore(4);
+  assert.equal(empty.settings.seed17, true);
+  const reloaded = app.migrate(JSON.parse(JSON.stringify(empty)));
+  assert.deepEqual(reloaded.items, [], 'следующий старт программу не возвращает');
+  assert.deepEqual(reloaded.notes, []);
+});
+
+/* Пять пунктов минимума, заведённых до начала эпохи */
+function scoreStore(n = 5) {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const t = app.todayKey();
+  const old = app.addDays(t, -60);
+  s.items = Array.from({ length: n }, (_, i) => mkMin('m' + i, old));
+  s.days = {};
+  s.settings.calendarSince = old;
+  s.settings.dayThreshold = 0.8;
+  return s;
+}
+
+/* Отметить в дне ровно count первых пунктов (повторяемо) */
+function setScore(dayKey, count) {
+  app.store.items.forEach((it, i) => {
+    if (app.isMarked(dayKey, it.id) !== (i < count)) app.toggleMark(dayKey, it.id);
+  });
+}
+
+test('З17: dayScore — доля по существовавшим в тот день пунктам, без них null', () => {
+  const s = scoreStore(4);
+  const t = app.todayKey();
+  const y = app.addDays(t, -1);
+
+  assert.equal(app.dayScore(y), 0);
+  setScore(y, 3);
+  assert.equal(app.dayScore(y), 0.75);
+  setScore(y, 4);
+  assert.equal(app.dayScore(y), 1);
+
+  // пункт, добавленный сегодня, прошлые дни не портит
+  s.items.push(mkMin('later', t));
+  assert.equal(app.dayScore(y), 1, 'вчера его не существовало');
+  assert.equal(app.dayScore(t), 0, 'а сегодня он в знаменателе');
+  assert.deepEqual(app.minDayMarks(t), { done: 0, total: 5 });
+
+  // применимых пунктов нет — null, и день выпадает из счёта серии
+  s.items = [];
+  assert.equal(app.dayScore(y), null);
+  assert.equal(app.dayStreak(), 0);
+});
+
+test('З17: dayNeed и порог — сколько отметок даёт зачёт', () => {
+  const s = scoreStore(5);
+  assert.equal(app.dayThreshold(), 0.8);
+  assert.equal(app.dayNeed(5), 4);
+  assert.equal(app.dayNeed(6), 5);
+  assert.equal(app.dayNeed(0), 0);
+
+  s.settings.dayThreshold = 0.5;
+  assert.equal(app.dayNeed(5), 3);
+  s.settings.dayThreshold = 1;
+  assert.equal(app.dayNeed(5), 5);
+  s.settings.dayThreshold = 0.3;
+  assert.equal(app.dayNeed(5), 2);
+
+  // порог из внешних данных зажимается в [0,3..1,0] и округляется до десятой
+  assert.equal(app.clampThreshold(0.84), 0.8);
+  assert.equal(app.clampThreshold(0), 0.3);
+  assert.equal(app.clampThreshold(5), 1);
+  assert.equal(app.clampThreshold('мусор'), 0.8);
+});
+
+test('З17: серия — зачтённый +1, амнистия раз в неделю, два подряд обрывают', () => {
+  const s = scoreStore(5);
+  const t = app.todayKey();
+  const day = n => app.addDays(t, -n);
+
+  assert.equal(app.dayStreak(), 0);
+
+  // 4 из 5 — зачёт при пороге 0,8; 3 из 5 — нет
+  setScore(day(1), 4); setScore(day(2), 5);
+  assert.equal(app.dayStreak(), 2, 'незачтённый сегодня пропускается');
+  setScore(day(0), 4);
+  assert.equal(app.dayStreak(), 3, 'зачтённый сегодня идёт в счёт');
+
+  // день −3 незачтён (3 из 5): первая амнистия, в счёт не идёт
+  setScore(day(3), 3);
+  setScore(day(4), 5); setScore(day(5), 5);
+  assert.equal(app.dayStreak(), 5);
+
+  // −6 незачтён: до прошлой амнистии 3 дня — обрыв, дальше не считаем
+  for (let n = 7; n <= 12; n++) setScore(day(n), 5);
+  assert.equal(app.dayStreak(), 5, 'вторая амнистия ближе недели — обрыв');
+
+  // отодвинем вторую амнистию за неделю: −6 зачтён, незачтён −11
+  setScore(day(6), 5); setScore(day(11), 0);
+  for (let n = 13; n <= 16; n++) setScore(day(n), 5);
+  assert.equal(app.dayStreak(), 15, 'между амнистиями 8 дней — прощается');
+
+  // два незачтённых подряд обрывают всегда
+  setScore(day(12), 0);
+  assert.equal(app.dayStreak(), 10);
+});
+
+test('З17: серия — дни до calendarSince в счёт не идут, порог меняет результат', () => {
+  const s = scoreStore(5);
+  const t = app.todayKey();
+  for (let n = 0; n <= 6; n++) setScore(app.addDays(t, -n), 4); // ровно 4 из 5 каждый день
+
+  assert.equal(app.dayStreak(), 7);
+  s.settings.calendarSince = app.addDays(t, -3);
+  assert.equal(app.dayStreak(), 4, 'дно счёта — начало эпохи');
+
+  s.settings.calendarSince = app.addDays(t, -60);
+  s.settings.dayThreshold = 1;
+  assert.equal(app.dayStreak(), 0, 'при пороге 1,0 те же дни не зачтены');
+  s.settings.dayThreshold = 0.3;
+  assert.equal(app.dayStreak(), 7, 'при пороге 0,3 — зачтены все');
+});
+
+test('З17: bestStreak — максимум по всей истории, два разрыва', () => {
+  const s = scoreStore(5);
+  const t = app.todayKey();
+  const day = n => app.addDays(t, -n);
+  s.settings.calendarSince = day(20);
+
+  // −20…−15 зачтены (6 дней), −14 и −13 подряд пусты — разрыв
+  for (let n = 15; n <= 20; n++) setScore(day(n), 5);
+  // −12…−10 зачтены (3), −9 и −8 подряд пусты — второй разрыв
+  for (let n = 10; n <= 12; n++) setScore(day(n), 5);
+  // −7…−1 зачтены (7), сегодня пуст
+  for (let n = 1; n <= 7; n++) setScore(day(n), 5);
+
+  assert.equal(app.dayStreak(), 7, 'текущая серия — последний отрезок');
+  assert.equal(app.bestStreak(), 7);
+
+  // удлиним первый отрезок до девяти — рекорд уходит в прошлое
+  s.settings.calendarSince = day(23);
+  for (let n = 21; n <= 23; n++) setScore(day(n), 5);
+  assert.equal(app.dayStreak(), 7);
+  assert.equal(app.bestStreak(), 9);
+});
+
+test('З17: «Отметки» — знаменатель по позднейшей из дат заведения и эпохи', () => {
+  const s = scoreStore(1);
+  const t = app.todayKey();
+  s.settings.calendarSince = app.addDays(t, -30);
+
+  const old = s.items[0];
+  assert.equal(app.marksWindow(old), 31, 'пункт старше эпохи — вся эпоха');
+
+  const fresh = mkMin('fresh', app.addDays(t, -1));
+  s.items.push(fresh);
+  assert.equal(app.marksWindow(fresh), 2, 'заведён вчера — «из 2», а не «из 31»');
+  app.toggleMark(app.addDays(t, -1), 'fresh');
+  assert.equal(app.marksInSystem(fresh), 1);
+
+  // пункт, заведённый в будущем (рукотворные данные), окна не имеет
+  s.items.push(mkMin('future', app.addDays(t, 3)));
+  assert.equal(app.marksWindow(s.items[2]), 0);
+});
+
+test('З17: выписки — kind и source достраиваются миграцией, вид не теряется', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const m = app.migrate(seedInput({
+    settings: { dayBoundary: 4, exportedAt: null, calendarSince: '2026-08-10', habitSeeded: true, seed17: true },
+    items: [{ id: 'x1', name: 'Своё', addedAt: '2026-08-01' }],
+    notes: [
+      { id: 'n1', date: '2026-08-12', text: '  мысль  ', updatedAt: 5 },
+      { id: 'n2', date: '2026-08-11', text: 'цитата', kind: 'quote', source: '  Сенека  ', updatedAt: 4 },
+      { id: 'n3', date: '2026-08-10', text: 'заметка', kind: 'quote' },
+      { id: 'n4', date: '2026-08-09', text: 'чужой source', source: 'кто-то', updatedAt: 1 }
+    ]
+  }));
+
+  assert.deepEqual(m.notes.map(n => [n.kind, n.text, n.source]), [
+    ['note', 'мысль', ''],
+    ['quote', 'цитата', 'Сенека'],
+    ['quote', 'заметка', ''],
+    ['note', 'чужой source', ''] // источник живёт только у выписки
+  ]);
+  const again = app.migrate(JSON.parse(JSON.stringify(m)));
+  assert.deepEqual(again.notes, m.notes);
+});
+
+test('З17: выписка дня — детерминированный выбор, без выписок строки нет', () => {
+  const s = scoreStore(1);
+  const t = app.todayKey();
+  s.settings.calendarSince = t;
+  s.notes = [];
+  assert.equal(app.quoteOfDay(), null, 'выписок нет — нечего показывать');
+
+  s.notes = [
+    { id: 'q0', date: t, text: 'ноль', kind: 'quote', source: 'А', updatedAt: 3 },
+    { id: 'q1', date: t, text: 'один', kind: 'quote', source: 'Б', updatedAt: 2 },
+    { id: 'n1', date: t, text: 'заметка', kind: 'note', source: '', updatedAt: 1 }
+  ];
+  assert.deepEqual(app.quotes().map(q => q.id), ['q0', 'q1'], 'заметка в выписки не входит');
+
+  // «в системе» = 1 → индекс 1; один и тот же день даёт одну и ту же выписку
+  assert.equal(app.quoteOfDay().id, 'q1');
+  assert.equal(app.quoteOfDay().id, 'q1');
+  s.settings.calendarSince = app.addDays(t, -1); // «в системе» = 2 → индекс 0
+  assert.equal(app.quoteOfDay().id, 'q0');
+
+  // выписки удаляются как обычные записи
+  app.deleteNote('q0');
+  app.deleteNote('q1');
+  assert.equal(app.quoteOfDay(), null);
+});
+
+test('З17: начало отсчёта — понедельник недели, пересчёт «в системе» и серии', () => {
+  const s = scoreStore(5);
+  const t = app.todayKey(); // 2026-08-13, четверг
+  for (let n = 0; n <= 10; n++) setScore(app.addDays(t, -n), 5);
+
+  s.settings.calendarSince = app.weekStartOf('2026-08-13');
+  assert.equal(s.settings.calendarSince, '2026-08-10');
+  assert.equal(app.daysInSystem(), 4);
+  assert.equal(app.dayStreak(), 4);
+
+  s.settings.calendarSince = app.weekStartOf('2026-08-05'); // среда → её понедельник
+  assert.equal(s.settings.calendarSince, '2026-08-03');
+  assert.equal(app.daysInSystem(), 11);
+  assert.equal(app.dayStreak(), 11);
+
+  // migrate приводит рукотворный не-понедельник к понедельнику (вперёд)
+  const m = app.migrate(seedInput({
+    items: [{ id: 'x1', name: 'Своё', addedAt: '2026-08-01' }],
+    settings: { dayBoundary: 4, calendarSince: '2026-08-05', habitSeeded: true }
+  }));
+  assert.equal(app.weekStartOf(m.settings.calendarSince), m.settings.calendarSince);
+});
+
+/* ── Задача 17, доводка: посев и defaultStore — один набор ──── */
+
+/* Сравнимая форма набора: id генерируются, всё остальное обязано совпасть */
+function shape(store) {
+  const strip = o => { const c = Object.assign({}, o); delete c.id; return c; };
+  return {
+    groups: store.groups.map(g => Object.assign({}, g)),
+    items: store.items.map(strip),
+    notes: store.notes.map(strip)
+  };
+}
+
+test('З17: defaultStore и посев дают один и тот же стартовый набор', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const def = app.defaultStore();
+  const seeded = app.migrate(seedInput());
+
+  assert.deepEqual(shape(def), shape(seeded), 'наборы разошлись — фабрика одна');
+  assert.equal(def.items.length, 9);
+  assert.equal(def.groups.length, 3);
+  assert.equal(def.notes.length, 5);
+  assert.equal(def.notes.every(n => n.kind === 'quote'), true);
+  assert.equal(def.settings.seed17, true, 'программа уже здесь — migrate не сеет повторно');
+
+  // id всё же уникальны: фабрика зовётся дважды, а не отдаёт один объект
+  const ids = def.items.map(i => i.id).concat(def.notes.map(n => n.id));
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(def.items[0].id === seeded.items[0].id, false);
+
+  // прогон дефолта через migrate ничего не добавляет и не меняет
+  const again = app.migrate(JSON.parse(JSON.stringify(def)));
+  assert.deepEqual(shape(again), shape(def));
+  assert.equal(again.items.length, 9);
+});
+
+test('З17: порог зачёта дня переживает чистку наравне с границей дня', () => {
+  fakeLocalStorage();
+  const s = filledStore(); // граница 6, порог 0,5
+  assert.equal(s.settings.dayBoundary, 6);
+  assert.equal(s.settings.dayThreshold, 0.5);
+
+  assert.equal(app.wipeAll(), true);
+  assert.equal(app.store.settings.dayBoundary, 6, 'граница дня выжила');
+  assert.equal(app.store.settings.dayThreshold, 0.5, 'порог зачёта тоже');
+  assert.deepEqual(app.store.items, [], 'но данных не осталось');
+
+  // мусорный порог в прежнем store приводится к допустимому, а не переносится
+  assert.equal(app.emptyStore(4, 'мусор').settings.dayThreshold, 0.8);
+  assert.equal(app.emptyStore(4, 5).settings.dayThreshold, 1);
+  assert.equal(app.emptyStore(4).settings.dayThreshold, 0.8);
   clearLocalStorage();
 });
