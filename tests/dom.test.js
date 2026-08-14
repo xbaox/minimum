@@ -17,6 +17,9 @@ const ROOT = path.join(__dirname, '..');
 const HTML = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 const APP = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
 const NS = 'minimum:data';
+/* Текущая версия схемы — из самого app.js: утверждения о том, что migrate
+   прогнан, не должны переписываться при каждом подъёме схемы */
+const SCHEMA_VERSION = +(APP.match(/const SCHEMA_VERSION = (\d+)/) || [])[1];
 
 /* Логический ключ дня — та же формула, что в app.js (граница 04:00) */
 function dayKey(date) {
@@ -1501,7 +1504,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 14);
+  assert.equal(snap.schemaVersion, SCHEMA_VERSION);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1577,7 +1580,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 14);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, SCHEMA_VERSION);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1752,7 +1755,7 @@ test('«Пункты»: кнопка листа есть в форме daily, н
   // ни в одной строке списка кнопки листа нет
   document.querySelector('[data-act="edit-cancel"]').click();
   assert.equal(document.querySelectorAll('#scr-settings .row.item [data-act="item-detail"]').length, 0);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 14);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, SCHEMA_VERSION);
 });
 
 test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
@@ -3892,4 +3895,267 @@ test('C.6.7: импорт сбрасывает форму и черновик з
   // и черновик не всплывает при следующем открытии формы
   [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'note').click();
   assert.equal(document.getElementById('n-text').value, '', 'черновик прежних данных не перенесён');
+});
+
+/* ── Задача 20. Режим формулы в интерфейсе ─────────────────── */
+
+/* Пункт с формулой: лист детали открывается из строки «Сегодня» */
+function formulaSeed(mode) {
+  const seed = dueSeed();
+  seed.items[0].formula = {
+    anchor: 'после зарядки', when: 'в 7:00', pair: 'кофе', identity: 'я читатель',
+    twoMin: 'одна страница', friction: 'книга на столе', proof: 'страница прочитана',
+    mode: mode || 'build'
+  };
+  return seed;
+}
+const openDetail = (document) => {
+  document.querySelector('#scr-today [data-act="item-detail"]').click();
+  return document.getElementById('scr-detail');
+};
+
+test('З20/C.3: блок чтения показывает заголовки своего режима', async () => {
+  const build = await boot({ seed: formulaSeed('build') });
+  const b = openDetail(build.document);
+  const lawsBuild = [...b.querySelectorAll('.overline')].map(x => x.textContent);
+  assert.deepEqual(lawsBuild, ['Очевидно', 'Привлекательно', 'Легко', 'Приятно']);
+  assert.match(b.textContent, /Якорь/);
+  assert.match(b.textContent, /Версия на 2 минуты/);
+
+  const brk = await boot({ seed: formulaSeed('break') });
+  const k = openDetail(brk.document);
+  const lawsBreak = [...k.querySelectorAll('.overline')].map(x => x.textContent);
+  assert.deepEqual(lawsBreak, ['Невидимо', 'Непривлекательно', 'Трудно', 'Приятно']);
+  assert.match(k.textContent, /Что перехватываю/);
+  assert.match(k.textContent, /Действие-замена/);
+  assert.doesNotMatch(k.textContent, /Якорь/, 'подписи режима build не просачиваются');
+
+  // текст владельца в обоих режимах один и тот же
+  for (const scr of [b, k]) assert.match(scr.textContent, /после зарядки/);
+  // отдельной пометки о режиме в блоке чтения нет (A.2.3)
+  assert.doesNotMatch(k.textContent, /Избавляюсь от привычки/);
+});
+
+test('З20/C.2: смена режима меняет подписи и подсказки, значения полей остаются', async () => {
+  const { document, window } = await boot({ seed: formulaSeed('build') });
+  openDetail(document);
+  document.querySelector('[data-act="formula-open"]').click();
+
+  const sel = document.getElementById('fx-mode');
+  assert.ok(sel, 'переключатель режима первой строкой формы');
+  assert.equal(sel.value, 'build');
+  assert.deepEqual([...sel.options].map(o => o.textContent), ['Завожу привычку', 'Избавляюсь от привычки']);
+
+  // владелец правит поле и переключает режим, не сохраняя
+  document.getElementById('fx-anchor').value = 'рука пошла ко рту';
+  document.getElementById('fx-twoMin').value = 'сжать кулак';
+  sel.value = 'break';
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+
+  const scr = document.getElementById('scr-detail');
+  assert.equal(document.getElementById('fx-mode').value, 'break', 'режим переключился');
+  assert.match(scr.textContent, /Что перехватываю/, 'подписи режима break');
+  assert.match(scr.textContent, /Невидимо/, 'заголовки законов режима break');
+  assert.equal(document.getElementById('fx-anchor').value, 'рука пошла ко рту', 'значение поля на месте');
+  assert.equal(document.getElementById('fx-twoMin').value, 'сжать кулак');
+  // в данных пока ничего не менялось — режим применяется сохранением
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].formula.mode, 'build');
+
+  // черновик переживает смену логического дня
+  shiftWindowDate(window, 26 * 3600000);
+  window.dispatchEvent(new window.Event('focus'));
+  assert.equal(document.getElementById('fx-anchor').value, 'рука пошла ко рту', 'черновик пережил смену дня');
+  assert.equal(document.getElementById('fx-mode').value, 'break', 'и режим формы тоже');
+
+  // сохранение записывает и режим, и текст
+  document.querySelector('[data-act="formula-save"]').click();
+  const f = JSON.parse(window.localStorage.getItem(NS)).items[0].formula;
+  assert.equal(f.mode, 'break');
+  assert.equal(f.anchor, 'рука пошла ко рту');
+  assert.equal(f.twoMin, 'сжать кулак');
+  assert.equal(f.identity, 'я читатель', 'нетронутые поля сохранены как были');
+});
+
+test('З20/C.2: «Отмена» режим не применяет', async () => {
+  const { document, window } = await boot({ seed: formulaSeed('build') });
+  openDetail(document);
+  document.querySelector('[data-act="formula-open"]').click();
+  const sel = document.getElementById('fx-mode');
+  sel.value = 'break';
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('[data-act="formula-cancel"]').click();
+
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].formula.mode, 'build',
+    'в данных режим прежний');
+  const laws = [...document.getElementById('scr-detail').querySelectorAll('.overline')].map(x => x.textContent);
+  assert.deepEqual(laws, ['Очевидно', 'Привлекательно', 'Легко', 'Приятно'], 'блок чтения тоже прежний');
+
+  // повторное открытие формы показывает режим формулы, а не брошенный черновик
+  document.querySelector('[data-act="formula-open"]').click();
+  assert.equal(document.getElementById('fx-mode').value, 'build');
+});
+
+test('З20/C.4: все семь подсказок режима break присутствуют дословно', async () => {
+  const { document } = await boot({ seed: formulaSeed('break') });
+  openDetail(document);
+  document.querySelector('[data-act="formula-open"]').click();
+  const hints = [...document.querySelectorAll('#scr-detail .hint')].map(x => x.textContent);
+  assert.equal(hints.length, 7, 'по подсказке на каждое поле');
+  const expected = [
+    'Назови момент, а не состояние. „Когда нервничаю“ — не момент. „Когда рука пошла ко рту“ — момент, его можно заметить.',
+    'Где и когда это обычно случается. Знаешь опасную зону — можешь менять обстановку именно там.',
+    'Не абстрактный вред, а конкретное последствие с прошлой недели. Награда приходит сразу, расплата потом — записанная цена подтягивает расплату ближе.',
+    '„Я бросаю“ — человек, который борется. „Я не грызу“ — человек, который не грызёт. Разные предложения, разный результат.',
+    'За это будет ставиться отметка. Короткое, физическое, выполнимое прямо в момент срыва. Не „взять себя в руки“, а конкретное движение.',
+    'Физическая преграда, не намерение. Каждая лишняя секунда между желанием и действием — секунда, чтобы опомниться. Преграда должна работать, когда ты устал.',
+    'Наблюдаемый результат, а не „не сорвался“. Целая кожа. Пустой список желаний. Баланс не изменился.'
+  ];
+  assert.deepEqual(hints, expected, 'подсказки дословны и в порядке полей');
+
+  // подписи полей режима break — тоже дословно и в порядке законов
+  const labels = [...document.querySelectorAll('#scr-detail .card.form .field > span')].map(x => x.textContent);
+  assert.deepEqual(labels, ['Режим', 'Что перехватываю', 'Время и место', 'Что я на самом деле получаю',
+    'Кем становлюсь', 'Действие-замена', 'Что поставлю на пути', 'Что подтвердит день']);
+});
+
+test('З20: подсказки живут только в форме — в блоке чтения их нет', async () => {
+  const { document } = await boot({ seed: formulaSeed('break') });
+  const scr = openDetail(document);
+  assert.equal(scr.querySelectorAll('.hint').length, 0, 'в режиме чтения подсказок нет');
+  assert.doesNotMatch(scr.textContent, /Назови момент, а не состояние/);
+});
+
+/* ── Задача 20, C.5: сторож разметки форм ──────────────────────
+   Часть B предлагала свернуть повторяющиеся фрагменты шаблонов
+   (.card.form, .btns, .field) в хелперы при жёстком условии: выдаваемая
+   разметка не меняется ни на байт. Замер показал, что по gzip сворачивание
+   не экономит, а добавляет (см. отчёт задачи 20 и правило веса в CLAUDE.md),
+   поэтому хелперы не введены — но сторож нужен и без них: он ловит любую
+   будущую правку шаблонов форм, случайную или в ходе такого рефакторинга.
+
+   Снимок — outerHTML всех девяти форм. Дат в формах нет, идентификаторы
+   в сиде фиксированы, поэтому снимок стабилен от запуска к запуску.
+   Пересобрать после осознанной правки разметки:
+       MARKUP_SNAPSHOT=write node --test tests/dom.test.js */
+
+const SNAP_PATH = path.join(ROOT, 'tests', 'markup.snapshot.json');
+
+/* Сид с фиксированными id и именами: разметка не должна плавать */
+function markupSeed() {
+  const prev = prevMonday();
+  return {
+    schemaVersion: 15,
+    groups: [{ name: 'Утро' }],
+    items: [
+      { id: 'fx-item', name: 'Пункт минимума', value: 10, unit: 'мин', type: 'daily', area: 'min',
+        goal: null, note: 'подпись', group: 'Утро', active: true, addedAt: addKey(prev, -14),
+        raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+        formula: { anchor: 'после зарядки', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '', mode: 'build' },
+        ladder: null, ladderLog: [] },
+      { id: 'fx-habit', name: 'Привычка', value: null, unit: '', type: 'daily', area: 'habit',
+        normPerWeek: 7, goal: null, note: '', group: '', active: true, addedAt: addKey(prev, -14),
+        raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [], formula: null, ladder: null, ladderLog: [] },
+      { id: 'fx-param', name: 'Порог', value: null, unit: '', type: 'param', area: 'habit',
+        pkind: 'time', pvalue: 0, pstep: -15, goal: null, note: '', group: '', active: true,
+        addedAt: addKey(prev, -14), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+        history: [{ date: addKey(prev, -14), value: 0 }], formula: null, ladder: null, ladderLog: [] }
+    ],
+    exercises: [{ id: 'fx-ex', name: 'Жим', unit: 'кг', value: 60, history: [], active: true, addedAt: addKey(prev, -14) }],
+    days: {}, weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: prev,
+    settings: { dayBoundary: 4, dayThreshold: 0.8, exportedAt: null, calendarSince: addKey(prev, -70), habitSeeded: true, seed17: true }
+  };
+}
+
+test('З20/C.5: разметка форм совпадает со снимком побайтово', async () => {
+  const { document, window } = await boot({ seed: markupSeed() });
+  const got = {};
+  const grab = (name) => {
+    const form = document.querySelector('.card.form');
+    assert.ok(form, `форма «${name}» открыта`);
+    got[name] = form.outerHTML;
+  };
+  const settings = () => document.querySelector('#tabs button[data-tab="settings"]').click();
+  const openSect = (re) => {
+    const s = [...document.querySelectorAll('#scr-settings details.sect')]
+      .find(d => re.test(d.querySelector('summary').textContent));
+    s.querySelector('summary').click();
+    return s;
+  };
+
+  // формы «Пунктов»: правка минимума, привычки, параметра и добавление
+  settings();
+  [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'fx-item').click();
+  grab('edit-min');
+  document.querySelector('[data-act="edit-cancel"]').click();
+  [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'fx-habit').click();
+  grab('edit-habit');
+  document.querySelector('[data-act="edit-cancel"]').click();
+  [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'fx-param').click();
+  grab('edit-param');
+  document.querySelector('[data-act="edit-cancel"]').click();
+  [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'min').click();
+  grab('add-min');
+  document.querySelector('[data-act="add-cancel"]').click();
+  [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit').click();
+  grab('add-habit');
+  document.querySelector('[data-act="add-cancel"]').click();
+
+  // блоки и упражнения
+  openSect(/Блоки/);
+  document.querySelector('[data-act="group-open"]').click();
+  grab('group-edit');
+  document.querySelector('[data-act="group-cancel"]').click();
+  document.querySelector('[data-act="group-add-open"]').click();
+  got['group-add'] = document.querySelector('[data-form="group-add"]').outerHTML;
+  document.querySelector('[data-act="group-add-cancel"]').click();
+  openSect(/Упражнения/);
+  document.querySelector('[data-act="ex-open"]').click();
+  grab('ex-edit');
+  document.querySelector('[data-act="ex-cancel"]').click();
+  document.querySelector('[data-act="ex-add-open"]').click();
+  grab('ex-add');
+  document.querySelector('[data-act="ex-add-cancel"]').click();
+
+  // заметка и выписка
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'note').click();
+  grab('note-add');
+  document.querySelector('[data-act="note-cancel"]').click();
+  [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'quote').click();
+  grab('quote-add');
+  document.querySelector('[data-act="note-cancel"]').click();
+
+  // формы листа детали: формула в обоих режимах и лестница
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('#scr-today [data-act="item-detail"]').click();
+  document.querySelector('[data-act="formula-open"]').click();
+  grab('formula-build');
+  const sel = document.getElementById('fx-mode');
+  sel.value = 'break';
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  grab('formula-break');
+  document.querySelector('[data-act="formula-cancel"]').click();
+  document.querySelector('[data-act="ladder-open"]').click();
+  grab('ladder');
+
+  assert.equal(Object.keys(got).length, 14, 'сняты все формы');
+
+  if (process.env.MARKUP_SNAPSHOT === 'write' || !fs.existsSync(SNAP_PATH)) {
+    fs.writeFileSync(SNAP_PATH, JSON.stringify(got, null, 1) + '\n');
+    console.log('снимок разметки форм записан: ' + SNAP_PATH);
+    return;
+  }
+  const want = JSON.parse(fs.readFileSync(SNAP_PATH, 'utf8'));
+  assert.deepEqual(Object.keys(got).sort(), Object.keys(want).sort(), 'набор форм тот же');
+  for (const k of Object.keys(want)) {
+    if (got[k] !== want[k]) {
+      const at = [...want[k]].findIndex((c, i) => c !== got[k][i]);
+      assert.fail(`разметка формы «${k}» разошлась со снимком на символе ${at}:\n` +
+        `  было:  …${want[k].slice(Math.max(0, at - 60), at + 60)}…\n` +
+        `  стало: …${got[k].slice(Math.max(0, at - 60), at + 60)}…\n` +
+        '  Если правка разметки осознанная — пересобрать снимок:\n' +
+        '  MARKUP_SNAPSHOT=write node --test tests/dom.test.js');
+    }
+  }
 });

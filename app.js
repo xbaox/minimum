@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -211,7 +211,12 @@ function numOr(v, fallback) {
 const FORMULA_KEYS = ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof'];
 
 /* Формула из внешних данных: объект из семи строк либо null.
-   Пустая (все поля пусты после trim) — это null, а не объект пустышек. */
+   Пустая (все поля пусты после trim) — это null, а не объект пустышек.
+
+   v14 → v15 (задача 20): формула несёт режим. Отдельного шага миграции не
+   нужно — mode достраивается этой же безусловной нормализацией, как в своё
+   время normPerWeek (v5→v6) и сама formula (v6→v7); шаг аддитивен и
+   идемпотентен, days{} и reviews[] не трогает. */
 function normFormula(f) {
   if (!f || typeof f !== 'object' || Array.isArray(f)) return null;
   const out = {};
@@ -221,8 +226,15 @@ function normFormula(f) {
     out[k] = v;
     if (v) any = true;
   }
+  // режим описывает, КАК читать те же семь полей, и сам формулы не создаёт:
+  // пустая формула с одним лишь mode остаётся null. Неизвестное — 'build'.
+  out.mode = f.mode === 'break' ? 'break' : 'build';
   return any ? out : null;
 }
+
+/* Режим формулы — свойство формулы, а не пункта: у пункта без формулы
+   режима нет вовсе (инвариант 12). */
+const formulaMode = f => (f && f.mode === 'break') ? 'break' : 'build';
 
 /* Лестница из внешних данных: непустой список ступеней, индекс в границах,
    неделя последнего шага — понедельник или null. Без ступеней лестницы нет. */
@@ -1981,6 +1993,7 @@ const ui = {
   detailForm: null,     // форма в листе: 'formula' | 'ladder' | null
   detailScroll: 0,      // позиция скролла вкладки, с которой открыт лист
   ladderConfirm: false, // «Снять лестницу» ждёт подтверждения вторым тапом
+  formulaMode: null,    // режим в открытой форме формулы (null — как у самой формулы)
   detailDraft: null,    // черновик формы листа — отдельный слот от «Пунктов» (14.2, вопрос 2)
   groupRename: null,    // имя блока с раскрытой правкой
   groupDelete: null,    // блок ждёт подтверждения удаления вторым тапом
@@ -2712,6 +2725,16 @@ const FORMULA_GROUPS = [
   { law: 'Приятно', fields: [['proof', 'Что подтвердит день']] }
 ];
 
+/* Те же четыре закона для режима «избавляюсь от привычки» (задача 20).
+   Ключи полей — те же семь: меняются только заголовки законов и подписи,
+   поэтому текст, введённый в одном режиме, виден и в другом. */
+const FORMULA_GROUPS_BREAK = [
+  { law: 'Невидимо', fields: [['anchor', 'Что перехватываю'], ['when', 'Время и место']] },
+  { law: 'Непривлекательно', fields: [['pair', 'Что я на самом деле получаю'], ['identity', 'Кем становлюсь']] },
+  { law: 'Трудно', fields: [['twoMin', 'Действие-замена'], ['friction', 'Что поставлю на пути']] },
+  { law: 'Приятно', fields: [['proof', 'Что подтвердит день']] }
+];
+
 /* Подсказки по заполнению — только в форме (анти-требование задачи 14) */
 const FORMULA_HINTS = {
   anchor: 'То, что уже происходит каждый день само. „После того как поставлю телефон на зарядку“ — якорь. „Вечером“ — не якорь.',
@@ -2722,6 +2745,26 @@ const FORMULA_HINTS = {
   friction: 'Одно физическое препятствие. Зарядка в коридоре работает сильнее любого намерения.',
   proof: 'Одно наблюдаемое действие, не ощущение. Отметка в приложении уже считается — допиши, если нужно ещё.'
 };
+
+/* Подсказки режима «избавляюсь»: приложение по-прежнему фиксирует только
+   сделанное — отметка ставится за действие-замену (twoMin), а не за
+   воздержание: отсутствие события отметить нельзя (инвариант 12). */
+const FORMULA_HINTS_BREAK = {
+  anchor: 'Назови момент, а не состояние. „Когда нервничаю“ — не момент. „Когда рука пошла ко рту“ — момент, его можно заметить.',
+  when: 'Где и когда это обычно случается. Знаешь опасную зону — можешь менять обстановку именно там.',
+  pair: 'Не абстрактный вред, а конкретное последствие с прошлой недели. Награда приходит сразу, расплата потом — записанная цена подтягивает расплату ближе.',
+  identity: '„Я бросаю“ — человек, который борется. „Я не грызу“ — человек, который не грызёт. Разные предложения, разный результат.',
+  twoMin: 'За это будет ставиться отметка. Короткое, физическое, выполнимое прямо в момент срыва. Не „взять себя в руки“, а конкретное движение.',
+  friction: 'Физическая преграда, не намерение. Каждая лишняя секунда между желанием и действием — секунда, чтобы опомниться. Преграда должна работать, когда ты устал.',
+  proof: 'Наблюдаемый результат, а не „не сорвался“. Целая кожа. Пустой список желаний. Баланс не изменился.'
+};
+
+/* Наборы по режиму: ключи полей общие, расходятся только слова */
+const formulaGroups = mode => mode === 'break' ? FORMULA_GROUPS_BREAK : FORMULA_GROUPS;
+const formulaHints = mode => mode === 'break' ? FORMULA_HINTS_BREAK : FORMULA_HINTS;
+
+/* Два режима для переключателя формы: подписи — словами владельца */
+const FORMULA_MODES = [['build', 'Завожу привычку'], ['break', 'Избавляюсь от привычки']];
 
 /* Стартовый текст лестницы: только предзаполнение формы, в migrate не сеется */
 const LADDER_START = [
@@ -2772,7 +2815,8 @@ function renderDetail(it) {
     h += formulaForm(it);
   } else {
     const F = it.formula;
-    for (const g of FORMULA_GROUPS) {
+    // режим виден заголовками законов — отдельной пометки нет (задача 20, A.2.3)
+    for (const g of formulaGroups(formulaMode(F))) {
       h += `<p class="overline">${g.law}</p>`;
       for (const [key, label] of g.fields) {
         const v = F && F[key] ? F[key] : '';
@@ -2795,13 +2839,23 @@ function renderDetail(it) {
 
 function formulaForm(it) {
   const F = it.formula || {};
+  // режим открытой формы: черновик ui, пока не сохранили; иначе — режим формулы
+  const mode = ui.formulaMode || formulaMode(it.formula);
+  const hints = formulaHints(mode);
   let h = `<div class="card form formula" data-form="formula" data-id="${esc(it.id)}">`;
-  for (const g of FORMULA_GROUPS) {
+  // переключатель первой строкой; идиома существующая — тот же select, что у
+  // «Типа» и «Вида». data-act отдаёт его ui-состоянию: в черновик формы он не
+  // попадает (snapshotOpenForm пропускает управляемые контролы).
+  h += `
+      <label class="field"><span>Режим</span>
+        <select id="fx-mode" data-act="formula-mode">${FORMULA_MODES.map(([v, label]) =>
+          `<option value="${v}"${v === mode ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
+  for (const g of formulaGroups(mode)) {
     h += `<p class="overline">${g.law}</p>`;
     for (const [key, label] of g.fields) {
       h += `
       <label class="field"><span>${label}</span><input type="text" id="fx-${key}" value="${esc(F[key] || '')}"></label>
-      <p class="hint">${esc(FORMULA_HINTS[key])}</p>`;
+      <p class="hint">${esc(hints[key])}</p>`;
     }
   }
   return h + `
@@ -3609,6 +3663,7 @@ function closeDetail() {
   ui.detailForm = null;
   ui.ladderConfirm = false;
   ui.detailDraft = null;
+  ui.formulaMode = null;
 }
 
 /* Лист разбора закрывается и таб-баром — как лист детали */
@@ -3854,14 +3909,16 @@ function onClick(e) {
       if (ladderStep(id, act === 'ladder-back' ? 'back' : 'fwd')) renderAll();
       break;
 
-    case 'formula-open': ui.detailForm = 'formula'; ui.detailDraft = null; renderAll(); break;
-    case 'formula-cancel': ui.detailForm = null; ui.detailDraft = null; renderAll(); break;
+    case 'formula-open': ui.detailForm = 'formula'; ui.detailDraft = null; ui.formulaMode = null; renderAll(); break;
+    case 'formula-cancel': ui.detailForm = null; ui.detailDraft = null; ui.formulaMode = null; renderAll(); break;
     case 'formula-save': {
       const values = {};
       for (const k of FORMULA_KEYS) values[k] = el('fx-' + k) ? el('fx-' + k).value : '';
+      values.mode = ui.formulaMode || formulaMode(item && item.formula);
       setFormula(id, values);
       ui.detailForm = null;
       ui.detailDraft = null;
+      ui.formulaMode = null;
       renderAll();
       break;
     }
@@ -4405,6 +4462,11 @@ function onChange(e) {
   } else if (act === 'add-type') {
     ui.addType = t.value;
     renderSettings(); // снимок/восстановление формы — внутри renderSettings, цель не сбрасывается
+  } else if (act === 'formula-mode') {
+    // смена режима перерисовывает форму: подписи и подсказки другие, а
+    // значения полей остаются — их снимает и возвращает черновик формы
+    ui.formulaMode = t.value === 'break' ? 'break' : 'build';
+    renderAll();
   } else if (act === 'add-pkind') {
     ui.addPkind = t.value === 'number' ? 'number' : 'time';
     renderSettings();
@@ -4479,6 +4541,7 @@ async function init() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     get store() { return store; }, set store(v) { store = v; },
+    SCHEMA_VERSION,
     defaultStore, migrate, dateKeyShift, dateKeyFromDate, addDays, diffDays,
     todayKey, msToNextBoundary, weekStartOf, currentWeekStart, previousWeekStart,
     toggleMark, isMarked, incTrain, undoTrain, trainCount,

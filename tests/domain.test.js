@@ -441,7 +441,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -472,7 +472,7 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 14);
+    assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
     assert.equal(Array.isArray(m.items), true);
     assert.equal(m.items.length, 9); // дефолтный набор — программа посева (задача 17)
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);
@@ -589,7 +589,7 @@ test('З2: мусорный schemaVersion трактуется как v1 — в�
   const src = v1Store();
   src.schemaVersion = 'мусор';
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
   assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
@@ -617,7 +617,7 @@ test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпоте
     ]
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.equal(m.reviews[0].weekStart, '2026-06-01');
   assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
@@ -722,7 +722,7 @@ test('З4: миграция v3→v4 — exportedAt с мягким дефолт�
     settings: { dayBoundary: 4, hintShownForItemId: null }
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.equal(m.settings.exportedAt, null);
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
   assert.deepEqual(again, m);
@@ -1165,7 +1165,7 @@ test('З11: миграция v6 — норма достроена и валид�
     settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
   };
   const m = app.migrate(v5);
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.equal(m.items.find(i => i.id === 'h1').normPerWeek, 7); // достроена умолчанием
   assert.equal(m.items.find(i => i.id === 'h2').normPerWeek, 7); // мусор → умолчание
   assert.equal(m.items.find(i => i.id === 'h3').normPerWeek, 1); // к ближайшему допустимому
@@ -1234,7 +1234,7 @@ test('З10: hintShownForItemId мёртв — нет в defaultStore, v5-миг�
     pendingRaises: [], draftOneChange: '', weekStart: '2026-07-13',
     settings: { dayBoundary: 4, hintShownForItemId: 'x1', exportedAt: null }
   });
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.equal('hintShownForItemId' in m.settings, false);
 });
 
@@ -1547,7 +1547,7 @@ test('З14: миграция v6→v7 — поля достроены, лестн
   const m = app.migrate(v6);
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.equal(byId.i1.formula, null);           // достроено умолчанием
   assert.equal(byId.i1.ladder, null);
   assert.deepEqual(byId.i1.ladderLog, []);
@@ -1633,7 +1633,7 @@ test('З14.2: миграция v7→v8 — пустому журналу жив�
   const m = app.migrate(mkV7());
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   // старт от startedAt, ступень и текст — те, на которых лестница стоит сейчас
   assert.deepEqual(byId.i1.ladderLog, [{ date: '2026-07-02', step: 1, text: 'два', start: true }]);
   assert.deepEqual(byId.i2.ladderLog, []); // без лестницы журнал не заводится
@@ -1715,9 +1715,15 @@ test('З14: формула — только текст владельца, пу�
   assert.equal(it.formula, null); // все поля пусты после trim
 
   app.setFormula(it.id, { anchor: 'после зарядки' });
-  assert.deepEqual(Object.keys(it.formula), ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof']);
+  // семь текстовых полей плюс режим (задача 20): ключи полей не менялись
+  assert.deepEqual(Object.keys(it.formula), ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof', 'mode']);
   assert.equal(it.formula.anchor, 'после зарядки');
   assert.equal(it.formula.when, '');
+  assert.equal(it.formula.mode, 'build', 'режим по умолчанию');
+
+  // один только режим формулы не создаёт: пустая остаётся null
+  assert.equal(app.setFormula(it.id, { mode: 'break' }), true);
+  assert.equal(it.formula, null);
 
   assert.equal(app.setFormula('нет-такого', { anchor: 'x' }), false);
   assert.equal(app.setFormula(param.id, { anchor: 'x' }), false); // формула — у ежедневных
@@ -1745,7 +1751,7 @@ test('З15: миграция v8→v9 — группы в порядке перв
   });
 
   const m = app.migrate(mkV8());
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.deepEqual(m.groups, [{ name: 'Сон' }, { name: 'Тело' }]); // порядок первого появления
   assert.deepEqual(m.days, days);       // миграция аддитивна
   assert.deepEqual(m.reviews, reviews);
@@ -2170,7 +2176,7 @@ test('З16C: миграция v10→v11 — якоря недель и pendingLo
   v10.items[1].lowerAfterWeek = 'мусор';
 
   const m = app.migrate(JSON.parse(JSON.stringify(v10)));
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.deepEqual(m.pendingLowers, []);
   assert.equal(m.items[0].raiseAfterWeek, '2026-07-13', 'не-понедельник приведён к своему понедельнику');
   assert.equal(m.items[1].lowerAfterWeek, null);
@@ -2286,7 +2292,7 @@ test('З16D: миграция v11→v12 — упражнения и сессии
   delete v11.sessions;
 
   const m = app.migrate(JSON.parse(JSON.stringify(v11)));
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.deepEqual(m.exercises, []);
   assert.deepEqual(m.sessions, []);
   assert.deepEqual(m.days, v11.days, 'аддитивность: отметки не тронуты');
@@ -2376,7 +2382,7 @@ test('З16E: миграция v12→v13 и экспорт → импорт за�
   delete v12.notes;
 
   const m = app.migrate(JSON.parse(JSON.stringify(v12)));
-  assert.equal(m.schemaVersion, 14);
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.deepEqual(m.notes, []);
   assert.deepEqual(m.days, v12.days, 'аддитивность');
 
@@ -2530,7 +2536,7 @@ test('З16.1: чистка обнуляет всё, граница дня ост
   assert.deepEqual(s.pendingLowers, []);
   assert.deepEqual(s.paramDecided, {});
   assert.equal(s.draftOneChange, '');
-  assert.equal(s.schemaVersion, 14, 'схема не меняется');
+  assert.equal(s.schemaVersion, app.SCHEMA_VERSION, 'схема не меняется');
 
   assert.equal(s.settings.dayBoundary, 6, 'граница дня — настройка устройства, не данные');
   assert.equal(s.settings.exportedAt, null);
@@ -3309,7 +3315,7 @@ test('З19/C.1.3 (И18): «Вернуть» проводит копию чере
 
   assert.equal(app.restoreWiped(), true);
   const r = app.store;
-  assert.equal(r.schemaVersion, 14, 'схема поднята — копия прошла migrate');
+  assert.equal(r.schemaVersion, app.SCHEMA_VERSION, 'схема поднята — копия прошла migrate');
   assert.equal(r.settings.dayThreshold, 1, 'мусорный порог приведён к допустимому');
   assert.equal(r.items.some(i => i === null), false, 'не-объекты отброшены');
   assert.equal(r.items.find(i => i.id === 'bad').area, 'min', 'weekly приведён к минимуму');
@@ -3422,4 +3428,110 @@ test('З19/C.6.5: граница дня из внешних данных — ц�
   assert.equal(b('нет'), 4, 'нечисло — по умолчанию');
   assert.equal(b(NaN), 4);
   assert.equal(b(Infinity), 4);
+});
+
+/* ── Задача 20. Режим формулы (инвариант 12) ───────────────── */
+
+test('З20/C.1: миграция v14→v15 — mode проставлен, аддитивна и идемпотентна', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const v14 = () => ({
+    schemaVersion: 14,
+    items: [
+      { id: 'a', name: 'С формулой', type: 'daily', area: 'min', addedAt: '2026-01-01',
+        formula: { anchor: 'после зарядки', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '' } },
+      { id: 'b', name: 'Без формулы', type: 'daily', area: 'min', addedAt: '2026-01-01', formula: null },
+      { id: 'c', name: 'Мусор в режиме', type: 'daily', area: 'min', addedAt: '2026-01-01',
+        formula: { anchor: 'x', mode: 'что-то' } }
+    ],
+    days: { '2026-07-10': { a: true }, '2026-07-11': { a: true, b: true } },
+    reviews: [{ closedAt: 1, week: '2026-07-06', keys: ['2026-07-06'], perItem: { a: { name: 'С формулой', marks: [], count: 3 } }, trainings: {}, oneChange: 'спать раньше', raises: [], lowers: [], params: [] }],
+    groups: [], weekLog: [], pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: '2026-07-13',
+    settings: { dayBoundary: 4, dayThreshold: 0.8, calendarSince: '2026-06-01', habitSeeded: true, seed17: true }
+  });
+
+  const m = app.migrate(v14());
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
+  assert.equal(m.items[0].formula.mode, 'build', 'существующей формуле проставлен build');
+  assert.equal(m.items[1].formula, null, 'у пункта без формулы режима нет вовсе');
+  assert.equal(m.items[2].formula.mode, 'build', 'неизвестный режим приводится к build');
+  // ключи семи полей не изменились
+  assert.deepEqual(Object.keys(m.items[0].formula),
+    ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof', 'mode']);
+
+  // аддитивность: days{} и reviews[] не тронуты
+  const src = v14();
+  assert.deepEqual(m.days, src.days, 'days{} миграция не изменяет');
+  assert.deepEqual(m.reviews[0].perItem, src.reviews[0].perItem, 'срезы разборов не изменяет');
+  assert.equal(m.reviews[0].oneChange, 'спать раньше');
+
+  // идемпотентность — побайтово
+  const once = JSON.stringify(m);
+  const twice = JSON.stringify(app.migrate(JSON.parse(once)));
+  assert.equal(once, twice, 'двойной прогон даёт тот же результат');
+
+  // режим break переживает миграцию
+  const brk = v14();
+  brk.items[0].formula.mode = 'break';
+  assert.equal(app.migrate(brk).items[0].formula.mode, 'break');
+});
+
+test('З20/C.1: экспорт → очистка → импорт сохраняет режим', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const it = s.items.find(i => i.type === 'daily' && i.area === 'min');
+  app.setFormula(it.id, { anchor: 'рука пошла ко рту', twoMin: 'сжать кулак', mode: 'break' });
+  assert.equal(it.formula.mode, 'break');
+
+  const exported = JSON.stringify(app.store);          // экспорт отдаёт текущий store
+  const reimported = app.migrate(JSON.parse(exported), { external: true });
+  // Сравнение по значению, а не побайтово: defaultStore через migrate не
+  // проходит (инвариант 19), поэтому у его выписок порядок ключей свой —
+  // {source, kind} против {kind, source}. Расхождение чисто косметическое,
+  // на данные не влияет; сама формула сверяется байт в байт ниже.
+  assert.deepEqual(reimported, JSON.parse(exported), 'состояние восстановлено полностью');
+  const back = reimported.items.find(i => i.id === it.id);
+  assert.equal(JSON.stringify(back.formula), JSON.stringify(it.formula), 'формула побайтово та же');
+  assert.equal(back.formula.mode, 'break', 'режим пережил импорт');
+  assert.equal(back.formula.anchor, 'рука пошла ко рту');
+  assert.equal(back.formula.twoMin, 'сжать кулак');
+});
+
+test('З20/C.2: смена режима текст не изменяет и не переносит', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const it = s.items.find(i => i.type === 'daily' && i.area === 'min');
+  const text = {
+    anchor: 'после зарядки', when: 'в 7:00 на кухне', pair: 'кофе', identity: 'я человек, который читает',
+    twoMin: 'одна страница', friction: 'книга на столе', proof: 'страница прочитана'
+  };
+  app.setFormula(it.id, Object.assign({}, text, { mode: 'build' }));
+  const before = Object.assign({}, it.formula);
+
+  // тот же текст, другой режим
+  app.setFormula(it.id, Object.assign({}, text, { mode: 'break' }));
+  assert.equal(it.formula.mode, 'break', 'режим сменился');
+  for (const k of ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof']) {
+    assert.equal(it.formula[k], before[k], `поле ${k} не изменилось`);
+  }
+  // и обратно
+  app.setFormula(it.id, Object.assign({}, text, { mode: 'build' }));
+  assert.equal(it.formula.mode, 'build');
+  assert.equal(it.formula.identity, 'я человек, который читает');
+});
+
+test('З20/A.1.3: режим — свойство формулы, а не пункта', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const it = s.items.find(i => i.type === 'daily' && i.area === 'min');
+  assert.equal(it.formula, null, 'формулы ещё нет');
+  assert.equal('mode' in it, false, 'у самого пункта поля режима нет');
+
+  app.setFormula(it.id, { anchor: 'x', mode: 'break' });
+  assert.equal('mode' in it, false, 'и после создания формулы — тоже нет');
+  assert.equal(it.formula.mode, 'break');
+
+  // очистка формулы уносит и режим
+  app.setFormula(it.id, { anchor: '', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '', mode: 'break' });
+  assert.equal(it.formula, null, 'пустая формула — null, режим вместе с ней');
 });
