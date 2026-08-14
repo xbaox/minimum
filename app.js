@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -254,7 +254,13 @@ function normLadder(l, today) {
     steps,
     step,
     steppedWeek: isDayKey(wk) ? weekStartOf(wk) : null,
-    startedAt: isDayKey(l.startedAt) ? l.startedAt : today
+    startedAt: isDayKey(l.startedAt) ? l.startedAt : today,
+    // v15 → v16 (задача 21): привычка закрыта владельцем. Отдельного шага
+    // миграции не нужно — done достраивается этой же безусловной
+    // нормализацией, как mode в v14→v15; шаг аддитивен и идемпотентен,
+    // days{}, history и ladderLog не трогает. Автоматически не ставится
+    // никогда: только действием владельца (инвариант 12).
+    done: l.done === true
   };
 }
 
@@ -272,6 +278,7 @@ function normLadderLog(log) {
         text: typeof e.text === 'string' ? e.text : ''
       };
       if (e.start === true) out.start = true;
+      if (e.closed === true) out.closed = true;
       return out;
     });
 }
@@ -368,15 +375,17 @@ function migrate(s, opts) {
     it.ladder = it.type === 'daily' ? normLadder(it.ladder, today) : null;
     it.ladderLog = normLadderLog(it.ladderLog);
   }
-  // лестница в приложении одна: побеждает начатая позже (строгое сравнение —
-  // при равенстве и отсутствии startedAt остаётся первая по порядку items[]),
-  // у прочих снимается; журналы, отметки и история не трогаются
+  // ЖИВАЯ лестница в приложении одна: побеждает начатая позже (строгое
+  // сравнение — при равенстве и отсутствии startedAt остаётся первая по
+  // порядку items[]), у прочих снимается; журналы, отметки и история не
+  // трогаются. Закрытые (done) в конфликте не участвуют и не снимаются:
+  // они слот не занимают, их может быть сколько угодно (задача 21, 4.2).
   let keeper = null;
   for (const it of s.items) {
-    if (!it.ladder) continue;
+    if (!it.ladder || it.ladder.done) continue;
     if (!keeper || it.ladder.startedAt > keeper.ladder.startedAt) keeper = it;
   }
-  for (const it of s.items) if (it.ladder && it !== keeper) it.ladder = null;
+  for (const it of s.items) if (it.ladder && !it.ladder.done && it !== keeper) it.ladder = null;
 
   // v7 → v8: живой лестнице с пустым журналом дописывается стартовая запись
   // от startedAt. Непустой журнал не трогается: исходная ступень пути в нём
@@ -1235,10 +1244,15 @@ function habitsSteady() {
    ручная прогрессия: шаг вперёд по критерию двух недель, шаг назад
    всегда. Автоматических шагов нет. */
 
-/* Единственный пункт с лестницей — или null, если её нет ни у кого */
+/* Единственный пункт с ЖИВОЙ лестницей — или null. Закрытая (done) слот не
+   занимает: владелец закрыл привычку, значит может завести следующую, не
+   снимая пройденную (задача 21, инвариант 12). */
 function activeLadderItem() {
-  return store.items.find(i => i.ladder) || null;
+  return store.items.find(i => i.ladder && !i.ladder.done) || null;
 }
+
+/* Пункт с закрытой лестницей — для разбора: решение «Ступень» ему не нужно */
+const closedLadderItem = () => store.items.find(i => i.ladder && i.ladder.done) || null;
 
 /* До n понедельников последних ЗАВЕРШЁННЫХ календарных недель, по
    возрастанию; текущая не входит, недели до calendarSince не существуют
@@ -1268,6 +1282,16 @@ function ladderWeeksReady(item) {
   return weeks.every(w => itemWeekCount(item, w) >= ladderNorm(item));
 }
 
+/* «Привычка встала» — вычисляемое условие, не хранимое (задача 21, 1.2):
+   стоим на последней ступени И обе последние завершённые недели набрали
+   норму — тот же критерий, что у шага вперёд. Из него ничего не следует
+   автоматически: он только предлагает владельцу закрыть привычку. */
+function ladderSettled(item) {
+  const L = item && item.ladder;
+  if (!L || L.step < L.steps.length - 1) return false;
+  return ladderWeeksReady(item);
+}
+
 function canStepForward(item) {
   const L = item && item.ladder;
   if (!L || L.step >= L.steps.length - 1) return false;
@@ -1284,7 +1308,13 @@ function canStepBack(item) {
 function ladderStatus(item) {
   const L = item && item.ladder;
   if (!L) return '';
-  if (L.step >= L.steps.length - 1) return 'Последняя ступень';
+  // пятый текст (задача 21): последняя ступень выстояла две недели —
+  // работа здесь закончена. Четыре прежних не менялись.
+  if (L.step >= L.steps.length - 1) {
+    return (!L.done && ladderSettled(item))
+      ? 'Последняя ступень держится две недели — привычка встала.'
+      : 'Последняя ступень';
+  }
   if (L.steppedWeek && L.steppedWeek === currentWeekStart()) return 'Шаг уже сделан на этой неделе';
   if (ladderWeeksReady(item)) return 'Ступень держится две недели — можно шагнуть';
   return 'Две полные недели нормы ещё не набраны';
@@ -1295,16 +1325,19 @@ function ladderStatus(item) {
    журнал фиксирует движение, а не значение планки. Стартовая запись
    (start: true, создание лестницы) неприкосновенна: иначе создание и первый
    шаг в один день схлопнулись бы и путь читался бы с середины. */
-function recordLadderStep(item, start) {
+function recordLadderStep(item, start, closed) {
   if (!Array.isArray(item.ladderLog)) item.ladderLog = [];
   const L = item.ladder;
   const entry = { date: todayKey(), step: L.step, text: L.steps[L.step] || '' };
   if (start) entry.start = true;
+  if (closed) entry.closed = true;
+  // вехи пути — начало и закрытие — неприкосновенны: ни затереть, ни затереть ими
+  const solid = e => !!(e && (e.start || e.closed));
   const last = item.ladderLog[item.ladderLog.length - 1];
   // замена — только между двумя нестартовыми записями одного дня: стартовую
   // нельзя ни затереть, ни затереть ею (повторное создание в день последнего
   // шага съело бы конец прошлого пути)
-  if (last && last.date === entry.date && !last.start && !start) item.ladderLog[item.ladderLog.length - 1] = entry;
+  if (last && last.date === entry.date && !solid(last) && !solid(entry)) item.ladderLog[item.ladderLog.length - 1] = entry;
   else item.ladderLog.push(entry);
 }
 
@@ -1325,6 +1358,36 @@ function ladderStep(itemId, dir) {
   recordLadderStep(item);
   save();
   return true;
+}
+
+/* Закрыть привычку: ставит done. Только действием владельца и только когда
+   условие «встала» выполнено. Пишет в журнал веху с флагом closed;
+   ни days{}, ни history, ни отметки не трогает (задача 21, 3.2). */
+function closeLadder(itemId) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || !item.ladder || item.ladder.done) return false;
+  if (!ladderSettled(item)) return false;
+  item.ladder.done = true;
+  recordLadderStep(item, false, true);
+  save();
+  return true;
+}
+
+/* Открыть заново: закрытие обратимо, как любой шаг прогрессии. Журнал не
+   правится — веха закрытия остаётся историей, она была (инвариант 12). */
+function reopenLadder(itemId) {
+  const item = store.items.find(i => i.id === itemId);
+  if (!item || !item.ladder || !item.ladder.done) return false;
+  item.ladder.done = false;
+  save();
+  return true;
+}
+
+/* День закрытия — из последней вехи журнала: в самой лестнице даты нет */
+function ladderClosedAt(item) {
+  const log = (item && Array.isArray(item.ladderLog)) ? item.ladderLog : [];
+  for (let i = log.length - 1; i >= 0; i--) if (log[i].closed) return log[i].date;
+  return null;
 }
 
 /* Пункт, занявший единственный слот лестницы, — или null, если слот свободен
@@ -1351,7 +1414,9 @@ function setLadder(itemId, text) {
     item.ladder.steps = steps;
     if (item.ladder.step > steps.length - 1) item.ladder.step = steps.length - 1;
   } else {
-    item.ladder = { steps, step: 0, steppedWeek: null, startedAt: todayKey() };
+    // порядок ключей и состав — как у normLadder: живой store не должен
+    // отличаться от прошедшего migrate ни полем, ни байтом (задача 21)
+    item.ladder = { steps, step: 0, steppedWeek: null, startedAt: todayKey(), done: false };
     recordLadderStep(item, true); // старт пути: путь читается с первой ступени
   }
   save();
@@ -1993,6 +2058,7 @@ const ui = {
   detailForm: null,     // форма в листе: 'formula' | 'ladder' | null
   detailScroll: 0,      // позиция скролла вкладки, с которой открыт лист
   ladderConfirm: false, // «Снять лестницу» ждёт подтверждения вторым тапом
+  ladderDoneConfirm: false, // «Закрыть привычку» — тоже вторым тапом (задача 21)
   formulaMode: null,    // режим в открытой форме формулы (null — как у самой формулы)
   detailDraft: null,    // черновик формы листа — отдельный слот от «Пунктов» (14.2, вопрос 2)
   groupRename: null,    // имя блока с раскрытой правкой
@@ -2243,7 +2309,12 @@ function dailyRow(it, t, habit, chain) {
   const vu = valUnit(it);
   const streak = habit ? habitStreak(it) : 0; // при нуле справка скрыта
   const L = it.ladder;
-  const sub = L ? L.steps[L.step] : it.note;  // ступень вместо подписи
+  // Подпись: ступень вместо note. Встала и не закрыта — вместо ступени тихая
+  // строка о том, что здесь работа закончена (задача 21, 2.1). Тот же .note,
+  // тот же --muted и кегль: ни акцента, ни иконки, ни празднования (2.2).
+  // Закрытая привычка снова показывает ступень и ничем не выделяется (2.3).
+  const settled = L && !L.done && ladderSettled(it);
+  const sub = L ? (settled ? 'Привычка встала. Можно брать новую.' : L.steps[L.step]) : it.note;
   // половинки линии блока: верхняя идёт к предыдущему пункту, нижняя — к
   // следующему; у крайних строк лишнюю гасит CSS. Идут первыми в разметке —
   // круг отметки закрывает линию собой.
@@ -2806,7 +2877,17 @@ function renderDetail(it) {
         <button class="btn primary" data-act="ladder-fwd" data-id="${esc(it.id)}"${canStepForward(it) ? '' : ' disabled'}>Шагнуть</button>
         <button class="btn quiet" data-act="ladder-back" data-id="${esc(it.id)}"${canStepBack(it) ? '' : ' disabled'}>Назад</button>
       </div>
-      <p class="muted">${esc(ladderStatus(it))}</p>${ladderHistory(it)}`;
+      <p class="muted">${esc(ladderStatus(it))}</p>`;
+    // «Встала» — предложение закрыть; закрытая — строка с датой и возврат.
+    // Обе кнопки quiet: это операционное действие, а не награда (задача 21).
+    if (L.done) {
+      const at = ladderClosedAt(it);
+      h += `<p class="muted">Привычка закрыта${at ? ' ' + esc(fmtDay(at)) : ''}</p>`
+        + `<div class="btns"><button class="btn quiet" data-act="ladder-reopen" data-id="${esc(it.id)}">Открыть заново</button></div>`;
+    } else if (ladderSettled(it)) {
+      h += `<div class="btns"><button class="btn quiet" data-act="ladder-done" data-id="${esc(it.id)}">${ui.ladderDoneConfirm ? 'Подтвердить: закрыть привычку' : 'Закрыть привычку'}</button></div>`;
+    }
+    h += ladderHistory(it);
   }
 
   // форма формулы правит те же поля — читаемый список на это время уступает ей место
@@ -2991,10 +3072,23 @@ function renderReview() {
 
   // ── Решение 2: ступень. Кнопки — только когда шаг доступен; иначе
   // та же строка состояния, что в листе детали.
-  h += `<h2>Решение 2 · Ступень</h2>`;
   const L = activeLadderItem();
+  // Закрытая привычка решения не требует: решение «Ступень» не показывается
+  // вовсе (задача 21, 5.2). Живой лестницы при этом нет — иначе она и решает.
+  if (L || !closedLadderItem()) {
+  h += `<h2>Решение 2 · Ступень</h2>`;
   if (!L) {
     h += `<p class="muted">Лестницы сейчас нет</p>`;
+  } else if (ladderSettled(L)) {
+    // встала — вместо «Шагнуть/Остаться» одно действие: закрыть (5.1)
+    h += `
+      <div class="card step" data-step="${esc(L.id)}">
+        <p>${esc(L.name)}: привычка встала</p>
+        <p class="muted">Последняя ступень держится две недели.</p>
+        <div class="btns">
+          <button class="btn quiet" data-act="ladder-done" data-id="${esc(L.id)}">${ui.ladderDoneConfirm ? 'Подтвердить: закрыть привычку' : 'Закрыть привычку'}</button>
+        </div>
+      </div>`;
   } else if (canStepForward(L) && !ui.ladderStay) {
     const ld = L.ladder;
     h += `
@@ -3008,6 +3102,7 @@ function renderReview() {
       </div>`;
   } else {
     h += `<p class="muted">${esc(L.name)} · ${esc(ladderStatus(L))}</p>`;
+  }
   }
 
   // ── Решение 3: одно изменение на следующую неделю
@@ -3664,6 +3759,7 @@ function closeDetail() {
   ui.ladderConfirm = false;
   ui.detailDraft = null;
   ui.formulaMode = null;
+  ui.ladderDoneConfirm = false;
 }
 
 /* Лист разбора закрывается и таб-баром — как лист детали */
@@ -3907,6 +4003,20 @@ function onClick(e) {
     case 'ladder-fwd':
     case 'ladder-back':
       if (ladderStep(id, act === 'ladder-back' ? 'back' : 'fwd')) renderAll();
+      break;
+
+    // закрытие привычки — вторым тапом, как снятие лестницы и чистка
+    case 'ladder-done': {
+      if (!ui.ladderDoneConfirm) { ui.ladderDoneConfirm = true; renderAll(); break; }
+      closeLadder(id);
+      ui.ladderDoneConfirm = false;
+      renderAll();
+      break;
+    }
+
+    // возврат: закрытие обратимо, подтверждения не требует
+    case 'ladder-reopen':
+      if (reopenLadder(id)) renderAll();
       break;
 
     case 'formula-open': ui.detailForm = 'formula'; ui.detailDraft = null; ui.formulaMode = null; renderAll(); break;
@@ -4563,6 +4673,7 @@ if (typeof module !== 'undefined' && module.exports) {
     // формула и лестница (инвариант 12)
     activeLadderItem, closedWeeks, itemWeekCount, ladderNorm, ladderWeeksReady,
     canStepForward, canStepBack, ladderStatus, ladderStep, ladderBlockedBy,
+    ladderSettled, closeLadder, reopenLadder, ladderClosedAt, closedLadderItem,
     setLadder, clearLadder, setFormula, normFormula, normLadder,
     // блоки (инвариант 13)
     findGroup, addGroup, moveGroup, renameGroup,

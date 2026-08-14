@@ -4159,3 +4159,143 @@ test('З20/C.5: разметка форм совпадает со снимком
     }
   }
 });
+
+/* ── Задача 21. Привычка встала: экраны ────────────────────── */
+
+/* Сид с лестницей на последней ступени; обе завершённые недели по норме */
+function settledSeed(done) {
+  const seed = dueSeed();
+  const prev = prevMonday();
+  seed.settings.calendarSince = addKey(prev, -70);
+  seed.items[0].ladder = {
+    steps: ['раз', 'два', 'последняя ступень'], step: 2,
+    steppedWeek: null, startedAt: addKey(prev, -30), done: !!done
+  };
+  seed.items[0].ladderLog = [{ date: addKey(prev, -30), step: 0, text: 'раз', start: true }];
+  if (done) seed.items[0].ladderLog.push({ date: addKey(prev, -1), step: 2, text: 'последняя ступень', closed: true });
+  seed.days = {};
+  fillWeek(seed.days, 'it1', addKey(prev, -7), 7);
+  fillWeek(seed.days, 'it1', prev, 7);
+  return seed;
+}
+
+test('З21/7.7: дневной экран — подпись меняется при settled и возвращается при done', async () => {
+  const a = await boot({ seed: settledSeed(false) });
+  const rowA = a.document.querySelector('#scr-today .rowwrap');
+  assert.equal(rowA.querySelector('.note').textContent, 'Привычка встала. Можно брать новую.');
+  assert.equal(rowA.querySelector('.lstep').textContent, '3/3', 'метка положения на месте');
+  // тихо: ни акцента, ни лишних узлов
+  assert.equal(rowA.querySelectorAll('.note').length, 1);
+  assert.equal(a.document.querySelector('#scr-today .note').className, 'note');
+
+  const b = await boot({ seed: settledSeed(true) });
+  const rowB = b.document.querySelector('#scr-today .rowwrap');
+  assert.equal(rowB.querySelector('.note').textContent, 'последняя ступень',
+    'закрытая привычка снова показывает ступень');
+  assert.equal(rowB.querySelector('.lstep').textContent, '3/3', 'метка положения остаётся');
+
+  // структура строки одна и та же — новых узлов не появилось
+  const shape = row => [...row.querySelectorAll('*')].map(n => n.tagName + '.' + n.className).join('|');
+  assert.equal(shape(rowA), shape(rowB), 'разметка строки не изменилась');
+
+  // и без выдержанных недель подпись обычная
+  const plain = settledSeed(false);
+  plain.days = {};
+  const c = await boot({ seed: plain });
+  assert.equal(c.document.querySelector('#scr-today .note').textContent, 'последняя ступень');
+});
+
+test('З21/7.7: лист детали — закрытие вторым тапом, строка с датой и возврат', async () => {
+  const { document, window } = await boot({ seed: settledSeed(false) });
+  document.querySelector('#scr-today [data-act="item-detail"]').click();
+  const scr = () => document.getElementById('scr-detail');
+  assert.match(scr().textContent, /Последняя ступень держится две недели — привычка встала\./);
+
+  const btn = () => document.querySelector('[data-act="ladder-done"]');
+  assert.ok(btn(), 'кнопка «Закрыть привычку» есть');
+  assert.equal(btn().textContent, 'Закрыть привычку');
+  assert.ok(btn().classList.contains('quiet'), 'тихая кнопка, не primary');
+
+  // первый тап — подтверждение, данные не тронуты
+  btn().click();
+  assert.equal(btn().textContent, 'Подтвердить: закрыть привычку');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].ladder.done, false);
+
+  // второй — закрытие
+  btn().click();
+  const saved = JSON.parse(window.localStorage.getItem(NS)).items[0];
+  assert.equal(saved.ladder.done, true);
+  assert.ok(saved.ladderLog.some(e => e.closed === true), 'веха в журнале');
+  assert.match(scr().textContent, /Привычка закрыта/);
+  assert.equal(document.querySelector('[data-act="ladder-done"]'), null, 'предложения больше нет');
+
+  // возврат
+  const back = document.querySelector('[data-act="ladder-reopen"]');
+  assert.ok(back, 'кнопка «Открыть заново»');
+  assert.equal(back.textContent, 'Открыть заново');
+  back.click();
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].ladder.done, false);
+  assert.ok(document.querySelector('[data-act="ladder-done"]'), 'предложение вернулось');
+  assert.doesNotMatch(scr().textContent, /Привычка закрыта/);
+});
+
+test('З21/7.8: разбор — решение «Ступень» превращается в закрытие и исчезает при done', async () => {
+  const a = await boot({ seed: settledSeed(false) });
+  openReview(a.document);
+  const scrA = a.document.getElementById('scr-review');
+  const h2A = [...scrA.querySelectorAll('h2')].map(x => x.textContent);
+  assert.ok(h2A.includes('Решение 2 · Ступень'), 'решение на месте');
+  assert.match(scrA.textContent, /привычка встала/);
+  assert.ok(scrA.querySelector('[data-act="ladder-done"]'), 'кнопка закрытия');
+  assert.equal(scrA.querySelector('[data-act="ladder-fwd"]'), null, '«Шагнуть» нет');
+  assert.equal(scrA.querySelector('[data-act="ladder-stay"]'), null, '«Остаться» нет');
+
+  // закрываем прямо из разбора — тот же data-act, те же два тапа
+  scrA.querySelector('[data-act="ladder-done"]').click();
+  a.document.querySelector('[data-act="ladder-done"]').click();
+  assert.equal(JSON.parse(a.window.localStorage.getItem(NS)).items[0].ladder.done, true);
+  const h2After = [...a.document.getElementById('scr-review').querySelectorAll('h2')].map(x => x.textContent);
+  assert.equal(h2After.includes('Решение 2 · Ступень'), false, 'решение исчезло');
+
+  // и при загрузке с уже закрытой — тоже нет
+  const b = await boot({ seed: settledSeed(true) });
+  openReview(b.document);
+  const h2B = [...b.document.getElementById('scr-review').querySelectorAll('h2')].map(x => x.textContent);
+  assert.equal(h2B.includes('Решение 2 · Ступень'), false);
+  // прочие решения на месте
+  assert.ok(h2B.includes('Решение 1 · Планка') && h2B.includes('Решение 3 · Одно изменение'));
+
+  // а без лестницы вовсе — прежняя строка
+  const noLadder = settledSeed(false);
+  noLadder.items[0].ladder = null;
+  const c = await boot({ seed: noLadder });
+  openReview(c.document);
+  assert.match(c.document.getElementById('scr-review').textContent, /Лестницы сейчас нет/);
+});
+
+test('З21/4.3: форма лестницы — слот, освобождённый закрытием, даёт обычную форму', async () => {
+  const seed = settledSeed(true);
+  seed.items.push({
+    id: 'it2', name: 'Другой пункт', value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', active: true, addedAt: daysAgo(30), raiseAfter: 0,
+    history: [], formula: null, ladder: null, ladderLog: []
+  });
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'it2').click();
+  // именно из формы правки: такая же кнопка есть в скрытой строке «Сегодня»
+  // у пункта с лестницей, и querySelector нашёл бы сначала её
+  document.querySelector('#scr-settings [data-act="item-detail"]').click();
+  document.querySelector('[data-act="ladder-open"]').click();
+
+  const form = document.querySelector('[data-form="ladder"]');
+  assert.ok(form, 'форма лестницы открыта');
+  assert.doesNotMatch(form.textContent, /Лестница уже есть у пункта/, 'слот свободен');
+  assert.equal(document.getElementById('fx-steps').disabled, false, 'поле доступно');
+
+  document.getElementById('fx-steps').value = 'первая\nвторая';
+  document.querySelector('[data-act="ladder-save"]').click();
+  const items = JSON.parse(window.localStorage.getItem(NS)).items;
+  assert.ok(items.find(i => i.id === 'it2').ladder, 'новая лестница заведена');
+  assert.ok(items.find(i => i.id === 'it1').ladder.done, 'закрытая не снята');
+});
