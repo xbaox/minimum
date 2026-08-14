@@ -19,6 +19,11 @@
   --on-accent: #f4faf7;
   --dot: #8a8a86;                        /* нейтральный маркер пропуска, ≥3:1 */
   --chain: #b06046;                      /* приглушённый тёплый: линия цепочки, ≥3:1 к --bg (задача 15, ярче в 16A) */
+  /* тени (задача 16.1): подъём — захваченная строка, головка — тумблер.
+     В обеих темах значения пока совпадают: чёрный с малой альфой читается
+     и на светлом, и на тёмном. Тема может переопределить их, не трогая правил. */
+  --shadow-lift: 0 6px 18px rgba(0, 0, 0, .16);
+  --shadow-knob: 0 1px 2px rgba(0, 0, 0, .25);
   --tabbar: rgba(245, 244, 241, .82);
   /* радиусы */
   --radius: 14px;                        /* карточки */
@@ -48,6 +53,8 @@
     --on-accent: #0d1f18;
     --dot: #63666c;
     --chain: #e6a68f;                    /* тёплый для тёмной темы, ≥3:1 к --bg */
+    --shadow-lift: 0 6px 18px rgba(0, 0, 0, .16);
+    --shadow-knob: 0 1px 2px rgba(0, 0, 0, .25);
     --tabbar: rgba(14, 15, 18, .82);
   }
 }
@@ -421,8 +428,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   border-radius: 8px;
 }
 /* стрелки перемещения и тумблер — единый визуальный вес и ритм (задача 13) */
-.ictl { display: flex; align-items: center; gap: 4px; }
-.ictl .btn.icon { width: 40px; font-size: 17px; color: var(--muted); }
+/* Стрелки — полные 44×44 (задача 16.1, п. 4.1): ширина 40 → 44 при
+   зазоре 4 → 0 даёт ту же суммарную ширину блока управления, поэтому
+   текстовая колонка строки не теряет ни пикселя. Тумблер отделён своим
+   margin-left, слипания с ним нет. */
+.ictl { display: flex; align-items: center; gap: 0; }
+.ictl .btn.icon { width: 44px; font-size: 17px; color: var(--muted); }
 /* граничная стрелка (первый/последний пункт) гасится заметно и однозначно
    неактивна — не мутный полупрозрачный muted, а чёткий «выключенный» тон */
 .ictl .btn.icon:disabled { color: var(--line-strong); opacity: 1; }
@@ -447,7 +458,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   height: 22px;
   border-radius: 50%;
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+  box-shadow: var(--shadow-knob);
   transition: transform .22s ease-out;
 }
 .switch input:checked + span { background: var(--accent); }
@@ -603,6 +614,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .exctl { flex: none; display: flex; align-items: center; gap: 6px; }
 .exline .num { width: 72px; text-align: center; }
 
+/* ── Чистка и её отмена (задача 16.1) ──────────────────────────
+   Строка возврата — сверху «Данных», сама чистка — внизу и за линией:
+   решение редкое и его не нажимают мимоходом. Тона тревоги нет:
+   красных состояний в приложении не бывает. */
+
+.restore { margin: 0 0 18px; }
+.danger {
+  margin-top: var(--gap-section);
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.danger .lead { margin-bottom: 4px; }
+
 /* ── Перетаскивание (задача 16F) ───────────────────────────────
    Соседи раздвигаются переходом (180 мс, ease-out), захваченная
    строка приподнимается и не анимируется — она под пальцем.
@@ -615,7 +639,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   z-index: 3;
   background: var(--surface);
   border-radius: var(--radius);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .16);
+  box-shadow: var(--shadow-lift);
 }
 body.dragging { -webkit-user-select: none; user-select: none; }
 

@@ -1504,6 +1504,95 @@ function closeWeek() {
   return true;
 }
 
+/* ── Чистка и её отмена (задача 16.1) ──────────────────────────
+   Стирание данных — не исключение из правила «необратимых операций
+   нет», а его применение: прежний store целиком ложится в отдельный
+   ключ и живёт там, пока владелец не уберёт копию вторым решением.
+   Копия — не часть store: ни в экспорт, ни в импорт она не входит. */
+
+const WIPE_KEY = NS + ':wiped';
+
+/* Числа для строки предупреждения и для строки возврата */
+function wipeStats(s) {
+  return {
+    items: s.items.length,
+    groups: s.groups.length,
+    days: Object.keys(s.days).length,
+    reviews: s.reviews.length,
+    ladders: s.items.filter(i => i.ladder).length,
+    exercises: s.exercises.length,
+    sessions: s.sessions.length,
+    notes: s.notes.length
+  };
+}
+
+function wipedCopy() {
+  try {
+    const raw = localStorage.getItem(WIPE_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    return (c && typeof c === 'object' && c.store && typeof c.store === 'object') ? c : null;
+  } catch (e) { return null; } // нечитаемая копия — как её отсутствие
+}
+
+function dropWiped() {
+  try { localStorage.removeItem(WIPE_KEY); } catch (e) { /* нечего убирать */ }
+}
+
+/* Пустое хранилище: ни одного стартового пункта. Граница дня —
+   настройка устройства, а не данные: она переживает чистку. */
+function emptyStore(boundary) {
+  const b = (typeof boundary === 'number' && isFinite(boundary)) ? boundary : 4;
+  const today = dateKeyShift(new Date(), b);
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    items: [], groups: [], days: {}, weekLog: [], reviews: [],
+    pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    paramDecided: {},
+    draftOneChange: '',
+    weekStart: today,
+    settings: {
+      dayBoundary: b,
+      exportedAt: null,
+      calendarSince: nextCalendarMonday(today),
+      habitSeeded: true // посев привычек уже состоялся: чистый лист остаётся чистым
+    }
+  };
+}
+
+/* Копия пишется ПЕРЕД заменой store: если её некуда положить, чистка
+   не выполняется вовсе — необратимо стирать нельзя. Зеркало сбрасывается
+   немедленно: с дебаунсом следующий запуск при пустом localStorage
+   восстановил бы стёртое из старого снапшота. */
+function wipeAll() {
+  const prev = store;
+  try {
+    localStorage.setItem(WIPE_KEY, JSON.stringify({
+      store: prev, wipedAt: Date.now(), stats: wipeStats(prev)
+    }));
+  } catch (e) {
+    return false;
+  }
+  store = emptyStore(prev.settings && prev.settings.dayBoundary);
+  save();
+  flushMirror();
+  return true;
+}
+
+/* Возврат: копия проходит migrate (как и импорт, инвариант 6 — она
+   могла быть снята прежней версией), ключ убирается. */
+function restoreWiped() {
+  const c = wipedCopy();
+  if (!c) return false;
+  let restored;
+  try { restored = migrate(c.store); } catch (e) { return false; }
+  store = restored;
+  save();
+  flushMirror();
+  dropWiped();
+  return true;
+}
+
 /* ── Экспорт / импорт ──────────────────────────────────────── */
 
 function exportJSON() {
@@ -1612,6 +1701,9 @@ const ui = {
   noteEditingId: null,  // заметка с раскрытой правкой
   noteDelete: null,     // заметка ждёт подтверждения удаления вторым тапом
   noteDraft: null,      // черновик формы заметки — свой слот, как у листа детали
+  wipeOpen: false,      // раскрыто предупреждение «Начать с чистого листа» (16.1)
+  wipeConfirm: false,   // «Стереть» ждёт подтверждения вторым тапом
+  wipeDropConfirm: false, // «Убрать копию» — тоже вторым тапом
   // свёрнутые секции «Настроек»: по умолчанию раскрыты только «Пункты»
   settingsOpen: { groups: false, items: true, exercises: false, data: false, system: false }
 };
@@ -1753,13 +1845,18 @@ function renderToday() {
     h += `<button class="banner" data-act="goto-review"><span>Доступен разбор недели</span><span class="chev" aria-hidden="true">&rsaquo;</span></button>`;
   }
 
-  h += `
+  // пустой список — как на «Привычках»: планка дня без пунктов ничего не
+  // измеряет, поэтому её нет вовсе (задача 16.1, состояние после чистки)
+  if (total) {
+    h += `
     <div class="dayline">
       <div class="bar"><i style="width:${pct}%"></i></div>
-      <p class="bar-note${closed ? ' ok' : ''}" aria-live="polite">${closed ? 'День закрыт' : (total ? `<b>${done}</b>&nbsp;из&nbsp;${total}` : 'Нет активных пунктов')}</p>
+      <p class="bar-note${closed ? ' ok' : ''}" aria-live="polite">${closed ? 'День закрыт' : `<b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
     </div>`;
-
-  h += `<div class="list">` + groupSections(items, t, false) + `</div>`;
+    h += `<div class="list">` + groupSections(items, t, false) + `</div>`;
+  } else {
+    h += `<p class="muted">Пунктов пока нет — добавить можно в «Пунктах».</p>`;
+  }
 
   for (const w of activeWeekly().filter(i => i.area === 'min')) {
     const n = trainCount(w.id);
@@ -2367,7 +2464,9 @@ function renderReview() {
     if (ui.justClosed) h += `<p class="lead" role="status">Неделя закрыта.</p>`;
     const cur = currentWeekStart();
     if (!cur) {
-      // переходные дни скользящей эпохи: первый разбор — после первой целой календарной недели
+      // Эпоха ещё не наступила: переходные дни скользящей эпохи — и чистый
+      // лист (задача 16.1: чистка ставит calendarSince в ближайший
+      // понедельник, то есть в будущее во все дни, кроме понедельника).
       // fmtDay (полный месяц) — дата умещается целиком, без «сент..» (отделка, задача 13)
       h += `<p class="muted">Разбор откроется в понедельник, ${esc(fmtDay(addDays(store.settings.calendarSince, 7)))}.</p>`;
     } else {
@@ -2753,7 +2852,58 @@ function sect(key, title, body) {
     </details>`;
 }
 
-/* Экран 5 — «Настройки»: четыре секции по порядку (задача 16B) */
+/* Строка возврата — первой в «Данных», пока копия существует */
+function restoreLine() {
+  const c = wipedCopy();
+  if (!c) return '';
+  const st = c.stats || {};
+  const when = (typeof c.wipedAt === 'number' && isFinite(c.wipedAt))
+    ? fmtDay(dateKeyShift(new Date(c.wipedAt), store.settings.dayBoundary))
+    : '';
+  const n = Number(st.items) || 0;
+  const d = Number(st.days) || 0;
+  return `
+    <div class="restore">
+      <p class="muted">Стёрто${when ? ' ' + esc(when) : ''} · ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ${d} ${plural(d, 'день', 'дня', 'дней')} отметок</p>
+      <div class="btns">
+        <button class="btn" data-act="wipe-undo">Вернуть</button>
+        <button class="btn quiet" data-act="wipe-drop">${ui.wipeDropConfirm ? 'Подтвердить: убрать копию' : 'Убрать копию'}</button>
+      </div>
+    </div>`;
+}
+
+/* «Начать с чистого листа» — внизу «Данных», отделено линией.
+   Предупреждение перечисляет стираемое числами: решение принимается
+   с открытыми глазами, а не по памяти. */
+function wipeBlock() {
+  if (!ui.wipeOpen) {
+    return `<div class="danger"><button class="btn quiet" data-act="wipe-open">Начать с чистого листа</button></div>`;
+  }
+  const s = wipeStats(store);
+  const line = [
+    `${s.items} ${plural(s.items, 'пункт', 'пункта', 'пунктов')}`,
+    `${s.groups} ${plural(s.groups, 'блок', 'блока', 'блоков')}`,
+    `${s.days} ${plural(s.days, 'день', 'дня', 'дней')} отметок`,
+    `${s.reviews} ${plural(s.reviews, 'разбор', 'разбора', 'разборов')}`,
+    `${s.ladders} ${plural(s.ladders, 'лестница', 'лестницы', 'лестниц')}`,
+    `${s.exercises} ${plural(s.exercises, 'упражнение', 'упражнения', 'упражнений')}`,
+    `${s.sessions} ${plural(s.sessions, 'тренировка', 'тренировки', 'тренировок')}`,
+    `${s.notes} ${plural(s.notes, 'заметка', 'заметки', 'заметок')}`
+  ].join(', ');
+  return `
+    <div class="danger">
+      <p class="lead">Начать с чистого листа</p>
+      <p class="muted">Будут стёрты: ${line}.</p>
+      <p class="muted">Копия останется в приложении — вернуть можно, пока она не убрана.${wipedCopy() ? ' Прежняя копия будет заменена новой: хранится одна, последняя.' : ''}</p>
+      <div class="btns">
+        <button class="btn" data-act="export">Сначала скачать копию</button>
+        <button class="btn quiet" data-act="wipe-do">${ui.wipeConfirm ? 'Подтвердить: стереть' : 'Стереть'}</button>
+        <button class="btn quiet" data-act="wipe-cancel">Отмена</button>
+      </div>
+    </div>`;
+}
+
+/* Экран 5 — «Настройки»: секции по порядку (задачи 16B, 16D) */
 function renderSettings() {
   snapshotOpenForm();
   let h = `<header class="page"><p class="overline">Устройство приложения</p><h1>Настройки</h1></header>`;
@@ -2823,7 +2973,7 @@ function renderSettings() {
     // логический день — как в имени файла экспорта (инвариант 1)
     ? `Последний экспорт: ${esc(fmtShort(dateKeyShift(new Date(store.settings.exportedAt), store.settings.dayBoundary)))}`
     : 'Экспорта ещё не было';
-  h += sect('data', 'Данные', `
+  h += sect('data', 'Данные', restoreLine() + `
     <div class="btns">
       <button class="btn" data-act="export">Экспорт JSON</button>
       <button class="btn" data-act="import">Импорт JSON</button>
@@ -2832,7 +2982,7 @@ function renderSettings() {
     <p class="muted">${exp}</p>
     <p class="muted" id="mirror-note" hidden></p>
     <input type="file" id="import-file" accept="application/json,.json" hidden>
-    <p class="muted">Все данные — на этом устройстве: рабочая копия и автоматическая резервная. Экспорт — способ сохранить их вне приложения.</p>`);
+    <p class="muted">Все данные — на этом устройстве: рабочая копия и автоматическая резервная. Экспорт — способ сохранить их вне приложения.</p>` + wipeBlock());
 
   h += sect('system', 'Система', systemSection());
 
@@ -3661,6 +3811,52 @@ function onClick(e) {
       exportJSON();
       renderSettings(); // обновить строку «Последний экспорт» (и погасить строку импорта)
       break;
+
+    // ── чистка и её отмена (задача 16.1) ──────────────────────
+    case 'wipe-open': ui.wipeOpen = true; ui.wipeConfirm = false; renderSettings(); break;
+    case 'wipe-cancel': ui.wipeOpen = false; ui.wipeConfirm = false; renderSettings(); break;
+
+    case 'wipe-do': {
+      if (!ui.wipeConfirm) { ui.wipeConfirm = true; renderSettings(); break; } // второй тап
+      if (!wipeAll()) { ui.wipeConfirm = false; renderSettings(); break; }     // копию некуда положить
+      // экран после чистки — «Сегодня» с пустым списком; ui-состояние,
+      // указывавшее на исчезнувшие записи, снимается целиком
+      ui.wipeOpen = false;
+      ui.wipeConfirm = false;
+      ui.wipeDropConfirm = false;
+      ui.editingId = null;
+      ui.addOpen = false;
+      ui.exEditingId = null;
+      ui.exAddOpen = false;
+      ui.noteAdd = false;
+      ui.noteEditingId = null;
+      ui.formDraft = null;
+      ui.detailDraft = null;
+      ui.noteDraft = null;
+      ui.missOpen = {};
+      ui.raiseEdit = {};
+      closeDetail();
+      closeReview();
+      closeTrain();
+      ui.tab = 'today';
+      renderAll();
+      break;
+    }
+
+    case 'wipe-undo':
+      if (restoreWiped()) {
+        ui.wipeDropConfirm = false;
+        ui.tab = 'settings';
+        renderAll(); // вернулось всё сразу, включая дневные экраны
+      }
+      break;
+
+    case 'wipe-drop':
+      if (!ui.wipeDropConfirm) { ui.wipeDropConfirm = true; renderSettings(); break; }
+      dropWiped();
+      ui.wipeDropConfirm = false;
+      renderSettings();
+      break;
     case 'import':
       if (hadImportNote) renderSettings(); // до открытия диалога: file-input должен остаться в живом DOM
       el('import-file').click();
@@ -3787,6 +3983,8 @@ if (typeof module !== 'undefined' && module.exports) {
     activeExercises, findExercise, addExercise, updateExercise, moveExercise, recordSession,
     // заметки (задача 16E)
     addNote, updateNote, deleteNote, notesByDate,
+    // чистка и её отмена (задача 16.1)
+    WIPE_KEY, emptyStore, wipeStats, wipedCopy, wipeAll, restoreWiped, dropWiped,
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, canMoveItem, reorderItem, reorderGroup, reorderExercise,

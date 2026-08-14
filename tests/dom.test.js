@@ -2863,7 +2863,8 @@ test('пустое хранилище: все экраны и листы рен�
   const today = document.getElementById('scr-today');
   assert.equal(today.querySelectorAll('input[data-act="mark"]').length, 0);
   assert.equal(today.querySelector('.weekcount'), null);
-  assert.match(today.textContent, /Нет активных пунктов/);
+  assert.equal(today.querySelector('.dayline'), null, 'планке дня нечего измерять');
+  assert.match(today.textContent, /Пунктов пока нет/);
 
   // «Прогресс» на пустых данных: ноль дней, ноль серии, сетка на месте
   document.querySelector('#tabs button[data-tab="progress"]').click();
@@ -2883,4 +2884,197 @@ test('пустое хранилище: все экраны и листы рен�
   assert.match(sett.textContent, /Блоков пока нет/);
   assert.match(sett.textContent, /Упражнений пока нет/);
   assert.equal(sett.querySelectorAll('[data-drag]').length, 0);
+});
+
+/* ── Задача 16.1. Обратимая чистка в интерфейсе ────────────── */
+
+/* Открыть «Настройки» и раскрыть блок «Данные» */
+function openData(document) {
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const sect = [...document.querySelectorAll('#scr-settings details.sect')]
+    .find(d => /Данные/.test(d.querySelector('summary').textContent));
+  assert.ok(sect, 'секция «Данные»');
+  sect.querySelector('summary').click();
+  return sect;
+}
+
+/* Полный путь чистки: предупреждение → «Стереть» → подтверждение */
+function wipeThroughUi(document) {
+  openData(document);
+  document.querySelector('[data-act="wipe-open"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();  // первый тап — предупреждение
+  document.querySelector('[data-act="wipe-do"]').click();  // второй — стирание
+}
+
+test('чистка: предупреждение с числами, второй тап стирает, «Сегодня» остаётся пустым', async () => {
+  const seed = trainSeed();
+  seed.notes = [{ id: 'n1', date: daysAgo(0), text: 'мысль', updatedAt: 1 }];
+  seed.days = { [daysAgo(0)]: { it1: true } };
+  const { document, window } = await boot({ seed });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+
+  openData(document);
+  const danger = () => document.querySelector('#scr-settings .danger');
+  assert.match(danger().textContent, /Начать с чистого листа/);
+  assert.equal(danger().querySelector('[data-act="wipe-do"]'), null, 'по тапу, не сразу');
+
+  document.querySelector('[data-act="wipe-open"]').click();
+  const warn = danger().textContent;
+  assert.match(warn, /Будут стёрты: 2 пункта, 0 блоков, 1 день отметок, 0 разборов, 0 лестниц, 2 упражнения, 0 тренировок, 1 заметка\./);
+  assert.match(warn, /Копию можно вернуть|Копия останется/);
+  assert.ok(danger().querySelector('[data-act="export"]'), 'кнопка «Сначала скачать копию»');
+  assert.ok(danger().querySelector('[data-act="wipe-cancel"]'));
+
+  // «Отмена» ничего не трогает
+  document.querySelector('[data-act="wipe-cancel"]').click();
+  assert.equal(saved().items.length, 2);
+  assert.equal(document.querySelector('[data-act="wipe-do"]'), null);
+
+  // первый тап «Стереть» просит подтверждения и данных не трогает
+  document.querySelector('[data-act="wipe-open"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  assert.match(document.querySelector('[data-act="wipe-do"]').textContent, /Подтвердить/);
+  assert.equal(saved().items.length, 2, 'первый тап не стирает');
+
+  document.querySelector('[data-act="wipe-do"]').click();
+
+  const s = saved();
+  assert.deepEqual(s.items, []);
+  assert.deepEqual(s.days, {});
+  assert.deepEqual(s.notes, []);
+  assert.deepEqual(s.exercises, []);
+  assert.equal(s.settings.dayBoundary, 4);
+
+  // после чистки — «Сегодня» с пустым списком и своей строкой
+  assert.equal(document.getElementById('scr-today').hidden, false);
+  assert.match(document.getElementById('scr-today').textContent, /Пунктов пока нет/);
+  assert.equal(document.querySelectorAll('#scr-today input[data-act="mark"]').length, 0);
+  assert.equal(document.querySelector('#scr-today .weekcount'), null);
+});
+
+test('чистка: «Вернуть» восстанавливает всё, «Убрать копию» — вторым тапом', async () => {
+  const seed = trainSeed();
+  seed.days = { [daysAgo(0)]: { it1: true } };
+  const { document, window } = await boot({ seed });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const before = saved();
+
+  wipeThroughUi(document);
+  assert.deepEqual(saved().items, []);
+
+  // строка возврата — первой в «Данных», с датой и числами
+  const sect = openData(document);
+  const line = sect.querySelector('.restore');
+  assert.ok(line, 'строка возврата');
+  assert.equal(sect.querySelector('.sect-b').firstElementChild, line, 'первой строкой блока');
+  assert.match(line.textContent, /Стёрто .* · 2 пункта, 1 день отметок/);
+
+  document.querySelector('[data-act="wipe-undo"]').click();
+  assert.deepEqual(saved(), before, 'состояние вернулось побайтово');
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), null, 'копия убрана возвратом');
+  assert.equal(document.querySelector('.restore'), null);
+
+  // ещё раз — и на сей раз копию убираем руками, вторым тапом
+  wipeThroughUi(document);
+  openData(document);
+  assert.ok(document.querySelector('.restore'));
+  document.querySelector('[data-act="wipe-drop"]').click();
+  assert.match(document.querySelector('[data-act="wipe-drop"]').textContent, /Подтвердить/);
+  assert.ok(window.localStorage.getItem(NS + ':wiped'), 'первый тап не убирает');
+  document.querySelector('[data-act="wipe-drop"]').click();
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), null);
+  assert.equal(document.querySelector('.restore'), null);
+  assert.deepEqual(saved().items, [], 'стёртое так и осталось стёртым');
+});
+
+test('чистка: зеркало несёт пустой store, повторный старт стёртое не возвращает', async () => {
+  const idb = new IDBFactory();
+  const seed = trainSeed();
+  seed.days = { [daysAgo(0)]: { it1: true } };
+  const { document, window } = await boot({ seed, idb });
+
+  wipeThroughUi(document);
+  await window.flushMirror(); // чистка форсирует сброс сама; ждём завершения записи
+
+  const snap = await idbGet(idb);
+  assert.ok(snap, 'снапшот на месте');
+  const mirrored = JSON.parse(snap.json);
+  assert.deepEqual(mirrored.items, [], 'в зеркале пустой store, а не прежний');
+  assert.deepEqual(mirrored.days, {});
+
+  // localStorage исчез (чистка Safari), зеркало — единственный источник:
+  // восстановиться должен чистый лист, а не стёртые данные
+  const again = await boot({ idb });
+  const restored = JSON.parse(again.window.localStorage.getItem(NS));
+  assert.deepEqual(restored.items, []);
+  assert.deepEqual(restored.days, {});
+  assert.match(again.document.getElementById('scr-today').textContent, /Пунктов пока нет/);
+});
+
+test('чистка: экспорт отдаёт пустой store, импорт копию не трогает', async () => {
+  const seed = trainSeed();
+  const { document, window } = await boot({ seed });
+  wipeThroughUi(document);
+  const copy = window.localStorage.getItem(NS + ':wiped');
+  assert.ok(copy, 'копия есть');
+
+  openData(document);
+  document.querySelector('[data-act="export"]').click(); // exportJSON + перерисовка
+  const exported = JSON.parse(window.localStorage.getItem(NS));
+  assert.deepEqual(exported.items, [], 'экспортируется текущий store');
+  assert.equal('wiped' in exported, false);
+  assert.equal(typeof exported.settings.exportedAt, 'number');
+
+  // импорт другого состояния копию не трогает (подтверждение — window.confirm)
+  let asked = false;
+  window.confirm = () => { asked = true; return true; };
+  window.alert = m => { throw new Error('alert при импорте: ' + m); };
+  const file = new window.File([JSON.stringify(dueSeed())], 'm.json', { type: 'application/json' });
+  const input = document.getElementById('import-file');
+  Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  input.dispatchEvent(new window.Event('change', { bubbles: true }));
+  for (let i = 0; i < 100 && !asked; i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(asked, true, 'импорт дошёл до подтверждения');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 1, 'данные импортированы');
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), copy, 'копия не тронута импортом');
+});
+
+test('пустая эпоха: шесть экранов после чистки рендерятся без исключений', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  wipeThroughUi(document);
+  const store = JSON.parse(window.localStorage.getItem(NS));
+  // эпоха начинается в понедельник, то есть сегодня или позже
+  assert.ok(store.settings.calendarSince >= daysAgo(0));
+
+  const map = {
+    today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
+    notes: 'scr-notes', settings: 'scr-settings'
+  };
+  for (const [tab, id] of Object.entries(map)) {
+    document.querySelector(`#tabs button[data-tab="${tab}"]`).click();
+    const scr = document.getElementById(id);
+    assert.equal(scr.hidden, false, tab);
+    assert.ok(scr.innerHTML.length > 0, tab);
+  }
+
+  assert.match(document.getElementById('scr-habits').textContent, /Привычек пока нет/);
+  assert.match(document.getElementById('scr-notes').textContent, /Пока пусто/);
+
+  // «Прогресс» пустой эпохи: ноль дней, ноль серии, цепь без единой ячейки
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  const prog = document.getElementById('scr-progress');
+  assert.deepEqual([...prog.querySelectorAll('.stat')].map(x => x.textContent), ['0 дней', '0 дней']);
+  assert.equal(prog.querySelectorAll('.cdays i.full').length, 0);
+  assert.equal(prog.querySelectorAll('.cdays i.part').length, 0);
+  assert.equal(prog.querySelectorAll('.rise').length, 0, 'подъёма нет');
+  assert.doesNotMatch(prog.textContent, /Отметки/);
+  assert.match(prog.textContent, /Следующий разбор — в понедельник/);
+  assert.equal(prog.querySelector('[data-act="goto-review"]'), null);
+
+  // лист разбора в пустой эпохе: currentWeekStart() === null — ветка жива
+  window.renderReview();
+  const rev = document.getElementById('scr-review');
+  assert.match(rev.textContent, /Разбор откроется в понедельник/);
+  assert.doesNotMatch(rev.textContent, /NaN|Invalid|undefined/);
+  assert.ok(rev.querySelector('[data-act="review-done"]'));
 });

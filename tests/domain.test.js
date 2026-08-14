@@ -2428,3 +2428,160 @@ test('З16F: перетаскивание блоков и упражнений',
   assert.equal(app.reorderExercise('нет такого', 0), false);
   assert.equal(app.reorderExercise(b.id, -1), false);
 });
+
+/* ── Задача 16.1. Обратимая чистка ─────────────────────────── */
+
+/* localStorage в Node нет: домен работает в памяти, а чистка обязана
+   писать копию. Подставляем минимальную реализацию на объекте. */
+function fakeLocalStorage() {
+  const mem = {};
+  global.localStorage = {
+    getItem: k => (k in mem ? mem[k] : null),
+    setItem: (k, v) => { mem[k] = String(v); },
+    removeItem: k => { delete mem[k]; }
+  };
+  return mem;
+}
+
+function clearLocalStorage() { delete global.localStorage; }
+
+/* Наполненное хранилище: пункт с лестницей, отметки, разбор, упражнение,
+   тренировка и заметка — чтобы было чему исчезать */
+function filledStore() {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const t = app.todayKey();
+  s.settings.dayBoundary = 6;         // не дефолтная граница: должна пережить чистку
+  s.settings.calendarSince = app.addDays(app.weekStartOf(t), -70);
+  app.toggleMark(t, s.items[0].id);
+  app.toggleMark(app.addDays(t, -1), s.items[0].id);
+  s.reviews.push({ closedAt: 1, week: app.addDays(app.weekStartOf(t), -7), keys: [], perItem: {}, trainings: {}, oneChange: '', raises: [], lowers: [], params: [] });
+  app.setLadder(s.items[0].id, 'первая\nвторая');
+  const ex = app.addExercise('Жим', 'кг', 40);
+  app.recordSession(s.items.find(i => i.type === 'weekly').id, [{ exId: ex.id, value: 42 }], 'заметка тренировки');
+  app.addNote('мысль');
+  return s;
+}
+
+test('З16.1: чистка обнуляет всё, граница дня остаётся, эпоха — понедельник не в прошлом', () => {
+  fakeLocalStorage();
+  const before = filledStore();
+  const t = app.todayKey();
+  assert.ok(before.items.length > 0 && Object.keys(before.days).length > 0);
+
+  assert.equal(app.wipeAll(), true);
+  const s = app.store;
+
+  assert.deepEqual(s.items, []);
+  assert.deepEqual(s.groups, []);
+  assert.deepEqual(s.days, {});
+  assert.deepEqual(s.weekLog, []);
+  assert.deepEqual(s.reviews, []);
+  assert.deepEqual(s.notes, []);
+  assert.deepEqual(s.exercises, []);
+  assert.deepEqual(s.sessions, []);
+  assert.deepEqual(s.pendingRaises, []);
+  assert.deepEqual(s.pendingLowers, []);
+  assert.deepEqual(s.paramDecided, {});
+  assert.equal(s.draftOneChange, '');
+  assert.equal(s.schemaVersion, 13, 'схема не меняется');
+
+  assert.equal(s.settings.dayBoundary, 6, 'граница дня — настройка устройства, не данные');
+  assert.equal(s.settings.exportedAt, null);
+  assert.equal(s.settings.habitSeeded, true, 'стартовых привычек не появляется');
+  assert.equal(s.settings.calendarSince, app.weekStartOf(s.settings.calendarSince), 'понедельник');
+  assert.ok(s.settings.calendarSince >= t, 'эпоха начинается не в прошлом');
+  assert.ok(app.diffDays(s.settings.calendarSince, t) <= 6);
+
+  // пустая эпоха: домен не падает и молчит
+  assert.equal(app.daysInSystem(), 0);
+  assert.equal(app.dayStreak(), 0);
+  assert.equal(app.reviewDue(), false);
+  assert.equal(app.currentWeekStart(), null);
+  clearLocalStorage();
+});
+
+test('З16.1: копия пишется целиком, «Вернуть» возвращает состояние побайтово', () => {
+  const mem = fakeLocalStorage();
+  const before = filledStore();
+  const snapshot = JSON.parse(JSON.stringify(before));
+  const stats = app.wipeStats(before);
+
+  app.wipeAll();
+  const copy = app.wipedCopy();
+  assert.ok(copy, 'копия на месте');
+  assert.deepEqual(copy.store, snapshot, 'прежний store целиком');
+  assert.deepEqual(copy.stats, stats);
+  assert.equal(typeof copy.wipedAt, 'number');
+  assert.deepEqual(Object.keys(stats).sort(),
+    ['days', 'exercises', 'groups', 'items', 'ladders', 'notes', 'reviews', 'sessions']);
+  assert.equal(stats.ladders, 1);
+  assert.equal(stats.notes, 1);
+  assert.equal(stats.sessions, 1);
+
+  assert.equal(app.restoreWiped(), true);
+  assert.deepEqual(app.store, snapshot, 'состояние вернулось побайтово');
+  assert.equal(app.wipedCopy(), null, 'после возврата копии нет');
+  assert.equal(mem[app.WIPE_KEY], undefined);
+  assert.equal(app.restoreWiped(), false, 'возвращать больше нечего');
+  clearLocalStorage();
+});
+
+test('З16.1: «Убрать копию» удаляет ключ, повторная чистка заменяет копию', () => {
+  const mem = fakeLocalStorage();
+  filledStore();
+
+  app.wipeAll();
+  assert.ok(mem[app.WIPE_KEY]);
+  app.dropWiped();
+  assert.equal(app.wipedCopy(), null);
+  app.dropWiped(); // повтор не падает
+
+  // копия — одна, последняя: вторая чистка перезаписывает первую
+  const first = filledStore();
+  app.wipeAll();
+  const one = app.wipedCopy();
+  assert.equal(one.store.items.length, first.items.length);
+
+  app.addNote('после первой чистки');           // пустой store чуть наполнился
+  const second = JSON.parse(JSON.stringify(app.store));
+  app.wipeAll();
+  const two = app.wipedCopy();
+  assert.deepEqual(two.store, second, 'в копии — состояние перед последней чисткой');
+  assert.equal(two.store.items.length, 0);
+  assert.notDeepEqual(two.store, one.store);
+  clearLocalStorage();
+});
+
+test('З16.1: чистка идемпотентна, экспортируется текущий store, копия ему чужая', () => {
+  fakeLocalStorage();
+  filledStore();
+  assert.equal(app.wipeAll(), true);
+  assert.equal(app.wipeAll(), true, 'повторная чистка не падает');
+  assert.deepEqual(app.store.items, []);
+
+  // экспорт и импорт живут только текущим store: копия к ним не относится
+  const copy = app.wipedCopy();
+  assert.ok(copy);
+  const exported = JSON.parse(JSON.stringify(app.store));
+  assert.deepEqual(exported.items, [], 'экспорт после чистки — пустой store');
+  assert.equal('wiped' in exported, false);
+  const imported = app.migrate(exported);
+  assert.deepEqual(imported.items, []);
+  assert.ok(app.wipedCopy(), 'импорт копию не трогает');
+  clearLocalStorage();
+});
+
+test('З16.1: без места под копию чистка не выполняется — данные остаются', () => {
+  fakeLocalStorage();
+  const before = filledStore();
+  const snapshot = JSON.parse(JSON.stringify(before));
+  const real = global.localStorage.setItem;
+  global.localStorage.setItem = (k) => { if (k === app.WIPE_KEY) throw new Error('quota'); };
+
+  assert.equal(app.wipeAll(), false);
+  assert.deepEqual(app.store, snapshot, 'store не тронут');
+
+  global.localStorage.setItem = real;
+  clearLocalStorage();
+});
