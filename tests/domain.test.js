@@ -49,9 +49,13 @@ function fakeReview(item, count) {
   };
 }
 
-/* Календарная эпоха началась давно: разборы доступны сразу */
+/* Календарная эпоха началась давно: разборы доступны сразу.
+   Пункты существуют с её начала — иначе механика понижения их не видит
+   (A.4.1: пункт должен существовать во всех рассматриваемых неделях).
+   Тесту, которому нужен свежезаведённый пункт, addedAt задаёт сам. */
 function calendarPast(s) {
   s.settings.calendarSince = app.addDays(app.weekStartOf(app.todayKey()), -70);
+  s.items.forEach(i => { i.addedAt = s.settings.calendarSince; });
   return s;
 }
 
@@ -983,30 +987,64 @@ test('З9: повышение игнорирует привычки; ретро-
   assert.equal(app.markYesterday(p.id), false); // параметр без ежедневных отметок
 });
 
-test('З9/З11: habitsSteady — 2 недели каждая активная привычка выполнила норму', () => {
+test('З9/З11: habitsSteady — 2 последние КАЛЕНДАРНЫЕ недели по норме, reviews не читается', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
+  calendarPast(s);
   // в стартовой программе ежедневная привычка одна — вторую тест заводит сам
   const h1 = s.items.find(i => i.type === 'daily' && i.area === 'habit');
   const h2 = Object.assign(JSON.parse(JSON.stringify(h1)), { id: 'h2', name: 'Вторая привычка' });
   s.items.push(h2);
-  const wk = (c1, c2) => ({ perItem: { [h1.id]: { count: c1 }, [h2.id]: { count: c2 } } });
-  assert.equal(app.habitsSteady(), false); // разборов нет
-  s.reviews = [wk(7, 7)];
-  assert.equal(app.habitsSteady(), false); // одной недели мало
-  s.reviews = [wk(7, 7), wk(7, 7)];
+  s.items.forEach(i => { i.addedAt = s.settings.calendarSince; });
+  const W = app.closedWeeks(2); // [позапрошлая, прошлая]
+  const wk = (c1, c2) => {
+    setWeekMarks(h1.id, W[0], c1[0]); setWeekMarks(h1.id, W[1], c1[1]);
+    setWeekMarks(h2.id, W[0], c2[0]); setWeekMarks(h2.id, W[1], c2[1]);
+  };
+  assert.equal(app.habitsSteady(), false); // отметок нет
+  wk([7, 7], [7, 7]);
   assert.equal(app.habitsSteady(), true);  // норма по умолчанию 7
-  s.reviews = [wk(6, 7), wk(7, 7)];
+  wk([6, 7], [7, 7]);
   assert.equal(app.habitsSteady(), false); // 6 < норма 7
   h1.normPerWeek = 5;
   assert.equal(app.habitsSteady(), true);  // норма 5: 6 и 7 достаточно
-  s.reviews = [wk(4, 7), wk(7, 7)];
+  wk([4, 7], [7, 7]);
   assert.equal(app.habitsSteady(), false); // 4 < 5
   h2.active = false;
-  s.reviews = [wk(5, 0), wk(7, 0)];
+  wk([5, 7], [0, 0]);
   assert.equal(app.habitsSteady(), true);  // выключенная не учитывается
   h1.active = false;
   assert.equal(app.habitsSteady(), false); // активных привычек нет
+
+  // A.5.5: reviews на результат не влияет ни в одну сторону
+  h1.active = true; h2.active = false;
+  wk([5, 7], [0, 0]);
+  s.reviews = [];
+  assert.equal(app.habitsSteady(), true, 'пустой reviews готовности не мешает');
+  s.reviews = [{ perItem: { [h1.id]: { count: 0 } } }, { perItem: { [h1.id]: { count: 0 } } }];
+  assert.equal(app.habitsSteady(), true, 'разборы с нулями её не гасят');
+  wk([0, 0], [0, 0]);
+  s.reviews = [{ perItem: { [h1.id]: { count: 7 } } }, { perItem: { [h1.id]: { count: 7 } } }];
+  assert.equal(app.habitsSteady(), false, 'идеальные разборы при пустых неделях её не дают');
+});
+
+test('З19/A.5.5: готовность — десять идеальных недель без единого разбора', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  s.settings.calendarSince = app.addDays(app.weekStartOf(app.todayKey()), -7 * 12);
+  const h = s.items.find(i => i.type === 'daily' && i.area === 'habit');
+  s.items.forEach(i => { i.addedAt = s.settings.calendarSince; });
+  for (let w = 1; w <= 10; w++) setWeekMarks(h.id, app.addDays(app.currentWeekStart(), -7 * w), 7);
+  s.reviews = [];
+  assert.equal(app.habitsSteady(), true, 'разбор ни разу не закрывался — готовность всё равно видна');
+
+  // и обратное: два разбора полугодовой давности при пустых последних неделях
+  for (let w = 1; w <= 10; w++) setWeekMarks(h.id, app.addDays(app.currentWeekStart(), -7 * w), 0);
+  s.reviews = [
+    { closedAt: 1, week: '2026-01-05', perItem: { [h.id]: { name: h.name, count: 7 } } },
+    { closedAt: 2, week: '2026-01-12', perItem: { [h.id]: { name: h.name, count: 7 } } }
+  ];
+  assert.equal(app.habitsSteady(), false, 'старые разборы готовность не держат');
 });
 
 /* ── Задача 11. Норма и серия привычек (инвариант 11) ──────── */
@@ -2964,4 +3002,106 @@ test('З17: порог зачёта дня переживает чистку н�
   assert.equal(app.emptyStore(4, 5).settings.dayThreshold, 1);
   assert.equal(app.emptyStore(4).settings.dayThreshold, 0.8);
   clearLocalStorage();
+});
+
+/* ── Задача 19, фаза A. Ремонт по аудиту ───────────────────── */
+
+test('З19/A.2.2: пустой файл старой схемы импортируется пустым — посева нет', () => {
+  setNow(2026, 7, 17, 12, 0);
+  // экспорт версии до задачи 17, снятый сразу после чистки: items пуст,
+  // флага seed17 в той схеме ещё не существовало (аудит, находка 3)
+  const file = {
+    schemaVersion: 13, items: [], groups: [], days: {}, weekLog: [], reviews: [],
+    pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    draftOneChange: '', weekStart: '2026-06-01',
+    settings: { dayBoundary: 4, exportedAt: null, calendarSince: '2026-06-01', habitSeeded: true }
+  };
+  const imported = app.migrate(JSON.parse(JSON.stringify(file)), { external: true });
+  assert.equal(imported.items.length, 0, 'ни одного пункта');
+  assert.equal(imported.groups.length, 0, 'ни одного блока');
+  assert.equal(imported.notes.length, 0, 'ни одной выписки');
+
+  // флаги проставлены — следующий старт (уже как «первый запуск») тоже не сеет
+  assert.equal(imported.settings.seed17, true);
+  assert.equal(imported.settings.habitSeeded, true);
+  const restart = app.migrate(JSON.parse(JSON.stringify(imported)));
+  assert.equal(restart.items.length, 0, 'перезапуск пустой лист не засевает');
+
+  // тот же файл БЕЗ external — путь первого запуска, посев на месте
+  const first = app.migrate(JSON.parse(JSON.stringify(file)));
+  assert.equal(first.items.length, 9, 'первый запуск программу получает');
+
+  // и самая старая схема: v1 с пустым списком тоже остаётся пустой
+  const v1 = app.migrate({ schemaVersion: 1, items: [], settings: {} }, { external: true });
+  assert.equal(v1.items.length, 0, 'ни посева, ни «Принять душ», ни привычек v5');
+});
+
+test('З19/A.3.2: лестница на weekly и param снимается миграцией, слот свободен', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const ladder = () => ({ steps: ['а', 'б', 'в'], step: 1, steppedWeek: null, startedAt: '2026-06-01' });
+  const s = app.migrate({
+    schemaVersion: 14, settings: { seed17: true }, items: [
+      { id: 'w1', name: 'Тренировка', type: 'weekly', area: 'min', goal: 3, addedAt: '2026-01-01',
+        ladder: ladder(), ladderLog: [{ date: '2026-06-01', step: 0, text: 'а', start: true }] },
+      { id: 'p1', name: 'Отбой', type: 'param', area: 'habit', pkind: 'time', pvalue: 0, pstep: -15,
+        addedAt: '2026-01-01', ladder: ladder(), ladderLog: [] },
+      { id: 'd1', name: 'Английский', type: 'daily', area: 'min', value: 5, addedAt: '2026-01-01',
+        ladder: ladder(), ladderLog: [] }
+    ]
+  });
+  app.store = s;
+  const [w, p, d] = s.items;
+  assert.equal(w.ladder, null, 'у недельного счётчика лестницы нет');
+  assert.equal(p.ladder, null, 'у параметра тоже');
+  assert.ok(d.ladder, 'у ежедневного пункта осталась');
+  assert.equal(app.activeLadderItem().id, 'd1', 'слот занимает daily-пункт');
+  // журнал не тронут: снятие лестницы ladderLog не изменяет (инвариант 12)
+  assert.equal(w.ladderLog.length, 1);
+  assert.deepEqual(w.ladderLog[0], { date: '2026-06-01', step: 0, text: 'а', start: true });
+});
+
+test('З19/A.4.3: пункт, заведённый сегодня, предложения «Сделать легче» не получает', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const t = app.todayKey();
+  const fresh = {
+    id: 'new1', name: 'Новый пункт', value: 10, unit: 'мин', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', active: true, addedAt: t, raiseAfter: 0,
+    raiseAfterWeek: null, lowerAfterWeek: null, history: [{ date: t, value: 10 }],
+    formula: null, ladder: null, ladderLog: []
+  };
+  s.items.push(fresh);
+  const W = app.closedWeeks(2);
+  assert.ok(W[0] < t, 'обе разбираемые недели раньше заведения пункта');
+  assert.equal(app.itemWeekCount(fresh, W[0]), 0);
+  assert.equal(app.lowerEligible(fresh), false, 'пункта в этих неделях не было — предложения нет');
+
+  // граница: заведён ровно в понедельник самой ранней недели — уже считается
+  fresh.addedAt = W[0];
+  assert.equal(app.lowerEligible(fresh), true, 'существовал с первого дня окна — предложение есть');
+  fresh.addedAt = app.addDays(W[0], 1);
+  assert.equal(app.lowerEligible(fresh), false, 'на день позже — уже нет');
+
+  // повышению симметричная защита не нужна: критерий требует ≥6 отметок,
+  // а у пункта, которого в тех неделях не было, отметок нет вовсе
+  fresh.addedAt = t;
+  assert.equal(app.raiseEligible(fresh), false);
+});
+
+test('З19/A.5.3: механики планки и привычек не читают reviews', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const item = s.items.find(i => i.name === 'Подтягивания + отжимания');
+  app.closedWeeks(3).forEach(w => setWeekMarks(item.id, w, 7));
+  // разборов нет вовсе — повышение всё равно предлагается
+  s.reviews = [];
+  assert.equal(app.raiseEligible(item), true, 'пропуск разборов повышение не блокирует');
+  // мусор в архиве на механику не влияет
+  s.reviews = [{ perItem: { [item.id]: { count: 0 } } }, { perItem: { [item.id]: { count: 0 } } }];
+  assert.equal(app.raiseEligible(item), true);
+  setWeekMarks(item.id, app.closedWeeks(2)[0], 1);
+  setWeekMarks(item.id, app.closedWeeks(2)[1], 1);
+  assert.equal(app.lowerEligible(item), true, 'понижение тоже считает по days{}');
 });

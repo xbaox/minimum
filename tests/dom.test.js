@@ -42,6 +42,15 @@ function mondayOf(k) {
 const curMonday = () => mondayOf(daysAgo(0));
 const prevMonday = () => addKey(curMonday(), -7);
 
+/* Отметить пункт в первых n днях календарной недели с понедельником mon */
+function fillWeek(days, id, mon, n) {
+  for (let i = 0; i < n; i++) {
+    const k = addKey(mon, i);
+    (days[k] || (days[k] = {}))[id] = true;
+  }
+  return days;
+}
+
 /* Уход карточки разбора отложен (motionLeave: класс-триггер + перерисовка
    по fallback-таймауту MOTION_MS+60, т.к. jsdom не шлёт transitionend).
    Ждём дольше таймаута (12.1: MOTION_MS = 240), чтобы дождаться перерисовки. */
@@ -361,20 +370,26 @@ test('импорт мусора: migrate чинит, экраны живы, XSS-
   assert.equal(saved.days[daysAgo(0)][evil], true);
 });
 
-test('вредоносный count в reviews не ломает разбор: подстановка экранируется', async () => {
+test('вредоносные данные не ломают разбор: имя пункта экранируется, count из reviews не рендерится', async () => {
   const seed = dueSeed();
+  // после A.5.2 «Три закрытые недели» считает по days{}, а не по reviews:
+  // подстановка из архива до разметки вообще не доходит
   seed.reviews = [{
     closedAt: 1, week: addKey(prevMonday(), -28), keys: [addKey(prevMonday(), -28)],
     perItem: { it1: { name: 'Тестовый пункт', marks: [], count: '<img src=x onerror="window.__x=1">' } },
     trainings: {}, oneChange: '', raises: []
   }];
+  // а имя пункта в разметку идёт — оно и должно экранироваться
+  seed.items[0].name = '<img src=y onerror="window.__y=1">';
   const { document, window } = await boot({ seed });
   openReview(document);
   const scr = document.getElementById('scr-review');
   assert.ok(scr.innerHTML.length > 0);
   assert.equal(scr.querySelector('img'), null); // разметка не материализовалась
   assert.equal(window.__x, undefined);
-  assert.match(scr.textContent, /<img src=x/); // показана как текст
+  assert.equal(window.__y, undefined);
+  assert.match(scr.textContent, /<img src=y/);         // имя показано как текст
+  assert.doesNotMatch(scr.textContent, /<img src=x/);  // count из архива не показывается вовсе
 });
 
 test('правка значения: невалид сохраняет старое, пустое — осознанная очистка без истории', async () => {
@@ -933,9 +948,10 @@ test('разбор: секции «Минимум» и «Привычки», к�
       addedAt: addKey(prev, -14), raiseAfter: 0, history: [{ date: addKey(prev, -14), value: 0 }] }
   );
   seed.days[addKey(prev, 2)] = { h1: true }; // отметка привычки в разобранной неделе
-  // две прошлые недели с идеальной привычкой — строка готовности
-  const wk = (week) => ({ closedAt: 1, week, keys: [week], perItem: { h1: { count: 7 } }, trainings: {}, oneChange: '', raises: [] });
-  seed.reviews = [wk(addKey(prev, -21)), wk(addKey(prev, -14))];
+  // две последние ЗАВЕРШЁННЫЕ календарные недели с идеальной привычкой —
+  // строка готовности (A.5.1: считается по days{}, не по reviews)
+  fillWeek(seed.days, 'h1', addKey(prev, -7), 7);
+  fillWeek(seed.days, 'h1', prev, 7);
   const { document, window } = await boot({ seed });
   openReview(document);
   const scr = document.getElementById('scr-review');
@@ -1453,8 +1469,10 @@ test('разбор: готовность к новой привычке при �
   const seed = dueSeed();
   seed.items.push({ id: 'h1', name: 'Пять раз', value: null, unit: '', type: 'daily', area: 'habit',
     normPerWeek: 5, goal: null, note: '', group: '', active: true, addedAt: addKey(prevMonday(), -28), raiseAfter: 0, history: [] });
-  const wk = (week, c) => ({ closedAt: 1, week, keys: [week], perItem: { h1: { count: c } }, trainings: {}, oneChange: '', raises: [], params: [] });
-  seed.reviews = [wk(addKey(prevMonday(), -21), 5), wk(addKey(prevMonday(), -14), 6)]; // 5 и 6 при норме 5
+  // A.5.1: готовность считается по days{} двух последних календарных недель
+  fillWeek(seed.days, 'h1', addKey(prevMonday(), -7), 5); // позапрошлая: 5 при норме 5
+  fillWeek(seed.days, 'h1', prevMonday(), 6);             // прошлая: 6
+  seed.reviews = []; // разборов нет вовсе — на готовность это не влияет
   const { document } = await boot({ seed });
   openReview(document);
   assert.match(document.getElementById('scr-review').textContent, /Привычки устойчивы 2 недели — можно добавить новую/);
@@ -3430,4 +3448,85 @@ test('посев 17 в браузере: пустой localStorage через mi
   document.querySelector('#tabs button[data-tab="habits"]').click();
   assert.match(document.getElementById('scr-habits').textContent, /Телефон вне кровати/);
   assert.match(document.getElementById('scr-habits').textContent, /Отбой/);
+});
+
+/* ── Задача 19, фаза A.1: три исхода чтения зеркала ────────── */
+
+/* IndexedDB, у которого open отвечает позже стартового таймаута (1500 мс),
+   но всё-таки отвечает: ровно тот случай, в котором прежний код успевал
+   объявить зеркало пустым и записать в него дефолтный store. */
+function slowIdb(real, delayMs) {
+  return {
+    open(name, ver) {
+      const inner = real.open(name, ver);
+      const req = { result: null, error: null, onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null };
+      inner.onupgradeneeded = (e) => { req.result = inner.result; if (req.onupgradeneeded) req.onupgradeneeded(e); };
+      inner.onsuccess = () => setTimeout(() => {
+        req.result = inner.result;
+        if (req.onsuccess) req.onsuccess();
+        else { try { inner.result.close(); } catch (e) { /* некому отдать */ } }
+      }, delayMs);
+      inner.onerror = () => { req.error = inner.error; if (req.onerror) req.onerror(); };
+      return req;
+    }
+  };
+}
+
+test('A.1.5: медленное зеркало при пустом localStorage — снапшот НЕ затирается дефолтом', async () => {
+  const real = new IDBFactory();
+  await idbPut(real, { json: JSON.stringify(mirrorStore()), savedAt: 4242, schemaVersion: 4 });
+
+  // первый старт: localStorage пуст, IndexedDB отвечает на 1,8 с — позже таймаута
+  const a = await boot({ idb: slowIdb(real, 1800) });
+  assert.equal(a.document.getElementById('scr-today').hidden, false, 'приложение работает');
+  assert.equal(a.document.querySelectorAll('input[data-act="mark"]').length, 6, 'на экране дефолтная программа');
+
+  // дать медленному open дойти: если бы зеркало считалось готовым,
+  // именно здесь дефолт и уехал бы в снапшот
+  await new Promise(r => setTimeout(r, 2200));
+  assert.equal(await a.window.flushMirror(), false, 'зеркало в этой сессии не пишется');
+
+  const snap = await idbGet(real);
+  assert.equal(snap.savedAt, 4242, 'снапшот тот же');
+  const kept = JSON.parse(snap.json);
+  assert.equal(kept.items.length, 1);
+  assert.equal(kept.items[0].name, 'Восстановленный', 'данные владельца целы');
+
+  // localStorage тоже остался пустым — иначе перезапуск не пошёл бы к зеркалу
+  assert.equal(a.window.localStorage.getItem(NS), null, 'дефолт в localStorage не записан');
+
+  // строка «Данных» говорит честно: не ошибка, не тревога — «не проверена»
+  a.document.querySelector('#tabs button[data-tab="settings"]').click();
+  const note = a.document.getElementById('mirror-note');
+  assert.equal(note.hidden, false);
+  assert.equal(note.textContent, 'Резервная копия не проверена');
+  assert.ok(note.classList.contains('muted'), 'тем же muted');
+
+  // повторный старт с отвечающим IndexedDB — данные восстановлены
+  const b = await boot({ idb: real });
+  assert.match(b.document.getElementById('scr-today').textContent, /Восстановленный/);
+  assert.equal(JSON.parse(b.window.localStorage.getItem(NS)).items.length, 1);
+});
+
+test('A.5.2: «Три закрытые недели» — три последние календарные недели, а не три разбора', async () => {
+  const seed = dueSeed();
+  // разборы полугодовой давности с чужими числами: в блок они попасть не должны
+  seed.reviews = [
+    { closedAt: 1, week: '2026-01-05', keys: [], perItem: { it1: { name: 'Тестовый пункт', count: 7 } }, trainings: {}, oneChange: '' },
+    { closedAt: 2, week: '2026-01-12', keys: [], perItem: { it1: { name: 'Тестовый пункт', count: 7 } }, trainings: {}, oneChange: '' }
+  ];
+  // а в трёх последних календарных неделях — 1, 2 и 3 отметки
+  seed.days = {};
+  fillWeek(seed.days, 'it1', addKey(prevMonday(), -14), 1);
+  fillWeek(seed.days, 'it1', addKey(prevMonday(), -7), 2);
+  fillWeek(seed.days, 'it1', prevMonday(), 3);
+  const { document } = await boot({ seed });
+  openReview(document);
+  const scr = document.getElementById('scr-review');
+  document.querySelector('[data-act="week-fold"]').click();
+  const val = [...scr.querySelectorAll('.c-val')].map(x => x.textContent);
+  assert.ok(val.length, 'блок консистентности отрисован');
+  assert.equal(val[0], '1 · 2 · 3 из 7', 'числа из days{}, порядок от старой недели к новой');
+  assert.equal([...scr.querySelectorAll('.c-val')].some(x => /7 · 7/.test(x.textContent)), false,
+    'числа из архива разборов в блок не попали');
 });

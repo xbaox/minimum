@@ -269,7 +269,11 @@ function normLadderLog(log) {
    Толерантна к мусору: не-объекты отбрасываются, обязательные поля
    достраиваются, числовые приводятся или обнуляются — импортированный
    или повреждённый store не должен ронять ни migrate, ни рендер. */
-function migrate(s) {
+/* opts.external — данные пришли извне (импорт файла, возврат стёртой
+   копии). Стартовая программа принадлежит ПЕРВОМУ ЗАПУСКУ, а не всякому
+   пустому store: файл, снятый версией без флага seed17, приносил пустой
+   items[] и получал девять чужих пунктов (аудит, находка 3). */
+function migrate(s, opts) {
   if (!s || typeof s !== 'object' || Array.isArray(s)) return defaultStore();
   s.schemaVersion = numOr(s.schemaVersion, 0) || 1; // мусорная версия = v1, шаги миграций не пропускаются
 
@@ -283,6 +287,14 @@ function migrate(s) {
   // пункты: только объекты; id и addedAt достраиваются, id дедуплицируются
   if (!Array.isArray(s.items)) s.items = [];
   s.items = s.items.filter(it => it && typeof it === 'object' && !Array.isArray(it));
+  // Пустота, пришедшая извне, — намеренная: посев ей не адресован
+  // независимо от schemaVersion и наличия флагов (A.2.1). Флаги ставятся
+  // сразу и переживают сохранение: иначе следующий старт прогнал бы этот
+  // же store через migrate уже как «первый запуск» и всё-таки засеял.
+  if (opts && opts.external && !s.items.length) {
+    s.settings.seed17 = true;
+    s.settings.habitSeeded = true; // и посев привычек шага v4→v5
+  }
   // посев программы (задача 17): только пустой store и только один раз
   let seeded = false;
   if (!s.items.length && s.settings.seed17 !== true) { seedProgram(s, today); seeded = true; }
@@ -330,9 +342,13 @@ function migrate(s) {
       .filter(h => h && typeof h === 'object' && !Array.isArray(h) && isDayKey(h.date))
       .map(h => ({ date: h.date, value: numOr(h.value, null) }))
       .filter(h => h.value !== null);
-    // v6 → v7 (инвариант 12): формула, лестница и журнал шагов — аддитивно
+    // v6 → v7 (инвариант 12): формула, лестница и журнал шагов — аддитивно.
+    // Лестницу несёт только ежедневный пункт: на weekly или param она
+    // занимала единственный слот и снять её было нечем — лист детали
+    // открывается только для daily (аудит, находка 4). Журнал не трогаем:
+    // снятие лестницы ladderLog не изменяет (инвариант 12).
     it.formula = normFormula(it.formula);
-    it.ladder = normLadder(it.ladder, today);
+    it.ladder = it.type === 'daily' ? normLadder(it.ladder, today) : null;
     it.ladderLog = normLadderLog(it.ladderLog);
   }
   // лестница в приложении одна: побеждает начатая позже (строгое сравнение —
@@ -482,7 +498,9 @@ function migrate(s) {
         it.history.push({ date: it.addedAt || dateKeyShift(new Date(), s.settings.dayBoundary), value: it.value });
       }
     }
-    if (!s.items.some(i => i.name === 'Принять душ')) {
+    // в ПУСТОЙ список душ не дописывается: пустота здесь либо намеренная
+    // (внешний файл, A.2), либо уже засеяна выше — оба случая не про v1
+    if (s.items.length && !s.items.some(i => i.name === 'Принять душ')) {
       const shower = {
         id: uid(), name: 'Принять душ', value: null, unit: '', type: 'daily', area: 'min',
         goal: null, note: '', group: 'Тело', active: true,
@@ -588,10 +606,12 @@ function save() {
 const IDB_NAME = 'minimum';
 const IDB_STORE = 'mirror';
 const IDB_KEY = 'snapshot';
+const MIRROR_PROBE_MS = 1500; // сколько ждать зеркало на старте, не задерживая первый рендер
 
 let mirrorTimer = null;
 let mirrorDirty = false; // есть изменения, не доехавшие до зеркала
 let mirrorReady = false; // стартовая проверка init() завершена — писать можно
+let mirrorUnverified = false; // чтение зеркала не завершилось: что там лежит — неизвестно
 
 function idbOpen() {
   return new Promise(resolve => {
@@ -608,15 +628,41 @@ function idbOpen() {
   });
 }
 
+/* Чтение зеркала с РАЗЛИЧЕНИЕМ трёх исходов (задача 19, A.1):
+     'read'   — снапшот прочитан;
+     'empty'  — база открылась, ключа нет (зеркала ещё не было);
+     'failed' — чтение не завершилось: ошибка открытия, ошибка запроса
+                или таймаут.
+   Различать обязательно. Раньше все три сводились к null, и init(),
+   не дождавшись медленного IndexedDB, писал поверх снапшота дефолтный
+   store — единственная страховка от исчезновения localStorage
+   уничтожалась ровно в тот момент, когда была нужна (аудит, находка 1).
+   timeoutMs = 0 — ждать сколько угодно (строка «Резервная копия»). */
+function mirrorProbe(timeoutMs) {
+  // IndexedDB нет вовсе — терять нечего, это не «не дочитали»
+  if (typeof indexedDB === 'undefined') return Promise.resolve({ status: 'empty', snap: null });
+  return new Promise(resolve => {
+    let done = false;
+    const finish = r => { if (!done) { done = true; resolve(r); } };
+    const fail = () => finish({ status: 'failed', snap: null });
+    if (timeoutMs > 0) setTimeout(fail, timeoutMs);
+    idbOpen().then(db => {
+      if (!db) { fail(); return; }
+      try {
+        const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(IDB_KEY);
+        req.onsuccess = () => {
+          finish(req.result ? { status: 'read', snap: req.result } : { status: 'empty', snap: null });
+          db.close();
+        };
+        req.onerror = () => { fail(); db.close(); };
+      } catch (e) { fail(); try { db.close(); } catch (e2) {} }
+    }).catch(fail);
+  });
+}
+
+/* Снапшот или null — прежний контракт поверх mirrorProbe */
 function mirrorRead() {
-  return idbOpen().then(db => new Promise(resolve => {
-    if (!db) { resolve(null); return; }
-    try {
-      const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(IDB_KEY);
-      req.onsuccess = () => { resolve(req.result || null); db.close(); };
-      req.onerror = () => { resolve(null); db.close(); };
-    } catch (e) { resolve(null); try { db.close(); } catch (e2) {} }
-  })).catch(() => null);
+  return mirrorProbe(0).then(r => r.snap);
 }
 
 function mirrorWrite(snapshot) {
@@ -1002,6 +1048,12 @@ function lowerEligible(item) {
   if (item.type !== 'daily' || !item.active || item.area !== 'min') return false;
   const W = closedWeeks(2);
   if (W.length < 2) return false;
+  // пункт должен существовать во ВСЕХ рассматриваемых неделях (A.4.1):
+  // иначе «0 и 0 из 7» у заведённого сегодня пункта проходило как
+  // «не держится» и разбор предлагал облегчить планку за недели, в
+  // которые пункта не было (аудит, находка 6). Повышению такая защита
+  // не нужна: там критерий требует ≥6 отметок, а у нового пункта их нет.
+  if (!(item.addedAt <= W[0])) return false;
   if (!W.every(w => itemWeekCount(item, w) <= 3)) return false;
   return item.lowerAfterWeek === null || W[0] > item.lowerAfterWeek;
 }
@@ -1150,15 +1202,20 @@ function habitStreak(item) {
   return cur ? habitStreakFrom(item, addDays(cur, -7)) : 0;
 }
 
-/* Информационная готовность: 2 закрытые недели каждая активная привычка
-   выполнила норму (≥ normPerWeek; норма ретроактивна — берётся текущая) */
+/* Информационная готовность: 2 последние ЗАВЕРШЁННЫЕ календарные недели
+   каждая активная привычка выполнила норму (≥ normPerWeek; норма
+   ретроактивна — берётся текущая).
+   Считает по days{} и календарю, как и всё остальное в программе роста.
+   Раньше читала два последних элемента reviews — и тогда десять идеальных
+   недель без единого разбора готовности не давали, а два разбора
+   полугодовой давности давали её при пустых последних неделях
+   (аудит, находка 5). reviews — архив, а не источник. */
 function habitsSteady() {
   const habits = store.items.filter(i => i.type === 'daily' && i.area === 'habit' && i.active);
-  if (!habits.length || store.reviews.length < 2) return false;
-  return store.reviews.slice(-2).every(r => habits.every(h => {
-    const p = r.perItem && r.perItem[h.id];
-    return p && p.count >= (h.normPerWeek || 7);
-  }));
+  if (!habits.length) return false;
+  const W = closedWeeks(2);
+  if (W.length < 2) return false;
+  return W.every(w => habits.every(h => habitWeekCount(h, w) >= (h.normPerWeek || 7)));
 }
 
 /* ── Формула и лестница (инвариант 12) ──────────────────────
@@ -1772,7 +1829,8 @@ function restoreWiped() {
   const c = wipedCopy();
   if (!c) return false;
   let restored;
-  try { restored = migrate(c.store); } catch (e) { return false; }
+  // external: копия — данные извне, посев ей не адресован (A.2.1)
+  try { restored = migrate(c.store, { external: true }); } catch (e) { return false; }
   store = restored;
   save();
   flushMirror();
@@ -1806,7 +1864,7 @@ function importJSON(file) {
     }
     let incoming;
     try {
-      incoming = migrate(data);
+      incoming = migrate(data, { external: true }); // файл извне — без посева (A.2.1)
     } catch (e) {
       alert('Импорт не выполнен: файл повреждён. Текущие данные не изменены.');
       return;
@@ -2747,13 +2805,16 @@ function renderReview() {
     return g + `</div>`;
   };
 
-  // Консистентность за 3 последних закрытых недели
+  // Консистентность за 3 последние ЗАВЕРШЁННЫЕ календарные недели.
+  // Заголовок «Три закрытые недели» стоял над тремя последними РАЗБОРАМИ,
+  // которые после пропусков относились к несмежным и не последним неделям
+  // (аудит, находка 13). Теперь счёт по days{} — заголовок стал правдой.
   const consist = (items) => {
-    if (!store.reviews.length) return `<p class="muted">Закрытых недель пока нет.</p>`;
-    const last3 = store.reviews.slice(-3);
+    const W = closedWeeks(3);
+    if (!W.length) return `<p class="muted">Закрытых недель пока нет.</p>`;
     let c = `<div class="consist">`;
     for (const it of items) {
-      const counts = last3.map(r => (r.perItem && r.perItem[it.id]) ? r.perItem[it.id].count : '—');
+      const counts = W.map(w => itemWeekCount(it, w));
       c += `<span class="c-name">${esc(it.name)}</span><span class="c-val">${counts.map(x => esc(x)).join(' · ')} из 7</span>`;
     }
     return c + `</div>`;
@@ -3256,12 +3317,20 @@ function renderSettings() {
 }
 
 /* Строка «Резервная копия: …» — асинхронно и точечно после рендера
-   «Пунктов»; при недоступном зеркале не показывается вовсе */
+   «Пунктов»; при недоступном зеркале не показывается вовсе.
+   Стартовое чтение не завершилось — так и сказано: не «ошибка» и не
+   тревога, а честное «неизвестно» тем же muted (A.1.4). */
 function updateMirrorNote() {
+  const p = el('mirror-note');
+  if (!p) return;
+  if (mirrorUnverified) {
+    p.textContent = 'Резервная копия не проверена';
+    p.hidden = false;
+    return;
+  }
   if (typeof indexedDB === 'undefined') return;
   mirrorRead().then(snap => {
-    const p = el('mirror-note');
-    if (!p || !snap || typeof snap.savedAt !== 'number') return;
+    if (!snap || typeof snap.savedAt !== 'number') return;
     p.textContent = 'Резервная копия: ' + fmtStamp(snap.savedAt);
     p.hidden = false;
   });
@@ -4272,16 +4341,22 @@ async function init() {
   } else {
     // localStorage пуст или бит (corrupt-ключ уже записан) — пробуем зеркало;
     // зависший IndexedDB (WebKit) не должен блокировать первый рендер
-    const snap = await Promise.race([
-      mirrorRead(),
-      new Promise(r => setTimeout(() => r(null), 1500))
-    ]);
-    if (snap && typeof snap.json === 'string') {
-      try { store = migrate(JSON.parse(snap.json)); } catch (e) { store = null; }
+    const probe = await mirrorProbe(MIRROR_PROBE_MS);
+    if (probe.snap && typeof probe.snap.json === 'string') {
+      try { store = migrate(JSON.parse(probe.snap.json)); } catch (e) { store = null; }
     }
-    mirrorReady = true;
+    // 'failed' — под недочитанным зеркалом может лежать живой снапшот.
+    // Писать туда в этой сессии нельзя вовсе: дефолтный store затёр бы
+    // его безвозвратно (A.1.2). Приложение при этом работает как обычно.
+    mirrorReady = probe.status !== 'failed';
+    mirrorUnverified = probe.status === 'failed';
     if (!store) store = defaultStore();
-    save(); // тихое восстановление в localStorage либо первый mirror-write дефолта
+    // и в localStorage дефолт тоже не пишется: непустой localStorage на
+    // следующем старте стал бы источником истины, зеркало перестали бы
+    // читать — и всё равно затёрли бы. Пустой localStorage оставляет
+    // перезапуску шанс дочитать зеркало и восстановить данные (A.1.5).
+    // Первое же действие владельца сохранится обычным save().
+    if (probe.status !== 'failed') save();
   }
   navigator.storage?.persist?.()?.catch?.(() => {}); // fire-and-forget: просим не вычищать localStorage
   document.addEventListener('click', onClick);
