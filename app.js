@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -123,6 +123,7 @@ function defaultStore() {
     pendingLowers: [], // принятые понижения, ещё не записанные в разбор
     exercises: [],     // упражнения тренировки: рабочая нагрузка и её история
     sessions: [],      // записанные тренировки: день, значения упражнений, заметка
+    notes: [],         // свободные заметки владельца
     paramDecided: {},  // itemId -> {week, from, to|null}: решения по параметрам, привязанные к разбираемой неделе
     draftOneChange: '',
     weekStart: today,  // историческая отсечка скользящей эпохи
@@ -358,6 +359,27 @@ function migrate(s) {
         .filter(h => h.value !== null);
     }
   }
+  // v12 → v13 (задача 16E): свободные заметки. Пустая по тексту заметка
+  // не существует — в интерфейсе пустое сохранение удаляет её, поэтому
+  // и на входе такие записи отбрасываются: данных в них нет.
+  if (!Array.isArray(s.notes)) s.notes = [];
+  {
+    const nIds = new Set();
+    s.notes = s.notes
+      .filter(n => n && typeof n === 'object' && !Array.isArray(n) &&
+        typeof n.text === 'string' && n.text.trim())
+      .map(n => {
+        let id = typeof n.id === 'string' && n.id && !nIds.has(n.id) ? n.id : uid();
+        nIds.add(id);
+        return {
+          id,
+          date: isDayKey(n.date) ? n.date : today,
+          text: n.text.trim(),
+          updatedAt: Math.max(0, Math.round(numOr(n.updatedAt, 0)))
+        };
+      });
+  }
+
   if (!Array.isArray(s.sessions)) s.sessions = [];
   s.sessions = s.sessions
     .filter(x => x && typeof x === 'object' && !Array.isArray(x) && isDayKey(x.date))
@@ -764,6 +786,46 @@ function moveExercise(id, dir) {
   store.exercises[j] = t;
   save();
   return true;
+}
+
+/* ── Заметки (инвариант 16) ────────────────────────────────────
+   Свободный текст владельца: день записи, текст, время правки.
+   Ни поиска, ни тегов, ни связей с пунктами — только запись. */
+
+function addNote(text) {
+  const t = (text || '').trim();
+  if (!t) return null; // пустая заметка не заводится
+  const n = { id: uid(), date: todayKey(), text: t, updatedAt: Date.now() };
+  store.notes.push(n);
+  save();
+  return n;
+}
+
+/* Пустой текст при сохранении удаляет заметку — отдельной кнопки для
+   этого не нужно, но явная «Удалить» тоже есть */
+function updateNote(id, text) {
+  const n = store.notes.find(x => x.id === id);
+  if (!n) return false;
+  const t = (text || '').trim();
+  if (!t) return deleteNote(id);
+  n.text = t;
+  n.updatedAt = Date.now();
+  save();
+  return true;
+}
+
+function deleteNote(id) {
+  const i = store.notes.findIndex(x => x.id === id);
+  if (i < 0) return false;
+  store.notes.splice(i, 1);
+  save();
+  return true;
+}
+
+/* От новых к старым: день записи, при равенстве — время правки */
+function notesByDate() {
+  return store.notes.slice().sort((a, b) =>
+    a.date === b.date ? b.updatedAt - a.updatedAt : (a.date < b.date ? 1 : -1));
 }
 
 /* Запись тренировки: сессия дня, обновление нагрузок (история — только
@@ -1490,6 +1552,10 @@ const ui = {
   trainNote: '',        // черновик заметки листа — переживает перерисовку
   exEditingId: null,    // упражнение с раскрытой правкой
   exAddOpen: false,     // открыта форма «Добавить упражнение»
+  noteAdd: false,       // открыта форма новой заметки (задача 16E)
+  noteEditingId: null,  // заметка с раскрытой правкой
+  noteDelete: null,     // заметка ждёт подтверждения удаления вторым тапом
+  noteDraft: null,      // черновик формы заметки — свой слот, как у листа детали
   // свёрнутые секции «Настроек»: по умолчанию раскрыты только «Пункты»
   settingsOpen: { groups: false, items: true, exercises: false, data: false, system: false }
 };
@@ -1962,14 +2028,52 @@ function renderTrain() {
   el('scr-train').innerHTML = h;
 }
 
-/* Экран 4 — «Заметки»: наполняется в фазе E */
+/* Экран 4 — «Заметки» (инвариант 16): список от новых к старым, тап по
+   карточке открывает правку. Ни поиска, ни тегов, ни форматирования. */
+function noteForm(n) {
+  const id = n ? n.id : 'new';
+  return `
+    <div class="card form" data-form="note" data-id="${esc(id)}">
+      <label class="field"><span>Заметка</span>
+        <textarea id="n-text" rows="6">${esc(n ? n.text : '')}</textarea></label>
+      <div class="btns">
+        <button class="btn primary" data-act="note-save" data-id="${esc(id)}">Сохранить</button>
+        <button class="btn quiet" data-act="note-cancel">Отмена</button>
+        ${n ? `<button class="btn quiet" data-act="note-del" data-id="${esc(n.id)}">${ui.noteDelete === n.id ? 'Подтвердить удаление' : 'Удалить'}</button>` : ''}
+      </div>
+    </div>`;
+}
+
 function renderNotes() {
-  el('scr-notes').innerHTML = `
+  snapshotOpenForm();
+  let h = `
     <header class="page">
       <p class="overline">Своими словами</p>
       <h1>Заметки</h1>
-    </header>
-    <p class="muted">Пока пусто</p>`;
+    </header>`;
+  if (ui.savedFlash) { // тихое подтверждение сохранения, как в «Настройках»
+    h += `<p class="flash" role="status">Сохранено</p>`;
+    ui.savedFlash = false;
+  }
+
+  h += ui.noteAdd
+    ? noteForm(null)
+    : `<button class="btn wide" data-act="note-add-open">Новая заметка</button>`;
+
+  const list = notesByDate();
+  if (!list.length && !ui.noteAdd) h += `<p class="muted">Пока пусто</p>`;
+  for (const n of list) {
+    h += ui.noteEditingId === n.id
+      ? noteForm(n)
+      : `
+      <button type="button" class="card note" data-act="note-open" data-id="${esc(n.id)}">
+        <span class="ndate">${esc(fmtDay(n.date))}</span>
+        <span class="ntext">${esc(n.text)}</span>
+      </button>`;
+  }
+
+  el('scr-notes').innerHTML = h;
+  restoreOpenForm();
 }
 
 /* ── Точечные обновления «Сегодня» и «Привычек» (горячие пути) ──
@@ -2422,6 +2526,11 @@ function paramHistory(it) {
    пока открыта та же форма. */
 function currentFormKey() {
   if (ui.detailId !== null && ui.detailForm) return ui.detailForm + ':' + ui.detailId; // формы листа детали
+  // форма заметки принадлежит своей вкладке: на других экранах ключ не её
+  if (ui.tab === 'notes' && ui.detailId === null) {
+    if (ui.noteAdd) return 'note:new';
+    if (ui.noteEditingId !== null) return 'note:' + ui.noteEditingId;
+  }
   if (ui.addOpen) return 'add';
   if (ui.editingId !== null) return 'edit:' + ui.editingId;
   return null;
@@ -2431,7 +2540,10 @@ function currentFormKey() {
    «Пунктов» больше не делят один. Иначе уход в лист стирал бы начатую
    правку названия, а возврат — черновик формы листа. */
 const isDetailKey = key => key.startsWith('formula:') || key.startsWith('ladder:');
-const draftSlot = key => (isDetailKey(key) ? 'detailDraft' : 'formDraft');
+const isNoteKey = key => key.startsWith('note:');
+const draftSlot = key => (isDetailKey(key) ? 'detailDraft' : (isNoteKey(key) ? 'noteDraft' : 'formDraft'));
+/* Экран, на котором живёт форма ключа: снимок ищет её именно там */
+const formScope = key => (isDetailKey(key) ? '#scr-detail' : (isNoteKey(key) ? '#scr-notes' : '#scr-settings'));
 
 function snapshotOpenForm() {
   const key = currentFormKey();
@@ -2440,9 +2552,7 @@ function snapshotOpenForm() {
   // форма ищется на том экране, которому принадлежит ключ: лист открывается
   // поверх «Пунктов», где форма правки остаётся в DOM и стоит в разметке выше
   // формы блока черновиком не считаются — одно поле и один тап
-  const form = document.querySelector(isDetailKey(key)
-    ? '#scr-detail .card.form'
-    : '#scr-settings .card.form:not([data-form="group-add"])');
+  const form = document.querySelector(formScope(key) + ' .card.form:not([data-form="group-add"])');
   const domKey = form ? (form.dataset.form === 'add' ? 'add' : form.dataset.form + ':' + form.dataset.id) : null;
   if (domKey !== key) {
     if (ui[slot] && ui[slot].key !== key) ui[slot] = null; // открыли другую форму
@@ -3012,6 +3122,52 @@ function onClick(e) {
       break;
     }
 
+    // заметки: форма новой и правка существующей взаимно исключают друг друга
+    case 'note-add-open':
+      ui.noteAdd = true;
+      ui.noteEditingId = null;
+      ui.noteDelete = null;
+      ui.noteDraft = null;
+      renderNotes();
+      break;
+
+    case 'note-open':
+      ui.noteEditingId = id;
+      ui.noteAdd = false;
+      ui.noteDelete = null;
+      ui.noteDraft = null;
+      renderNotes();
+      break;
+
+    case 'note-cancel':
+      ui.noteAdd = false;
+      ui.noteEditingId = null;
+      ui.noteDelete = null;
+      ui.noteDraft = null;
+      renderNotes();
+      break;
+
+    case 'note-save': {
+      const text = el('n-text') ? el('n-text').value : '';
+      if (id === 'new') { if (addNote(text)) ui.savedFlash = true; }
+      else if (updateNote(id, text)) ui.savedFlash = true; // пустой текст удаляет заметку
+      ui.noteAdd = false;
+      ui.noteEditingId = null;
+      ui.noteDelete = null;
+      ui.noteDraft = null;
+      renderNotes();
+      break;
+    }
+
+    case 'note-del':
+      if (ui.noteDelete !== id) { ui.noteDelete = id; renderNotes(); break; }
+      deleteNote(id);
+      ui.noteDelete = null;
+      ui.noteEditingId = null;
+      ui.noteDraft = null;
+      renderNotes();
+      break;
+
     case 'ex-add-open': ui.exAddOpen = true; ui.exEditingId = null; renderSettings(); break;
     case 'ex-add-cancel': ui.exAddOpen = false; renderSettings(); break;
     case 'ex-add-save': {
@@ -3420,6 +3576,8 @@ if (typeof module !== 'undefined' && module.exports) {
     lowerEligible, lowerSuggest, acceptLower, keepBar,
     // упражнения и тренировки (задача 16D)
     activeExercises, findExercise, addExercise, updateExercise, moveExercise, recordSession,
+    // заметки (задача 16E)
+    addNote, updateNote, deleteNote, notesByDate,
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, recordBar, parsePositive, isDayKey, load,

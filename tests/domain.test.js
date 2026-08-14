@@ -437,7 +437,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -468,7 +468,7 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 12);
+    assert.equal(m.schemaVersion, 13);
     assert.equal(Array.isArray(m.items), true);
     assert.equal(m.items.length, 10); // дефолтный набор: 7 минимум + 3 привычки
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);
@@ -585,7 +585,7 @@ test('З2: мусорный schemaVersion трактуется как v1 — в�
   const src = v1Store();
   src.schemaVersion = 'мусор';
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
   assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
@@ -613,7 +613,7 @@ test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпоте
     ]
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.equal(m.reviews[0].weekStart, '2026-06-01');
   assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
@@ -718,7 +718,7 @@ test('З4: миграция v3→v4 — exportedAt с мягким дефолт�
     settings: { dayBoundary: 4, hintShownForItemId: null }
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.equal(m.settings.exportedAt, null);
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
   assert.deepEqual(again, m);
@@ -1124,7 +1124,7 @@ test('З11: миграция v6 — норма достроена и валид�
     settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
   };
   const m = app.migrate(v5);
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.equal(m.items.find(i => i.id === 'h1').normPerWeek, 7); // достроена умолчанием
   assert.equal(m.items.find(i => i.id === 'h2').normPerWeek, 7); // мусор → умолчание
   assert.equal(m.items.find(i => i.id === 'h3').normPerWeek, 1); // к ближайшему допустимому
@@ -1193,7 +1193,7 @@ test('З10: hintShownForItemId мёртв — нет в defaultStore, v5-миг�
     pendingRaises: [], draftOneChange: '', weekStart: '2026-07-13',
     settings: { dayBoundary: 4, hintShownForItemId: 'x1', exportedAt: null }
   });
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.equal('hintShownForItemId' in m.settings, false);
 });
 
@@ -1506,7 +1506,7 @@ test('З14: миграция v6→v7 — поля достроены, лестн
   const m = app.migrate(v6);
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.equal(byId.i1.formula, null);           // достроено умолчанием
   assert.equal(byId.i1.ladder, null);
   assert.deepEqual(byId.i1.ladderLog, []);
@@ -1592,7 +1592,7 @@ test('З14.2: миграция v7→v8 — пустому журналу жив�
   const m = app.migrate(mkV7());
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   // старт от startedAt, ступень и текст — те, на которых лестница стоит сейчас
   assert.deepEqual(byId.i1.ladderLog, [{ date: '2026-07-02', step: 1, text: 'два', start: true }]);
   assert.deepEqual(byId.i2.ladderLog, []); // без лестницы журнал не заводится
@@ -1704,7 +1704,7 @@ test('З15: миграция v8→v9 — группы в порядке перв
   });
 
   const m = app.migrate(mkV8());
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.deepEqual(m.groups, [{ name: 'Сон' }, { name: 'Тело' }]); // порядок первого появления
   assert.deepEqual(m.days, days);       // миграция аддитивна
   assert.deepEqual(m.reviews, reviews);
@@ -2128,7 +2128,7 @@ test('З16C: миграция v10→v11 — якоря недель и pendingLo
   v10.items[1].lowerAfterWeek = 'мусор';
 
   const m = app.migrate(JSON.parse(JSON.stringify(v10)));
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.deepEqual(m.pendingLowers, []);
   assert.equal(m.items[0].raiseAfterWeek, '2026-07-13', 'не-понедельник приведён к своему понедельнику');
   assert.equal(m.items[1].lowerAfterWeek, null);
@@ -2244,7 +2244,7 @@ test('З16D: миграция v11→v12 — упражнения и сессии
   delete v11.sessions;
 
   const m = app.migrate(JSON.parse(JSON.stringify(v11)));
-  assert.equal(m.schemaVersion, 12);
+  assert.equal(m.schemaVersion, 13);
   assert.deepEqual(m.exercises, []);
   assert.deepEqual(m.sessions, []);
   assert.deepEqual(m.days, v11.days, 'аддитивность: отметки не тронуты');
@@ -2282,4 +2282,76 @@ test('З16D: упражнение с двумя записями истории 
   assert.equal(ser.kind, 'bar');
   assert.deepEqual(ser.points.map(p => p.value), [40, 45]);
   assert.equal((app.risePath(ser.points).match(/[HV]/g) || []).length, 3);
+});
+
+/* ── Задача 16, фаза E. Заметки (инвариант 16) ─────────────── */
+
+test('З16E: заметка — создание, правка, удаление, пустой текст = удаление', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+
+  assert.equal(app.addNote('   '), null, 'пустая заметка не заводится');
+  const n = app.addNote('  первая мысль  ');
+  assert.equal(n.text, 'первая мысль', 'текст с trim');
+  assert.equal(n.date, app.todayKey());
+  assert.equal(s.notes.length, 1);
+
+  assert.equal(app.updateNote(n.id, ' поправленная '), true);
+  assert.equal(n.text, 'поправленная');
+  assert.equal(app.updateNote('нет такой', 'x'), false);
+
+  // пустой текст при сохранении удаляет заметку
+  assert.equal(app.updateNote(n.id, '    '), true);
+  assert.deepEqual(s.notes, []);
+
+  const a = app.addNote('к удалению');
+  assert.equal(app.deleteNote(a.id), true);
+  assert.equal(app.deleteNote(a.id), false);
+  assert.deepEqual(s.notes, []);
+});
+
+test('З16E: порядок — от новых к старым, при равном дне по времени правки', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const old = app.addNote('позавчерашняя');
+  old.date = app.addDays(app.todayKey(), -2);
+  const a = app.addNote('сегодня раньше');
+  a.updatedAt = 1000;
+  const b = app.addNote('сегодня позже');
+  b.updatedAt = 2000;
+
+  assert.deepEqual(app.notesByDate().map(x => x.text),
+    ['сегодня позже', 'сегодня раньше', 'позавчерашняя']);
+  assert.equal(s.notes[0].text, 'позавчерашняя', 'сортировка не переставляет хранилище');
+});
+
+test('З16E: миграция v12→v13 и экспорт → импорт заметок', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const v12 = app.defaultStore();
+  v12.schemaVersion = 12;
+  delete v12.notes;
+
+  const m = app.migrate(JSON.parse(JSON.stringify(v12)));
+  assert.equal(m.schemaVersion, 13);
+  assert.deepEqual(m.notes, []);
+  assert.deepEqual(m.days, v12.days, 'аддитивность');
+
+  const dirty = JSON.parse(JSON.stringify(m));
+  dirty.notes = [
+    null, 'строка', { text: '   ' },                        // мусор и пустые
+    { id: 'n1', date: 'не дата', text: '  живая  ', updatedAt: '5' },
+    { id: 'n1', date: '2026-08-10', text: 'дубль id' }
+  ];
+  const m2 = app.migrate(dirty);
+  assert.equal(m2.notes.length, 2);
+  assert.equal(m2.notes[0].text, 'живая');
+  assert.equal(m2.notes[0].date, app.todayKey(), 'битая дата — сегодняшний день');
+  assert.equal(m2.notes[0].updatedAt, 5);
+  assert.notEqual(m2.notes[1].id, m2.notes[0].id, 'дубль id переписан');
+  assert.deepEqual(app.migrate(JSON.parse(JSON.stringify(m2))), m2);
+
+  // экспорт → импорт: заметки восстанавливаются полностью
+  app.store = m2;
+  const roundTrip = app.migrate(JSON.parse(JSON.stringify(app.store)));
+  assert.deepEqual(roundTrip.notes, m2.notes);
 });

@@ -603,6 +603,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .exctl { flex: none; display: flex; align-items: center; gap: 6px; }
 .exline .num { width: 72px; text-align: center; }
 
+/* ── «Заметки» (задача 16E) ────────────────────────────────────
+   Карточка-кнопка: дата тихой строкой, ниже текст владельца как есть. */
+
+.card.note {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  margin-top: 12px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ndate { font-size: var(--text-xs); color: var(--muted); }
+.ntext { font-size: var(--text-sm); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* ── Секции «Настроек» (задача 16B) ────────────────────────────
    Нативный details: раскрытие без JS, состояние помнит ui. */
 

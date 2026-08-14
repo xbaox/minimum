@@ -1467,7 +1467,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 12);
+  assert.equal(snap.schemaVersion, 13);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1543,7 +1543,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 12);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, 13);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1718,7 +1718,7 @@ test('«Пункты»: кнопка листа есть в форме daily, н
   // ни в одной строке списка кнопки листа нет
   document.querySelector('[data-act="edit-cancel"]').click();
   assert.equal(document.querySelectorAll('#scr-settings .row.item [data-act="item-detail"]').length, 0);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 12);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 13);
 });
 
 test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
@@ -2566,4 +2566,94 @@ test('«Прогресс»: упражнение с двумя записями 
   assert.match(blocks[0].textContent, /Жим/);
   assert.match(blocks[0].querySelector('.rise-v').textContent, /^40 → 45 кг$/);
   assert.equal((blocks[0].querySelector('path').getAttribute('d').match(/[HV]/g) || []).length, 3);
+});
+
+/* ── Задача 16, фаза E. Экран «Заметки» ────────────────────── */
+
+test('«Заметки»: создание, правка, удаление вторым тапом, порядок от новых', async () => {
+  const { document, window } = await boot();
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  const scr = () => document.getElementById('scr-notes');
+  assert.match(scr().textContent, /Пока пусто/);
+
+  // создание
+  document.querySelector('[data-act="note-add-open"]').click();
+  document.getElementById('n-text').value = 'первая мысль';
+  document.querySelector('[data-act="note-save"]').click();
+  assert.equal(saved().notes.length, 1);
+  assert.equal(saved().notes[0].text, 'первая мысль');
+  assert.doesNotMatch(scr().textContent, /Пока пусто/);
+  const cards = () => [...scr().querySelectorAll('.card.note')];
+  assert.equal(cards().length, 1);
+  assert.match(cards()[0].querySelector('.ntext').textContent, /первая мысль/);
+
+  // вторая заметка — новая идёт первой
+  document.querySelector('[data-act="note-add-open"]').click();
+  document.getElementById('n-text').value = 'вторая мысль';
+  document.querySelector('[data-act="note-save"]').click();
+  assert.deepEqual(cards().map(c => c.querySelector('.ntext').textContent),
+    ['вторая мысль', 'первая мысль']);
+
+  // правка: тап по карточке раскрывает форму с текстом
+  cards()[1].click();
+  assert.equal(document.getElementById('n-text').value, 'первая мысль');
+  document.getElementById('n-text').value = 'первая, поправленная';
+  document.querySelector('[data-act="note-save"]').click();
+  assert.equal(saved().notes.find(n => n.text === 'первая, поправленная') !== undefined, true);
+
+  // пустой текст при сохранении удаляет заметку
+  cards()[1].click();
+  document.getElementById('n-text').value = '   ';
+  document.querySelector('[data-act="note-save"]').click();
+  assert.equal(saved().notes.length, 1);
+  assert.equal(cards().length, 1);
+
+  // удаление — вторым тапом
+  cards()[0].click();
+  const del = () => document.querySelector('[data-act="note-del"]');
+  assert.match(del().textContent, /^Удалить$/);
+  del().click();
+  assert.match(del().textContent, /Подтвердить удаление/);
+  assert.equal(saved().notes.length, 1, 'первый тап не удаляет');
+  del().click();
+  assert.deepEqual(saved().notes, []);
+  assert.match(scr().textContent, /Пока пусто/);
+});
+
+test('«Заметки»: черновик переживает смену логического дня, «Отмена» ничего не пишет', async () => {
+  const { document, window } = await boot();
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  document.querySelector('[data-act="note-add-open"]').click();
+  document.getElementById('n-text').value = 'начатая мысль';
+
+  // смена логического дня перерисовывает экран (инвариант 8) — черновик остаётся
+  shiftWindowDate(window, 26 * 3600000);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  assert.equal(document.getElementById('n-text').value, 'начатая мысль');
+  assert.deepEqual(JSON.parse(window.localStorage.getItem(NS)).notes, [], 'ничего не записано');
+
+  document.querySelector('[data-act="note-cancel"]').click();
+  assert.equal(document.getElementById('n-text'), null, 'форма закрыта');
+  assert.deepEqual(JSON.parse(window.localStorage.getItem(NS)).notes, []);
+});
+
+test('«Заметки»: экспорт → очистка → импорт восстанавливает записи', async () => {
+  const seed = dueSeed();
+  seed.notes = [
+    { id: 'n1', date: daysAgo(3), text: 'старая', updatedAt: 1 },
+    { id: 'n2', date: daysAgo(0), text: 'свежая', updatedAt: 2 }
+  ];
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  assert.deepEqual([...document.querySelectorAll('#scr-notes .ntext')].map(x => x.textContent),
+    ['свежая', 'старая']);
+
+  // экспорт хранит заметки; импорт того же JSON возвращает их
+  const exported = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(exported.notes.length, 2);
+  const b = await boot({ seed: exported });
+  b.document.querySelector('#tabs button[data-tab="notes"]').click();
+  assert.deepEqual([...b.document.querySelectorAll('#scr-notes .ntext')].map(x => x.textContent),
+    ['свежая', 'старая']);
 });
