@@ -2802,3 +2802,85 @@ test('стрелки после 16F: двигают внутри блока и �
   assert.deepEqual(saved().items.map(i => i.id), ['a1', 'a3', 'b1', 'a2']);
   assert.equal(saved().items[2].id, 'b1', 'чужой блок не сдвинулся');
 });
+
+/* ── Задача 16, фаза G. Отделка ────────────────────────────── */
+
+test('источники: новых кеглей и радиусов не заведено — только прежняя шкала', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const values = re => new Set([...css.matchAll(re)].map(m => m[1].trim()));
+
+  // снимок шкалы, какой она была до задачи 16: новые поверхности обязаны
+  // жить на ней. Токены — предпочтительная форма, сырые px — наследие.
+  const SIZES = new Set(['var(--text-base)', 'var(--text-sm)', 'var(--text-xs)',
+    '10px', '11px', '12px', '13px', '14px', '15px', '16px', '17px', '18px', '20px', '22px', '24px', '32px']);
+  const RADII = new Set(['var(--radius)', 'var(--radius-md)', 'var(--radius-sm)',
+    '2px', '8px', '10px', '14px', '50%']);
+
+  for (const v of values(/font-size:\s*([^;]+);/g)) {
+    assert.ok(SIZES.has(v), `новый кегль в styles.css: ${v}`);
+  }
+  for (const v of values(/border-radius:\s*([^;]+);/g)) {
+    assert.ok(RADII.has(v), `новый радиус в styles.css: ${v}`);
+  }
+
+  // поля ввода не мельче 16px (iOS иначе зумит при фокусе)
+  const fieldRule = (css.match(/\.field input[^{]*\{([^}]*)\}/) || [])[1] || '';
+  assert.match(fieldRule, /font-size:\s*16px/);
+  const numRule = (css.match(/\.raise-line \.num[^{]*\{([^}]*)\}/) || [])[1] || '';
+  assert.match(numRule, /font-size:\s*16px/);
+  assert.match(numRule, /min-height:\s*44px/);
+
+  // движение новых поверхностей — в окне 180–260 мс и снимается reduced-motion
+  const drag = (css.match(/\.drag-row\s*\{([^}]*)\}/) || [])[1] || '';
+  const ms = Number((drag.match(/transition:[^;]*?([\d.]+)s/) || [])[1]) * 1000;
+  assert.ok(ms >= 180 && ms <= 260, `переход раздвижения ${ms} мс вне окна 180–260`);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\*, \*::before, \*::after\s*\{[^}]*transition: none !important/);
+});
+
+test('пустое хранилище: все экраны и листы рендерятся без исключений', async () => {
+  // store без единой записи — состояние после импорта пустого экспорта
+  const empty = {
+    schemaVersion: 13, items: [], groups: [], days: {}, weekLog: [], reviews: [],
+    pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: daysAgo(0),
+    settings: { dayBoundary: 4, exportedAt: null, calendarSince: curMonday(), habitSeeded: true }
+  };
+  const { document } = await boot({ seed: empty });
+
+  const map = {
+    today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
+    notes: 'scr-notes', settings: 'scr-settings'
+  };
+  for (const [tab, id] of Object.entries(map)) {
+    document.querySelector(`#tabs button[data-tab="${tab}"]`).click();
+    const scr = document.getElementById(id);
+    assert.equal(scr.hidden, false, tab);
+    assert.ok(scr.innerHTML.length > 0, tab);
+  }
+
+  // «Сегодня» пуст и молчит: ни планки дня, ни счётчиков
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  const today = document.getElementById('scr-today');
+  assert.equal(today.querySelectorAll('input[data-act="mark"]').length, 0);
+  assert.equal(today.querySelector('.weekcount'), null);
+  assert.match(today.textContent, /Нет активных пунктов/);
+
+  // «Прогресс» на пустых данных: ноль дней, ноль серии, сетка на месте
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  const prog = document.getElementById('scr-progress');
+  // эпоха началась в понедельник этой недели: «в системе» — её прожитые дни
+  const inSystem = Math.round((new Date(daysAgo(0)) - new Date(curMonday())) / 86400000) + 1;
+  const stats = [...prog.querySelectorAll('.stat')].map(x => x.textContent);
+  assert.match(stats[0], new RegExp('^' + inSystem + ' '));
+  assert.match(stats[1], /^0 дней$/, 'серии на пустых данных нет');
+  assert.equal(prog.querySelectorAll('.cdays i').length, 56);
+  assert.equal(prog.querySelectorAll('.rise').length, 0, 'подъёма без истории нет');
+  assert.doesNotMatch(prog.textContent, /Отметки/);
+
+  // «Настройки» пусты, но живы
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const sett = document.getElementById('scr-settings');
+  assert.match(sett.textContent, /Блоков пока нет/);
+  assert.match(sett.textContent, /Упражнений пока нет/);
+  assert.equal(sett.querySelectorAll('[data-drag]').length, 0);
+});
