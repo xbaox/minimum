@@ -96,16 +96,64 @@ test('цепочка: тон отличается от прежнего и св�
   }
 });
 
+/* Задача 19, B.4.3: мерить ОБА фона.
+   До этого текстовые токены проверялись только против --bg. Карточки
+   .pcard на --surface появились в задаче 17 и в покрытие не попали —
+   через эту дыру и прошёл --faint 4,36:1 в тёмной теме (аудит, находка 9).
+   Фон у текста в приложении ровно два: --bg (экран) и --surface
+   (карточки «Прогресса», заметок, форм), поэтому меряем против обоих. */
+const BACKGROUNDS = ['bg', 'surface'];
+const TEXT_TOKENS = ['fg', 'muted', 'faint', 'accent'];      // порог 4.5:1
+const NONTEXT_TOKENS = ['dot', 'control-border', 'chain'];   // порог 3:1
+
 for (const [theme, vars] of Object.entries(THEMES)) {
-  test(`контраст (${theme}): muted/faint ≥4.5, dot/control-border ≥3 против --bg`, () => {
-    assert.ok(vars.bg, '--bg определён');
-    for (const [name, min] of THRESHOLDS) {
+  test(`контраст (${theme}): текстовые токены ≥4.5 против --bg И против --surface`, () => {
+    for (const bgName of BACKGROUNDS) assert.ok(vars[bgName], `--${bgName} определён в теме ${theme}`);
+    for (const name of TEXT_TOKENS) {
       assert.ok(vars[name], `--${name} определён в теме ${theme}`);
-      const c = contrast(vars[name], vars.bg);
-      assert.ok(c >= min, `--${name} ${vars[name]} на ${vars.bg}: ${c.toFixed(2)}:1 < ${min}:1`);
+      for (const bgName of BACKGROUNDS) {
+        const c = contrast(vars[name], vars[bgName]);
+        assert.ok(c >= 4.5,
+          `--${name} ${vars[name]} на --${bgName} ${vars[bgName]} (${theme}): ${c.toFixed(2)}:1 < 4.5:1`);
+      }
     }
-    // тихая иерархия по светлоте сохранена: fg контрастнее muted, muted не тише faint
-    assert.ok(contrast(vars.fg, vars.bg) > contrast(vars.muted, vars.bg), 'fg заметнее muted');
-    assert.ok(contrast(vars.muted, vars.bg) >= contrast(vars.faint, vars.bg), 'muted не тише faint');
+    // текст на акценте — третий фон, он же единственный у primary-кнопки
+    const onAcc = contrast(vars['on-accent'], vars.accent);
+    assert.ok(onAcc >= 4.5, `--on-accent на --accent (${theme}): ${onAcc.toFixed(2)}:1 < 4.5:1`);
+  });
+
+  test(`контраст (${theme}): нетекстовые токены ≥3 против --bg И против --surface`, () => {
+    for (const name of NONTEXT_TOKENS) {
+      assert.ok(vars[name], `--${name} определён в теме ${theme}`);
+      for (const bgName of BACKGROUNDS) {
+        const c = contrast(vars[name], vars[bgName]);
+        assert.ok(c >= 3,
+          `--${name} ${vars[name]} на --${bgName} ${vars[bgName]} (${theme}): ${c.toFixed(2)}:1 < 3:1`);
+      }
+    }
+  });
+
+  test(`контраст (${theme}): тихая иерархия вторичного текста на обоих фонах`, () => {
+    for (const bgName of BACKGROUNDS) {
+      assert.ok(contrast(vars.fg, vars[bgName]) > contrast(vars.muted, vars[bgName]),
+        `fg заметнее muted на --${bgName}`);
+      assert.ok(contrast(vars.muted, vars[bgName]) >= contrast(vars.faint, vars[bgName]),
+        `muted не тише faint на --${bgName}`);
+    }
   });
 }
+
+/* Пустая ячейка «Цепи дней» отличается от неотрисованной только обводкой —
+   это несущий информацию нетекстовый элемент, а не разделитель, и порог
+   3:1 к нему применим (задача 19, B.4.2; --line давал 1,17:1). */
+test('цепь дней: обводка пустой ячейки — контрастная переменная, ≥3:1 на обоих фонах', () => {
+  const v = (CSS.match(/\.cdays i\s*\{[^}]*border-color:\s*var\(--([\w-]+)\)/) || [])[1];
+  assert.ok(v, 'обводка .cdays i задаётся переменной');
+  assert.notEqual(v, 'line', 'обводка пустой ячейки не должна быть тоном разделителей');
+  for (const [theme, vars] of Object.entries(THEMES)) {
+    for (const bgName of BACKGROUNDS) {
+      const c = contrast(vars[v], vars[bgName]);
+      assert.ok(c >= 3, `--${v} на --${bgName} (${theme}): ${c.toFixed(2)}:1 < 3:1`);
+    }
+  }
+});

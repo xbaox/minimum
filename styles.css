@@ -44,7 +44,7 @@
     --surface: #17181c;
     --fg: #e8e9e8;
     --muted: #84878d;
-    --faint: #7b7e84;
+    --faint: #7e8187;                    /* ≥4.5:1 и на --bg, и на --surface (задача 19, B.4.1) */
     --line: #24262b;
     --line-strong: #3d4046;
     --control-border: #666a71;
@@ -412,11 +412,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 /* ── Экран «Пункты» ────────────────────────────────────────── */
 
 .row.item { align-items: center; }
+/* Тач-таргет ≥44px (задача 19, B.2): строка и так не ниже 44px — её держит
+   блок управления, — но сама кнопка занимала по высоте только свой текст
+   (32,6px у однострочной), и полосы сверху и снизу тапу не отвечали.
+   min-height растягивает кнопку внутри строки; justify-content держит
+   текст по центру, поэтому вид однострочной строки не меняется.
+   Ширина текстовой колонки от этого не зависит — flex остаётся прежним. */
 .itxt {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  justify-content: center;
+  min-height: 44px;
   gap: 2px;
   padding: 4px 0;
   font: inherit;
@@ -613,7 +621,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   margin: 12px 0 6px;
 }
 .cd-head { font-size: var(--text-xs); color: var(--faint); text-align: center; }
-.cdays i { border-color: var(--line); }              /* день без отметок */
+.cdays i { border-color: var(--control-border); }     /* день без отметок: обводка — единственный признак, ≥3:1 (B.4.2) */
 .cdays i.part { border-color: var(--accent); }       /* отмечено, но ниже порога */
 .cdays i.full { background: var(--accent); border-color: var(--accent); }
 .cdays i.fut,

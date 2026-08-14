@@ -73,6 +73,12 @@ async function boot({ seed, raw, idb } = {}) {
     await new Promise(res => window.addEventListener('load', res));
   }
   window.scrollTo = () => {}; // в jsdom не реализовано — глушим шум
+  // exportJSON зовёт URL.createObjectURL, которого в jsdom нет: без заглушки
+  // клик по «Экспорт» роняет необработанное исключение в окно, и раннер
+  // приписывает его тому тесту, который в этот момент идёт, — не тому, что
+  // его породил. Заглушка стоит в boot, чтобы это было верно для всех окон.
+  window.URL.createObjectURL = () => 'blob:fake';
+  window.URL.revokeObjectURL = () => {};
   if (idb) window.indexedDB = idb; // fake-indexeddb: app.js увидит его через window
   if (raw != null) window.localStorage.setItem(NS, raw);
   else if (seed) window.localStorage.setItem(NS, JSON.stringify(seed));
@@ -1192,8 +1198,8 @@ test('движение: при reduced-motion карточка уходит не
 test('движение: тихое подтверждение «Сохранено» показывается один раз и гаснет при следующем рендере', async () => {
   const { document } = await boot();
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  const addHabit = [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit');
-  addHabit.click();
+  const addHabit = () => [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit');
+  addHabit().click();
   document.getElementById('f-name').value = 'Растяжка';
   document.querySelector('[data-act="add-save"]').click();
 
@@ -3529,4 +3535,110 @@ test('A.5.2: «Три закрытые недели» — три последн�
   assert.equal(val[0], '1 · 2 · 3 из 7', 'числа из days{}, порядок от старой недели к новой');
   assert.equal([...scr.querySelectorAll('.c-val')].some(x => /7 · 7/.test(x.textContent)), false,
     'числа из архива разборов в блок не попали');
+});
+
+/* ── Задача 19, фаза B ─────────────────────────────────────── */
+
+test('B.3.3: блок назначается привычке через форму и рисуется на «Привычках» линией', async () => {
+  const seed = dueSeed();
+  seed.groups = [{ name: 'Вечер' }];
+  seed.items.push(
+    { id: 'h1', name: 'Привычка-1', value: null, unit: '', type: 'daily', area: 'habit',
+      normPerWeek: 7, goal: null, note: '', group: '', active: true, addedAt: daysAgo(20), raiseAfter: 0, history: [] },
+    { id: 'h2', name: 'Привычка-2', value: null, unit: '', type: 'daily', area: 'habit',
+      normPerWeek: 7, goal: null, note: '', group: 'Вечер', active: true, addedAt: daysAgo(20), raiseAfter: 0, history: [] },
+    { id: 'pt', name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
+      pkind: 'time', pvalue: 0, pstep: -15, goal: null, note: '', group: '', active: true,
+      addedAt: daysAgo(20), raiseAfter: 0, history: [{ date: daysAgo(20), value: 0 }] }
+  );
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+
+  // до правки блока у привычки нет — на «Привычках» линии тоже нет
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  assert.equal(document.querySelectorAll('#scr-habits .chain').length, 0, 'связки пока нет');
+
+  // форма правки привычки: поле «Блок» есть и предлагает заведённые блоки
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const open = [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'h1');
+  open.click();
+  const sel = document.getElementById('e-group');
+  assert.ok(sel, 'у привычки есть поле «Блок»');
+  assert.ok([...sel.options].some(o => o.value === 'Вечер'), 'блок «Вечер» в списке');
+  sel.value = 'Вечер';
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  [...document.querySelectorAll('[data-act="edit-save"]')].find(b => b.dataset.id === 'h1').click();
+
+  const h1 = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'h1');
+  assert.equal(h1.group, 'Вечер', 'блок сохранён у привычки');
+
+  // на «Привычках» две привычки одного блока связаны линией
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const scr = document.getElementById('scr-habits');
+  const labels = [...scr.querySelectorAll('.g-label')].map(x => x.textContent);
+  assert.ok(labels.includes('Вечер'), 'заголовок блока на «Привычках»: ' + labels.join('/'));
+  const chain = scr.querySelector('.chain');
+  assert.ok(chain, 'блок из двух активных привычек рисует связку');
+  assert.equal(chain.querySelectorAll('.rowwrap').length, 2);
+  assert.ok(chain.querySelector('.cseg'), 'половины линии на месте');
+
+  // и у параметра поле «Блок» тоже есть
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'pt').click();
+  assert.ok(document.getElementById('e-group'), 'у параметра есть поле «Блок»');
+});
+
+test('B.3: форма новой привычки и нового параметра несёт поле «Блок»', async () => {
+  const seed = dueSeed();
+  seed.groups = [{ name: 'Вечер' }];
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  // кнопку ищем заново каждый раз: renderSettings пересоздаёт разметку
+  const addHabit = () => [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit');
+  addHabit().click();
+  assert.ok(document.getElementById('f-group'), 'поле «Блок» в форме новой привычки');
+  document.getElementById('f-name').value = 'Новая привычка';
+  document.getElementById('f-group').value = 'Вечер';
+  document.querySelector('[data-act="add-save"]').click();
+  let items = JSON.parse(window.localStorage.getItem(NS)).items;
+  assert.equal(items[items.length - 1].group, 'Вечер', 'блок записан при создании привычки');
+
+  // и у параметра: переключаем тип формы
+  addHabit().click();
+  const type = document.getElementById('f-type');
+  type.value = 'param';
+  type.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.ok(document.getElementById('f-group'), 'поле «Блок» в форме нового параметра');
+  document.getElementById('f-name').value = 'Новый порог';
+  document.getElementById('f-group').value = 'Вечер';
+  document.querySelector('[data-act="add-save"]').click();
+  items = JSON.parse(window.localStorage.getItem(NS)).items;
+  const p = items[items.length - 1];
+  assert.equal(p.type, 'param');
+  assert.equal(p.group, 'Вечер', 'блок записан при создании параметра');
+});
+
+test('B.5: поле правки предлагаемой планки имеет доступное имя', async () => {
+  const seed = dueSeed();
+  const prev = prevMonday();
+  // три недели по 7 из 7 — карточка повышения
+  for (let w = 1; w <= 3; w++) fillWeek(seed.days, 'it1', addKey(prev, -7 * (w - 1)), 7);
+  seed.settings.calendarSince = addKey(prev, -70);
+  const { document } = await boot({ seed });
+  openReview(document);
+  const edit = document.querySelector('[data-act="raise-edit"]');
+  assert.ok(edit, 'карточка повышения на месте');
+  edit.click();
+  const inp = document.querySelector('#scr-review input.num');
+  assert.ok(inp, 'поле ввода раскрыто');
+  const name = inp.getAttribute('aria-label');
+  assert.ok(name && name.trim(), 'у поля есть доступное имя');
+  assert.match(name, /Тестовый пункт/, 'имя называет пункт');
+});
+
+test('B.2: тач-таргет .itxt — min-height 44px в правиле', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  const rule = (css.match(/\.itxt\s*\{([^}]*)\}/) || [])[1] || '';
+  assert.match(rule, /min-height:\s*44px/, '.itxt не ниже тач-таргета');
+  assert.match(rule, /justify-content:\s*center/, 'текст остаётся по центру строки');
 });

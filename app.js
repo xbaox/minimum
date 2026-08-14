@@ -1631,22 +1631,74 @@ function dayStreak() {
 }
 
 /* Рекорд — максимальная серия за всю историю по тем же правилам:
-   в store не хранится, считается по days{} при каждом показе. Доли
-   дней берутся из таблицы: без неё проход был бы квадратичным ещё и
-   по пунктам. Дней в эпохе — сотни, этого довольно. */
+   в store не хранится, считается по days{} при каждом показе.
+
+   Считается ОДНИМ проходом (задача 19, B.1). Раньше здесь стоял
+   streakBack для каждого дня эпохи, и каждый уходил назад до
+   calendarSince: квадратично по дням. Замер аудита — 100 мс на годе,
+   940 мс на трёх годах, и «Прогресс» замирал вместе с ним.
+
+   Наблюдение, которое делает проход линейным: куда упрётся счёт,
+   зависит не от дня, которым он кончается, а от ЦЕПОЧКИ незачтённых
+   дней под ним. Счёт, начатый выше незачтённого дня u, прощает u,
+   потом следующий незачтённый v — если v дальше AMNESTY_GAP, иначе
+   обрывается на нём. Значит для каждого незачтённого дня можно один
+   раз вычислить день обрыва (breakAt) по предыдущему такому же, а
+   длину серии, кончающейся днём i, взять как разность префиксных
+   сумм зачтённых дней. Дни без применимых пунктов (доля null) в
+   обеих суммах прозрачны — как и в streakBack. */
 function bestStreak() {
   const t = todayKey();
   const since = store.settings.calendarSince;
   if (!isDayKey(since) || t < since) return 0;
-  const tab = Object.create(null);
-  for (let k = since; k <= t; k = addDays(k, 1)) tab[k] = dayScore(k);
-  const score = k => (k in tab ? tab[k] : dayScore(k));
-  let best = 0;
+  const th = dayThreshold() - EPS;
+
+  // проход первый: доли дней, префикс зачтённых, список незачтённых
+  const days = [];       // дни эпохи по возрастанию
+  const scored = [];     // scored[i] — зачтённых дней в days[0..i]
+  const unscored = [];   // индексы дней с долей ниже порога (null — не сюда)
+  let acc = 0;
   for (let k = since; k <= t; k = addDays(k, 1)) {
-    const n = streakBack(k, score);
+    const s = dayScore(k);
+    if (s !== null) {
+      if (s >= th) acc++;
+      else unscored.push(days.length);
+    }
+    days.push(k);
+    scored.push(acc);
+  }
+
+  // проход второй: цепочка амнистий. breakAt[j] — индекс дня, на котором
+  // оборвётся счёт, спустившийся ниже j-го незачтённого дня; −1 — обрыва
+  // нет, счёт доходит до начала эпохи.
+  const breakAt = new Array(unscored.length);
+  for (let j = 0; j < unscored.length; j++) {
+    if (j === 0) { breakAt[j] = -1; continue; }
+    const u = days[unscored[j]], v = days[unscored[j - 1]];
+    breakAt[j] = diffDays(u, v) <= AMNESTY_GAP ? unscored[j - 1] : breakAt[j - 1];
+  }
+
+  // длина серии, кончающейся днём i (правило «сегодня» сюда не входит)
+  const upto = (i, j) => {
+    if (i < 0) return 0;
+    if (j < 0) return scored[i];              // незачтённых под ним не было
+    const b = breakAt[j];
+    return scored[i] - (b < 0 ? 0 : scored[b]);
+  };
+
+  // проход третий: максимум. j идёт вместе с i — последний незачтённый ≤ i
+  const last = days.length - 1;
+  let best = 0, j = -1;
+  for (let i = 0; i < last; i++) {
+    if (j + 1 < unscored.length && unscored[j + 1] === i) j++;
+    const n = upto(i, j);
     if (n > best) best = n;
   }
-  return best;
+  // сегодня по особому правилу: незачтённый пропускается, а не амнистируется,
+  // поэтому счёт за сегодня — это счёт за вчера плюс сам сегодняшний день
+  const todayScored = scored[last] - (last > 0 ? scored[last - 1] : 0);
+  const nToday = (last > 0 ? upto(last - 1, j) : 0) + todayScored;
+  return nToday > best ? nToday : best;
 }
 
 /* Понедельники последних n календарных недель по возрастанию, включая
@@ -2833,7 +2885,7 @@ function renderReview() {
         <p>${esc(it.name)}: три недели подряд не меньше 6 из 7.</p>
         <p class="raise-line">Повысить ${esc(String(it.value))} →
           ${editing
-            ? `<input class="num" id="raise-${esc(it.id)}" type="text" inputmode="decimal" value="${esc(String(sug))}">`
+            ? `<input class="num" id="raise-${esc(it.id)}" type="text" inputmode="decimal" value="${esc(String(sug))}" aria-label="новая планка: «${esc(it.name)}»${it.unit ? ', ' + esc(it.unit) : ''}">`
             : `<b>${esc(String(sug))}</b>`}
           ${it.unit ? esc(it.unit) : ''}?</p>
         <p class="muted">Только если стало легко</p>
@@ -3404,7 +3456,8 @@ function editForm(it) {
             <label class="field"><span>Единица</span><input type="text" id="e-punit" value="${esc(it.unit || '')}"></label>
           </div>`
         : `<label class="field"><span>Порог</span><input id="e-ptime" type="time" value="${esc(fmtParam(it))}"></label>`}
-      <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="e-pstep" value="${esc(it.pstep)}"></label>` + foot;
+      <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="e-pstep" value="${esc(it.pstep)}"></label>
+      ${groupField('e', it.group)}` + foot;
   }
   if (it.area === 'habit') {
     // привычка: название, подпись и норма недели степпером (границы 1–7)
@@ -3416,7 +3469,8 @@ function editForm(it) {
           <button type="button" class="btn icon quiet" data-act="norm-dec" data-id="${esc(it.id)}"${n <= 1 ? ' disabled' : ''} aria-label="уменьшить норму">&minus;</button>
           <button type="button" class="btn icon quiet" data-act="norm-inc" data-id="${esc(it.id)}"${n >= 7 ? ' disabled' : ''} aria-label="увеличить норму">+</button>
         </span>
-      </div>` + foot;
+      </div>
+      ${groupField('e', it.group)}` + foot;
   }
   return head + `
       <div class="pair">
@@ -3464,7 +3518,8 @@ function addForm() {
             <label class="field"><span>Единица</span><input type="text" id="f-punit" placeholder="шаг."></label>
           </div>`
         : `<label class="field"><span>Порог</span><input id="f-ptime" type="time" value="00:00"></label>`}
-      <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="f-pstep" placeholder="-15"></label>` : ''}` + foot;
+      <label class="field"><span>Шаг (со знаком)</span><input class="num" type="text" inputmode="decimal" id="f-pstep" placeholder="-15"></label>` : ''}
+      ${groupField('f', '')}` + foot;
   }
   return head + `
       <div class="pair">
@@ -4112,7 +4167,6 @@ function onClick(e) {
           // невалидный ввод — старое значение сохраняется
         }
         item.unit = el('e-unit').value.trim();
-        item.group = readGroupField('e', item.group);
         if (item.type === 'weekly') {
           const g = parsePositive(el('e-goal') ? el('e-goal').value : null);
           if (g !== null && Math.round(g) >= 1) item.goal = Math.round(g); // невалид — старая цель
@@ -4120,6 +4174,10 @@ function onClick(e) {
       } else if (ui.editNorm !== null) {
         item.normPerWeek = Math.max(1, Math.min(7, ui.editNorm)); // ежедневная привычка: норма недели
       }
+      // блок — поле всех форм, а не только минимума (задача 19, B.3): блоки
+      // работали на «Привычках», но назначить их привычке и параметру было
+      // нечем. Без поля в форме readGroupField возвращает прежнее значение.
+      item.group = readGroupField('e', item.group);
       save();
       ui.editingId = null;
       ui.editNorm = null;
@@ -4164,7 +4222,7 @@ function onClick(e) {
         item = {
           id: uid(), name, value: null,
           unit: pkind === 'number' && el('f-punit') ? el('f-punit').value.trim() : '',
-          note, group: '',
+          note, group: readGroupField('f', ''),
           type: 'param', area: 'habit', pkind, pvalue,
           pstep: st !== null ? Math.round(st) : 0,
           goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
@@ -4172,7 +4230,7 @@ function onClick(e) {
         };
       } else if (ui.addArea === 'habit') {
         item = {
-          id: uid(), name, value: null, unit: '', note, group: '',
+          id: uid(), name, value: null, unit: '', note, group: readGroupField('f', ''),
           type: 'daily', area: 'habit', normPerWeek: 7, // каноническая форма привычки (инвариант 11)
           goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: []
         };

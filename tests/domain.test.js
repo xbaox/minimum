@@ -3105,3 +3105,145 @@ test('З19/A.5.3: механики планки и привычек не чит�
   setWeekMarks(item.id, app.closedWeeks(2)[1], 1);
   assert.equal(app.lowerEligible(item), true, 'понижение тоже считает по days{}');
 });
+
+/* ── Задача 19, фаза B.1: рекорд считается линейно ─────────── */
+
+/* ПРЕЖНЯЯ реализация bestStreak — эталон для дифференциального теста.
+   Дословный квадратичный алгоритм: streakBack от каждого дня эпохи.
+   Живёт только здесь: новая реализация обязана совпадать с ним всюду. */
+function bestStreakRef() {
+  const t = app.todayKey();
+  const since = app.store.settings.calendarSince;
+  if (!app.isDayKey(since) || t < since) return 0;
+  // ключи и доли эпохи — один раз; дальше обход по индексам вместо
+  // addDays. Порядок и решения ровно те же, что были в app.js: экономится
+  // только конструирование Date в горячем цикле, семантика не меняется.
+  const keys = [], tab = [];
+  for (let k = since; k <= t; k = app.addDays(k, 1)) { keys.push(k); tab.push(app.dayScore(k)); }
+  const EPSR = 1e-9, GAP = 7;
+  const th = app.dayThreshold() - EPSR;
+  const streakBackRef = (endIdx) => {
+    let n = 0, i = endIdx;
+    if (keys[i] === t) { // сегодня: незачтённое пропускается, амнистию не тратит
+      const s = tab[i];
+      if (s !== null && s >= th) n = 1;
+      i--;
+    }
+    let amnesty = -1; // индекс дня последней амнистии (он позже текущего i)
+    for (; i >= 0; i--) {
+      const s = tab[i];
+      if (s === null) continue;
+      if (s >= th) { n++; continue; }
+      if (amnesty >= 0 && app.diffDays(keys[amnesty], keys[i]) <= GAP) break;
+      amnesty = i;
+    }
+    return n;
+  };
+  let best = 0;
+  for (let i = 0; i < keys.length; i++) {
+    const n = streakBackRef(i);
+    if (n > best) best = n;
+  }
+  return best;
+}
+
+/* Детерминированный ГПСЧ: провалившийся случай воспроизводим по номеру */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let x = Math.imul(a ^ (a >>> 15), 1 | a);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test('З19/B.1.2: bestStreak — 1000 случайных историй совпадают с прежней реализацией', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const THS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+  let checked = 0, maxLen = 0, sawNull = false, sawAmnesty = false;
+
+  for (let seed = 1; seed <= 1000; seed++) {
+    const rnd = mulberry32(seed);
+    // длина эпохи 1–1200 дней со смещением к коротким: эталон квадратичный,
+    // длинные случаи дороги, но несколько десятков их всё равно попадает
+    const L = 1 + Math.floor(Math.pow(rnd(), 3) * 1200);
+    const p = rnd();                       // плотность отметок 0–100 %
+    const th = THS[Math.floor(rnd() * THS.length)];
+    const nItems = 1 + Math.floor(rnd() * 4);
+
+    const s = app.defaultStore();
+    app.store = s;
+    const t = app.todayKey();
+    s.settings.dayThreshold = th;
+    s.settings.calendarSince = app.addDays(t, -(L - 1));
+    // пункты появляются не сразу: часть первых дней остаётся без применимых
+    // пунктов, их доля null — эти дни обе реализации обязаны пропускать
+    s.items = [];
+    for (let n = 0; n < nItems; n++) {
+      s.items.push({
+        id: 'i' + n, name: 'П' + n, value: null, unit: '', type: 'daily', area: 'min',
+        goal: null, note: '', group: '', active: true,
+        addedAt: app.addDays(s.settings.calendarSince, Math.floor(rnd() * Math.min(L, 40))),
+        raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+        formula: null, ladder: null, ladderLog: []
+      });
+    }
+    s.days = {};
+    for (let d = 0; d < L; d++) {
+      const k = app.addDays(s.settings.calendarSince, d);
+      const rec = {};
+      for (const it of s.items) if (it.addedAt <= k && rnd() < p) rec[it.id] = true;
+      if (Object.keys(rec).length) s.days[k] = rec;
+    }
+
+    const ref = bestStreakRef();
+    const got = app.bestStreak();
+    assert.equal(got, ref,
+      `расхождение на seed=${seed}: длина ${L}, плотность ${p.toFixed(2)}, порог ${th}, пунктов ${nItems} — новая ${got}, эталон ${ref}`);
+    // серия текущего дня считается тем же правилом — сверяем и её
+    assert.ok(app.dayStreak() <= got, `dayStreak > bestStreak на seed=${seed}`);
+
+    checked++;
+    if (L > maxLen) maxLen = L;
+    if (app.dayScore(s.settings.calendarSince) === null) sawNull = true;
+    if (got > 8) sawAmnesty = true;
+  }
+  assert.equal(checked, 1000);
+  assert.ok(maxLen > 600, `в выборке есть длинные эпохи (максимум ${maxLen})`);
+  assert.ok(sawNull, 'в выборке есть дни без применимых пунктов (доля null)');
+  assert.ok(sawAmnesty, 'в выборке есть серии длиннее недели — амнистия задействована');
+});
+
+test('З19/B.1: рекорд на вырожденных историях', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const mk = (L) => {
+    const s = app.defaultStore();
+    app.store = s;
+    s.settings.calendarSince = app.addDays(app.todayKey(), -(L - 1));
+    s.items = [{
+      id: 'i1', name: 'П', value: null, unit: '', type: 'daily', area: 'min',
+      goal: null, note: '', group: '', active: true, addedAt: s.settings.calendarSince,
+      raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+      formula: null, ladder: null, ladderLog: []
+    }];
+    s.days = {};
+    return s;
+  };
+  // эпоха в один день, ничего не отмечено
+  let s = mk(1);
+  assert.equal(app.bestStreak(), 0);
+  // эпоха в один день, отмечен
+  s.days[app.todayKey()] = { i1: true };
+  assert.equal(app.bestStreak(), 1);
+  // пунктов нет вовсе — все доли null
+  s = mk(30); s.items = [];
+  assert.equal(app.bestStreak(), 0);
+  // всё отмечено — рекорд равен длине эпохи
+  s = mk(30);
+  for (let d = 0; d < 30; d++) s.days[app.addDays(s.settings.calendarSince, d)] = { i1: true };
+  assert.equal(app.bestStreak(), 30);
+  assert.equal(app.dayStreak(), 30);
+  // ничего не отмечено: одна амнистия в начале, дальше обрыв
+  s = mk(30);
+  assert.equal(app.bestStreak(), 0);
+});
