@@ -437,7 +437,7 @@ test('И6: migrate v1→v2 — «Принять душ», посев history и 
   setNow(2026, 7, 17, 12, 0);
   const m = app.migrate(v1Store());
 
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   // «Принять душ» появился сразу после «Умыться»
   const names = m.items.map(i => i.name);
   assert.equal(names.indexOf('Принять душ'), names.indexOf('Умыться') + 1);
@@ -468,7 +468,7 @@ test('И6: migrate идемпотентна — повторный прогон 
 test('И6: migrate переживает мусор на входе', () => {
   for (const garbage of [null, undefined, [], 'строка', 42]) {
     const m = app.migrate(garbage);
-    assert.equal(m.schemaVersion, 11);
+    assert.equal(m.schemaVersion, 12);
     assert.equal(Array.isArray(m.items), true);
     assert.equal(m.items.length, 10); // дефолтный набор: 7 минимум + 3 привычки
     assert.equal(m.items.some(i => i.name === 'Принять душ'), true);
@@ -585,7 +585,7 @@ test('З2: мусорный schemaVersion трактуется как v1 — в�
   const src = v1Store();
   src.schemaVersion = 'мусор';
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   assert.equal(m.items.some(i => i.name === 'Принять душ'), true); // шаг v1→v2 сработал
   assert.equal(m.reviews.every(r => app.isDayKey(r.weekStart)), true); // и v2→v3 тоже
 });
@@ -613,7 +613,7 @@ test('З2: migrate v2→v3 — backfill weekStart из keys[0], идемпоте
     ]
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   assert.equal(m.reviews[0].weekStart, '2026-06-01');
   assert.equal(m.reviews[1].weekStart, '2026-07-17'); // keys[0] невалиден — сегодня
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
@@ -718,7 +718,7 @@ test('З4: миграция v3→v4 — exportedAt с мягким дефолт�
     settings: { dayBoundary: 4, hintShownForItemId: null }
   };
   const m = app.migrate(src);
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   assert.equal(m.settings.exportedAt, null);
   const again = app.migrate(JSON.parse(JSON.stringify(m)));
   assert.deepEqual(again, m);
@@ -1124,7 +1124,7 @@ test('З11: миграция v6 — норма достроена и валид�
     settings: { dayBoundary: 4, calendarSince: '2026-07-06', habitSeeded: true, exportedAt: null }
   };
   const m = app.migrate(v5);
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   assert.equal(m.items.find(i => i.id === 'h1').normPerWeek, 7); // достроена умолчанием
   assert.equal(m.items.find(i => i.id === 'h2').normPerWeek, 7); // мусор → умолчание
   assert.equal(m.items.find(i => i.id === 'h3').normPerWeek, 1); // к ближайшему допустимому
@@ -1193,7 +1193,7 @@ test('З10: hintShownForItemId мёртв — нет в defaultStore, v5-миг�
     pendingRaises: [], draftOneChange: '', weekStart: '2026-07-13',
     settings: { dayBoundary: 4, hintShownForItemId: 'x1', exportedAt: null }
   });
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   assert.equal('hintShownForItemId' in m.settings, false);
 });
 
@@ -1506,7 +1506,7 @@ test('З14: миграция v6→v7 — поля достроены, лестн
   const m = app.migrate(v6);
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   assert.equal(byId.i1.formula, null);           // достроено умолчанием
   assert.equal(byId.i1.ladder, null);
   assert.deepEqual(byId.i1.ladderLog, []);
@@ -1592,7 +1592,7 @@ test('З14.2: миграция v7→v8 — пустому журналу жив�
   const m = app.migrate(mkV7());
   const byId = Object.fromEntries(m.items.map(i => [i.id, i]));
 
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   // старт от startedAt, ступень и текст — те, на которых лестница стоит сейчас
   assert.deepEqual(byId.i1.ladderLog, [{ date: '2026-07-02', step: 1, text: 'два', start: true }]);
   assert.deepEqual(byId.i2.ladderLog, []); // без лестницы журнал не заводится
@@ -1704,7 +1704,7 @@ test('З15: миграция v8→v9 — группы в порядке перв
   });
 
   const m = app.migrate(mkV8());
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   assert.deepEqual(m.groups, [{ name: 'Сон' }, { name: 'Тело' }]); // порядок первого появления
   assert.deepEqual(m.days, days);       // миграция аддитивна
   assert.deepEqual(m.reviews, reviews);
@@ -2128,7 +2128,7 @@ test('З16C: миграция v10→v11 — якоря недель и pendingLo
   v10.items[1].lowerAfterWeek = 'мусор';
 
   const m = app.migrate(JSON.parse(JSON.stringify(v10)));
-  assert.equal(m.schemaVersion, 11);
+  assert.equal(m.schemaVersion, 12);
   assert.deepEqual(m.pendingLowers, []);
   assert.equal(m.items[0].raiseAfterWeek, '2026-07-13', 'не-понедельник приведён к своему понедельнику');
   assert.equal(m.items[1].lowerAfterWeek, null);
@@ -2143,4 +2143,143 @@ test('З16C: миграция v10→v11 — якоря недель и pendingLo
   const dirty = JSON.parse(JSON.stringify(m));
   dirty.pendingLowers = [null, 'строка', { itemId: 'x' }];
   assert.deepEqual(app.migrate(dirty).pendingLowers, [{ itemId: 'x' }]);
+});
+
+/* ── Задача 16, фаза D. Упражнения и тренировки ────────────── */
+
+test('З16D: сессия — дата дня, entries только с валидными числами, заметка с trim', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const w = s.items.find(i => i.type === 'weekly');
+  const a = app.addExercise('Жим', 'кг', 40);
+  const b = app.addExercise('Тяга', 'кг', null);
+  assert.equal(a.value, 40);
+  assert.deepEqual(a.history, [{ date: app.todayKey(), value: 40 }]);
+  assert.deepEqual(b.history, [], 'без начальной нагрузки истории нет');
+  assert.equal(app.addExercise('   ', 'кг', 5), null, 'безымянное не заводится');
+
+  app.recordSession(w.id, [
+    { exId: a.id, value: 42 },
+    { exId: b.id, value: null },      // поле пустое — в сессию не идёт
+    { exId: 'нет такого', value: 10 } // чужой id отбрасывается
+  ], '  лёгкая  ');
+
+  assert.equal(s.sessions.length, 1);
+  const ses = s.sessions[0];
+  assert.equal(ses.date, app.todayKey());
+  assert.deepEqual(ses.entries, [{ exId: a.id, value: 42 }]);
+  assert.equal(ses.note, 'лёгкая');
+  assert.equal(app.trainCount(w.id), 1, 'недельный счётчик вырос');
+});
+
+test('З16D: нагрузка и история пишутся только при изменении', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const w = s.items.find(i => i.type === 'weekly');
+  const ex = app.addExercise('Жим', 'кг', 40);
+
+  app.recordSession(w.id, [{ exId: ex.id, value: 40 }], '');
+  assert.equal(ex.value, 40);
+  assert.equal(ex.history.length, 1, 'то же значение историю не дополняет');
+
+  // изменение в тот же логический день заменяет последнюю запись (инвариант 5:
+  // упражнение заведено сегодня, его стартовая запись — сегодняшняя)
+  app.recordSession(w.id, [{ exId: ex.id, value: 45 }], '');
+  assert.equal(ex.value, 45);
+  assert.equal(ex.history.length, 1);
+  assert.equal(ex.history[0].value, 45);
+
+  advanceDays(1);
+  app.recordSession(w.id, [{ exId: ex.id, value: 50 }], '');
+  assert.equal(ex.value, 50);
+  assert.equal(ex.history.length, 2);
+  assert.deepEqual(ex.history[1], { date: app.todayKey(), value: 50 });
+  assert.equal(s.sessions.length, 3, 'сессии при этом все три');
+});
+
+test('З16D: «отменить последний» снимает и запись счётчика, и сессию дня; нагрузка не откатывается', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const w = s.items.find(i => i.type === 'weekly');
+  const ex = app.addExercise('Жим', 'кг', 40);
+  app.recordSession(w.id, [{ exId: ex.id, value: 45 }], 'первая');
+  app.recordSession(w.id, [{ exId: ex.id, value: 50 }], 'вторая');
+  assert.equal(app.trainCount(w.id), 2);
+  assert.equal(s.sessions.length, 2);
+
+  app.undoTrain(w.id);
+  assert.equal(app.trainCount(w.id), 1);
+  assert.equal(s.sessions.length, 1, 'сессия того же дня ушла вместе с записью');
+  assert.equal(s.sessions[0].note, 'первая', 'снята последняя');
+  assert.equal(ex.value, 50, 'нагрузка не откатывается — история правдива');
+});
+
+test('З16D: упражнения — порядок стрелками, правка имени и единицы', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const a = app.addExercise('Жим', 'кг', 40);
+  const b = app.addExercise('Тяга', 'кг', 60);
+  const names = () => s.exercises.map(e => e.name);
+
+  assert.equal(app.moveExercise(a.id, 'up'), false); // уже первое
+  assert.equal(app.moveExercise(b.id, 'down'), false);
+  assert.equal(app.moveExercise(b.id, 'up'), true);
+  assert.deepEqual(names(), ['Тяга', 'Жим']);
+
+  assert.equal(app.updateExercise(a.id, '  Жим лёжа  ', '  повт.  '), true);
+  assert.equal(a.name, 'Жим лёжа');
+  assert.equal(a.unit, 'повт.');
+  assert.equal(app.updateExercise(a.id, '   ', 'кг'), false, 'пустое имя не сохраняется');
+  assert.equal(app.updateExercise('нет такого', 'x', ''), false);
+  assert.deepEqual(app.activeExercises().map(e => e.id), [b.id, a.id]);
+  b.active = false;
+  assert.deepEqual(app.activeExercises().map(e => e.id), [a.id]);
+});
+
+test('З16D: миграция v11→v12 — упражнения и сессии, мусор отброшен, идемпотентно', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const v11 = app.defaultStore();
+  v11.schemaVersion = 11;
+  delete v11.exercises;
+  delete v11.sessions;
+
+  const m = app.migrate(JSON.parse(JSON.stringify(v11)));
+  assert.equal(m.schemaVersion, 12);
+  assert.deepEqual(m.exercises, []);
+  assert.deepEqual(m.sessions, []);
+  assert.deepEqual(m.days, v11.days, 'аддитивность: отметки не тронуты');
+  assert.deepEqual(m.reviews, v11.reviews);
+
+  const dirty = JSON.parse(JSON.stringify(m));
+  dirty.exercises = [null, 'строка', { name: 'Жим', value: -5, history: [{ date: 'нет', value: 1 }] }];
+  dirty.sessions = [
+    null,
+    { date: 'нет даты', entries: [] },
+    { date: '2026-08-10', entries: [{ exId: 'a', value: '12' }, { value: 3 }], note: 5 }
+  ];
+  const m2 = app.migrate(dirty);
+  assert.equal(m2.exercises.length, 1);
+  assert.equal(typeof m2.exercises[0].id, 'string');
+  assert.equal(m2.exercises[0].value, null, 'нагрузка ≤ 0 обнуляется');
+  assert.deepEqual(m2.exercises[0].history, []);
+  assert.equal(m2.exercises[0].active, true);
+  assert.equal(m2.sessions.length, 1, 'запись без валидной даты отброшена');
+  assert.deepEqual(m2.sessions[0].entries, [{ exId: 'a', value: 12 }]);
+  assert.equal(m2.sessions[0].note, '');
+  assert.deepEqual(app.migrate(JSON.parse(JSON.stringify(m2))), m2);
+});
+
+test('З16D: упражнение с двумя записями истории попадает в «Подъём»', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const s = freshStore();
+  const w = s.items.find(i => i.type === 'weekly');
+  const ex = app.addExercise('Жим', 'кг', 40);
+  assert.equal(app.riseSeries(ex), null, 'одна запись — ряда нет');
+
+  advanceDays(7);
+  app.recordSession(w.id, [{ exId: ex.id, value: 45 }], '');
+  const ser = app.riseSeries(ex);
+  assert.equal(ser.kind, 'bar');
+  assert.deepEqual(ser.points.map(p => p.value), [40, 45]);
+  assert.equal((app.risePath(ser.points).match(/[HV]/g) || []).length, 3);
 });

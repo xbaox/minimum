@@ -456,15 +456,24 @@ test('недельный счётчик обновляется точечно, �
   const num = wc.querySelector('.wnum b');
   assert.equal(num.textContent, '0');
 
+  // «+» открывает лист тренировки (задача 16D): счёт растёт записью, а
+  // возврат с листа — смена вида, то есть полная перерисовка «Сегодня»
   plus.click();
-  assert.equal(wc.querySelector('.wnum b'), num); // узел тот же
-  assert.equal(num.textContent, '1');
-  const undo = wc.nextElementSibling;
+  assert.equal(document.getElementById('scr-train').hidden, false);
+  document.querySelector('[data-act="train-save"]').click();
+  assert.equal(document.getElementById('scr-today').hidden, false);
+
+  const wc2 = document.querySelector('.weekcount');
+  const num2 = wc2.querySelector('.wnum b');
+  assert.equal(num2.textContent, '1');
+  const undo = wc2.nextElementSibling;
   assert.ok(undo && undo.dataset.act === 'train-undo', 'кнопка отмены появилась');
 
+  // отмена остаётся точечной: узел счётчика тот же
   undo.click();
-  assert.equal(num.textContent, '0');
-  assert.notEqual(wc.nextElementSibling && wc.nextElementSibling.dataset.act, 'train-undo');
+  assert.equal(wc2.querySelector('.wnum b'), num2);
+  assert.equal(num2.textContent, '0');
+  assert.notEqual(wc2.nextElementSibling && wc2.nextElementSibling.dataset.act, 'train-undo');
 });
 
 test('stale-guard: клик после смены дня не пишет отметку, экран перерисовывается', async () => {
@@ -702,10 +711,11 @@ test('доступность: точка вне label, aria-expanded, имена
 test('доступность: имена тумблера и кнопок недельного счётчика содержат название пункта', async () => {
   const { document } = await boot();
 
-  // «+» и появившийся точечно «отменить последний»
+  // «+» (открывает лист записи) и появившийся точечно «отменить последний»
   const plus = document.querySelector('[data-act="train-inc"]');
-  assert.match(plus.getAttribute('aria-label'), /\+1 к «Тренировка»/);
+  assert.match(plus.getAttribute('aria-label'), /записать тренировку: «Тренировка»/);
   plus.click();
+  document.querySelector('[data-act="train-save"]').click();
   const undo = document.querySelector('[data-act="train-undo"]');
   assert.match(undo.getAttribute('aria-label'), /Тренировка/);
 
@@ -806,7 +816,8 @@ test('смена недели в открытом приложении: счёт
   const { document, window } = await boot({ seed });
   assert.equal(document.querySelector('[data-act="goto-review"]'), null, 'разбор закрыт — баннера нет');
 
-  document.querySelector('[data-act="train-inc"]').click();
+  document.querySelector('[data-act="train-inc"]').click();      // лист тренировки
+  document.querySelector('[data-act="train-save"]').click();     // и запись
   assert.equal(document.querySelector('.wnum b').textContent, '1');
 
   shiftWindowDate(window, 7 * 86400000); // ровно неделя вперёд
@@ -1456,7 +1467,7 @@ test('зеркало: save + flush кладут актуальный снапш�
   const snap = await idbGet(idb);
   assert.ok(snap, 'снапшот есть');
   assert.equal(typeof snap.savedAt, 'number');
-  assert.equal(snap.schemaVersion, 11);
+  assert.equal(snap.schemaVersion, 12);
   const marks = Object.values(JSON.parse(snap.json).days)[0];
   assert.equal(marks[cb.dataset.id], true); // актуальное состояние с отметкой
 });
@@ -1532,7 +1543,7 @@ test('снапшот старой схемы в зеркале проходит 
 
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.schemaVersion, 11);                    // migrate прогнан
+  assert.equal(saved.schemaVersion, 12);                    // migrate прогнан
   assert.equal(saved.reviews[0].weekStart, daysAgo(20));   // backfill v2→v3
   assert.equal(saved.settings.exportedAt, null);           // мягкий дефолт v3→v4
 });
@@ -1707,7 +1718,7 @@ test('«Пункты»: кнопка листа есть в форме daily, н
   // ни в одной строке списка кнопки листа нет
   document.querySelector('[data-act="edit-cancel"]').click();
   assert.equal(document.querySelectorAll('#scr-settings .row.item [data-act="item-detail"]').length, 0);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 11);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, 12);
 });
 
 test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
@@ -2284,25 +2295,27 @@ test('разбор: открывается строкой «Прогресса»
   assert.equal(document.getElementById('scr-today').hidden, false);
 });
 
-test('«Настройки»: четыре секции по порядку, раскрыты только «Пункты», состояние держится', async () => {
+test('«Настройки»: секции по порядку, раскрыты только «Пункты», состояние держится', async () => {
   const { document } = await boot();
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const sects = () => [...document.querySelectorAll('#scr-settings details.sect')];
   const titles = () => sects().map(s => s.querySelector('summary').textContent.replace('›', '').trim());
 
-  assert.deepEqual(titles(), ['Блоки', 'Пункты', 'Данные', 'Система']);
-  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, false, false]);
+  // «Упражнения» добавились в фазе D — между «Пунктами» и «Данными»
+  assert.deepEqual(titles(), ['Блоки', 'Пункты', 'Упражнения', 'Данные', 'Система']);
+  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, false, false, false]);
 
   // содержимое прежних экранов на месте, внутри своих секций
   assert.match(sects()[0].textContent, /Добавить блок/);
   assert.match(sects()[1].textContent, /Граница дня/);
-  assert.ok(sects()[2].querySelector('[data-act="export"]'));
-  assert.match(sects()[3].textContent, /Пять правил/);
+  assert.match(sects()[2].textContent, /Добавить упражнение/);
+  assert.ok(sects()[3].querySelector('[data-act="export"]'));
+  assert.match(sects()[4].textContent, /Пять правил/);
 
   // раскрытие запоминается: перерисовка после действия секцию не захлопывает
-  sects()[2].querySelector('summary').click();
+  sects()[3].querySelector('summary').click();
   document.querySelector('#scr-settings [data-act="add-open"]').click(); // перерисовка «Настроек»
-  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, true, false]);
+  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, false, true, false]);
 });
 
 /* ── Задача 16, фаза C. Разбор как три решения ─────────────── */
@@ -2422,4 +2435,135 @@ test('разбор: решение «Ступень» — «Шагнуть» и 
   assert.equal(bi.ladder.step, 1);
   assert.equal(bi.ladder.steppedWeek, curMonday());
   assert.equal(bi.ladderLog.length, 2);
+});
+
+/* ── Задача 16, фаза D. Лист тренировки и упражнения ───────── */
+
+/* Сид с двумя упражнениями и недельным счётчиком */
+function trainSeed() {
+  const seed = dueSeed();
+  const old = addKey(prevMonday(), -14);
+  seed.items.push({
+    id: 'w1', name: 'Тренировка', value: null, unit: '', type: 'weekly', goal: 3,
+    note: '', group: '', active: true, addedAt: old, raiseAfter: 0, history: []
+  });
+  seed.exercises = [
+    { id: 'e1', name: 'Жим', unit: 'кг', value: 40, active: true, addedAt: old, history: [{ date: old, value: 40 }] },
+    { id: 'e2', name: 'Тяга', unit: 'кг', value: 60, active: true, addedAt: old, history: [{ date: old, value: 60 }] }
+  ];
+  return seed;
+}
+
+test('лист тренировки: «+» открывает, «Записать» пишет сессию и счёт, «Отмена» — ничего', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+
+  document.querySelector('[data-act="train-inc"]').click();
+  const sheet = document.getElementById('scr-train');
+  assert.equal(sheet.hidden, false);
+  assert.equal(document.getElementById('scr-today').hidden, true);
+  // поля предзаполнены текущей нагрузкой
+  assert.equal(document.getElementById('ex-e1').value, '40');
+  assert.equal(document.getElementById('ex-e2').value, '60');
+
+  // «Отмена» не пишет ничего и возвращает на «Сегодня»
+  document.querySelector('[data-act="train-cancel"]').click();
+  assert.equal(document.getElementById('scr-today').hidden, false);
+  assert.deepEqual(saved().sessions, []);
+  assert.deepEqual(saved().weekLog, []);
+
+  // шаг ±1 правит поле на месте, запись сохраняет введённое
+  document.querySelector('[data-act="train-inc"]').click();
+  const up = [...document.querySelectorAll('[data-act="ex-step"]')].find(b => b.dataset.id === 'e1' && b.dataset.dir === 'up');
+  up.click(); up.click();
+  assert.equal(document.getElementById('ex-e1').value, '42');
+  document.getElementById('tr-note').value = 'тяжело';
+  document.querySelector('[data-act="train-save"]').click();
+
+  const s = saved();
+  assert.equal(s.sessions.length, 1);
+  assert.equal(s.sessions[0].date, daysAgo(0));
+  assert.deepEqual(s.sessions[0].entries, [{ exId: 'e1', value: 42 }, { exId: 'e2', value: 60 }]);
+  assert.equal(s.sessions[0].note, 'тяжело');
+  assert.equal(s.exercises[0].value, 42, 'нагрузка обновлена');
+  assert.equal(s.exercises[1].value, 60);
+  assert.equal(s.exercises[1].history.length, 1, 'без изменения история не растёт');
+  assert.equal(s.weekLog.length, 1, 'счётчик недели вырос');
+  assert.equal(document.querySelector('.wnum b').textContent, '1');
+
+  // «отменить последний» снимает и запись счётчика, и сессию
+  document.querySelector('[data-act="train-undo"]').click();
+  const s2 = saved();
+  assert.deepEqual(s2.weekLog, []);
+  assert.deepEqual(s2.sessions, []);
+  assert.equal(s2.exercises[0].value, 42, 'нагрузка не откатывается');
+});
+
+test('лист тренировки: без упражнений — тихая строка, запись всё равно возможна', async () => {
+  const seed = trainSeed();
+  seed.exercises = [];
+  const { document, window } = await boot({ seed });
+  document.querySelector('[data-act="train-inc"]').click();
+  const sheet = document.getElementById('scr-train');
+  assert.match(sheet.textContent, /Упражнений пока нет/);
+  document.querySelector('[data-act="train-save"]').click();
+  const s = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(s.sessions.length, 1);
+  assert.deepEqual(s.sessions[0].entries, []);
+  assert.equal(s.weekLog.length, 1);
+});
+
+test('«Настройки»: упражнения добавляются, правятся, двигаются и выключаются', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const sect = () => [...document.querySelectorAll('#scr-settings details.sect')][2];
+  const rows = () => [...sect().querySelectorAll('.row.item')];
+
+  assert.deepEqual(rows().map(r => r.querySelector('.tname').textContent), ['Жим', 'Тяга']);
+
+  // добавление
+  sect().querySelector('[data-act="ex-add-open"]').click();
+  document.getElementById('x-add-name').value = 'Присед';
+  document.getElementById('x-add-unit').value = 'кг';
+  document.getElementById('x-add-value').value = '80';
+  document.querySelector('[data-act="ex-add-save"]').click();
+  const added = saved().exercises[2];
+  assert.equal(added.name, 'Присед');
+  assert.equal(added.value, 80);
+  assert.deepEqual(added.history, [{ date: daysAgo(0), value: 80 }]);
+
+  // правка имени и единицы
+  rows()[0].querySelector('[data-act="ex-open"]').click();
+  document.getElementById('x-name').value = 'Жим лёжа';
+  document.getElementById('x-unit').value = 'повт.';
+  document.querySelector('[data-act="ex-save"]').click();
+  assert.equal(saved().exercises[0].name, 'Жим лёжа');
+  assert.equal(saved().exercises[0].unit, 'повт.');
+
+  // порядок стрелками
+  rows()[1].querySelector('[data-act="ex-up"]').click();
+  assert.deepEqual(saved().exercises.map(e => e.name), ['Тяга', 'Жим лёжа', 'Присед']);
+
+  // выключение убирает упражнение из листа тренировки, но не из настроек
+  rows()[0].querySelector('input[data-act="ex-active"]').click();
+  assert.equal(saved().exercises[0].active, false);
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('[data-act="train-inc"]').click();
+  assert.equal(document.getElementById('ex-e2'), null, 'выключенного в листе нет');
+  assert.ok(document.getElementById('ex-e1'), 'включённое на месте');
+});
+
+test('«Прогресс»: упражнение с двумя записями истории даёт линию подъёма', async () => {
+  const seed = trainSeed();
+  seed.exercises[0].history.push({ date: daysAgo(3), value: 45 });
+  seed.exercises[0].value = 45;
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  const scr = document.getElementById('scr-progress');
+  const blocks = [...scr.querySelectorAll('.rise-b')];
+  assert.equal(blocks.length, 1, 'один визуал на упражнение');
+  assert.match(blocks[0].textContent, /Жим/);
+  assert.match(blocks[0].querySelector('.rise-v').textContent, /^40 → 45 кг$/);
+  assert.equal((blocks[0].querySelector('path').getAttribute('d').match(/[HV]/g) || []).length, 3);
 });

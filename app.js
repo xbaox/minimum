@@ -48,7 +48,7 @@ const SYSTEM_TEXTS = [
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
@@ -121,6 +121,8 @@ function defaultStore() {
     reviews: [],       // закрытые недели
     pendingRaises: [], // принятые повышения, ещё не записанные в разбор
     pendingLowers: [], // принятые понижения, ещё не записанные в разбор
+    exercises: [],     // упражнения тренировки: рабочая нагрузка и её история
+    sessions: [],      // записанные тренировки: день, значения упражнений, заметка
     paramDecided: {},  // itemId -> {week, from, to|null}: решения по параметрам, привязанные к разбираемой неделе
     draftOneChange: '',
     weekStart: today,  // историческая отсечка скользящей эпохи
@@ -331,6 +333,43 @@ function migrate(s) {
   s.pendingRaises = s.pendingRaises.filter(e => e && typeof e === 'object' && !Array.isArray(e));
   if (!Array.isArray(s.pendingLowers)) s.pendingLowers = [];
   s.pendingLowers = s.pendingLowers.filter(e => e && typeof e === 'object' && !Array.isArray(e));
+
+  // v11 → v12 (задача 16D): упражнения и записанные тренировки. Шаг
+  // аддитивен и идемпотентен: days{}, reviews[] и items[] не трогает.
+  // Форма упражнения — как у пункта: имя, единица, рабочая нагрузка и
+  // её история по тем же правилам (recordBar общий).
+  if (!Array.isArray(s.exercises)) s.exercises = [];
+  {
+    const exIds = new Set();
+    s.exercises = s.exercises.filter(e => e && typeof e === 'object' && !Array.isArray(e));
+    for (const ex of s.exercises) {
+      if (typeof ex.id !== 'string' || !ex.id || exIds.has(ex.id)) ex.id = uid();
+      exIds.add(ex.id);
+      if (typeof ex.name !== 'string') ex.name = '';
+      if (typeof ex.unit !== 'string') ex.unit = '';
+      if (typeof ex.active !== 'boolean') ex.active = true;
+      if (!isDayKey(ex.addedAt)) ex.addedAt = today;
+      ex.value = numOr(ex.value, null);
+      if (ex.value !== null && ex.value <= 0) ex.value = null; // нагрузка всегда > 0
+      if (!Array.isArray(ex.history)) ex.history = [];
+      ex.history = ex.history
+        .filter(h => h && typeof h === 'object' && !Array.isArray(h) && isDayKey(h.date))
+        .map(h => ({ date: h.date, value: numOr(h.value, null) }))
+        .filter(h => h.value !== null);
+    }
+  }
+  if (!Array.isArray(s.sessions)) s.sessions = [];
+  s.sessions = s.sessions
+    .filter(x => x && typeof x === 'object' && !Array.isArray(x) && isDayKey(x.date))
+    .map(x => ({
+      id: typeof x.id === 'string' && x.id ? x.id : uid(),
+      date: x.date,
+      entries: (Array.isArray(x.entries) ? x.entries : [])
+        .filter(e => e && typeof e === 'object' && !Array.isArray(e) && typeof e.exId === 'string')
+        .map(e => ({ exId: e.exId, value: numOr(e.value, null) }))
+        .filter(e => e.value !== null),
+      note: typeof x.note === 'string' ? x.note : ''
+    }));
   if (!s.paramDecided || typeof s.paramDecided !== 'object' || Array.isArray(s.paramDecided)) s.paramDecided = {};
   for (const k of Object.keys(s.paramDecided)) {
     const d = s.paramDecided[k];
@@ -662,13 +701,86 @@ function incTrain(itemId) {
   save();
 }
 
-/* Отмена — только записей текущей недели (прошлое неизменяемо) */
+/* Отмена — только записей текущей недели (прошлое неизменяемо). Вместе с
+   записью счётчика уходит и сессия того же дня; рабочая нагрузка
+   упражнений при этом НЕ откатывается — история планки правдива
+   (задача 16D, «Принятые ограничения»). */
 function undoTrain(itemId) {
   const since = trainSince();
   for (let i = store.weekLog.length - 1; i >= 0; i--) {
     const e = store.weekLog[i];
-    if (e.itemId === itemId && e.date >= since) { store.weekLog.splice(i, 1); save(); return; }
+    if (e.itemId !== itemId || e.date < since) continue;
+    store.weekLog.splice(i, 1);
+    for (let j = store.sessions.length - 1; j >= 0; j--) {
+      if (store.sessions[j].date === e.date) { store.sessions.splice(j, 1); break; }
+    }
+    save();
+    return;
   }
+}
+
+/* ── Упражнения и тренировки (инвариант 15) ───────────────────
+   Упражнение — имя, единица и рабочая нагрузка с историей по общим
+   правилам планки (recordBar). Сессия — факт тренировки: день,
+   значения упражнений и заметка. */
+
+const activeExercises = () => store.exercises.filter(e => e.active);
+
+function findExercise(id) {
+  return store.exercises.find(e => e.id === id) || null;
+}
+
+function addExercise(name, unit, value) {
+  const nm = (name || '').trim();
+  if (!nm) return null;
+  const v = (typeof value === 'number' && isFinite(value) && value > 0) ? value : null;
+  const ex = {
+    id: uid(), name: nm, unit: (unit || '').trim(), value: v,
+    history: v === null ? [] : [{ date: todayKey(), value: v }],
+    active: true, addedAt: todayKey()
+  };
+  store.exercises.push(ex);
+  save();
+  return ex;
+}
+
+function updateExercise(id, name, unit) {
+  const ex = findExercise(id);
+  if (!ex) return false;
+  const nm = (name || '').trim();
+  if (!nm) return false; // безымянное упражнение не сохраняется — как у пунктов
+  ex.name = nm;
+  ex.unit = (unit || '').trim();
+  save();
+  return true;
+}
+
+function moveExercise(id, dir) {
+  const i = store.exercises.findIndex(e => e.id === id);
+  const j = i + (dir === 'up' ? -1 : 1);
+  if (i < 0 || j < 0 || j >= store.exercises.length) return false;
+  const t = store.exercises[i];
+  store.exercises[i] = store.exercises[j];
+  store.exercises[j] = t;
+  save();
+  return true;
+}
+
+/* Запись тренировки: сессия дня, обновление нагрузок (история — только
+   при изменении) и инкремент недельного счётчика, как раньше. */
+function recordSession(weeklyId, entries, note) {
+  const list = (Array.isArray(entries) ? entries : [])
+    .map(e => ({ exId: e.exId, value: e.value }))
+    .filter(e => findExercise(e.exId) && typeof e.value === 'number' && isFinite(e.value) && e.value > 0);
+  store.sessions.push({ id: uid(), date: todayKey(), entries: list, note: (note || '').trim() });
+  for (const e of list) {
+    const ex = findExercise(e.exId);
+    if (ex.value === e.value) continue; // нагрузка не менялась — истории нечего писать
+    ex.value = e.value;
+    recordBar(ex, e.value);
+  }
+  incTrain(weeklyId); // save() внутри
+  return true;
 }
 
 /* Календарные недели (инвариант 2): понедельник–воскресенье в логических днях */
@@ -1371,8 +1483,15 @@ const ui = {
   reviewOpen: false,    // разбор открыт поверх вкладки (с таб-бара он ушёл, задача 16B)
   reviewFrom: null,     // вкладка, на которую вернёт «Готово»
   reviewScroll: 0,      // её скролл — возвращается вместе с ней
+  trainOpen: false,     // лист «Тренировка» поверх вкладки (задача 16D)
+  trainId: null,        // недельный пункт, чей счётчик растёт записью
+  trainFrom: null,      // вкладка возврата и её скролл
+  trainScroll: 0,
+  trainNote: '',        // черновик заметки листа — переживает перерисовку
+  exEditingId: null,    // упражнение с раскрытой правкой
+  exAddOpen: false,     // открыта форма «Добавить упражнение»
   // свёрнутые секции «Настроек»: по умолчанию раскрыты только «Пункты»
-  settingsOpen: { groups: false, items: true, data: false, system: false }
+  settingsOpen: { groups: false, items: true, exercises: false, data: false, system: false }
 };
 
 let dayTimer = null; // таймер на ближайшую границу дня
@@ -1461,10 +1580,13 @@ function renderAll() {
   // исчезнувший пункт (импорт) закрывает лист детали
   const detail = ui.detailId ? store.items.find(i => i.id === ui.detailId) : null;
   if (ui.detailId && !detail) closeDetail();
-  const sheet = detail ? 'detail' : (ui.reviewOpen ? 'review' : null);
+  // исчезнувший недельный пункт закрывает лист тренировки — как и лист детали
+  if (ui.trainOpen && !store.items.some(i => i.id === ui.trainId)) closeTrain();
+  const sheet = detail ? 'detail' : (ui.reviewOpen ? 'review' : (ui.trainOpen ? 'train' : null));
   for (const [tab, id] of Object.entries(map)) el(id).hidden = sheet ? true : tab !== ui.tab;
   el('scr-detail').hidden = sheet !== 'detail';
   el('scr-review').hidden = sheet !== 'review';
+  el('scr-train').hidden = sheet !== 'train';
   document.querySelectorAll('#tabs button').forEach(b => {
     // вкладка возврата остаётся текущей и при открытом листе
     if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page');
@@ -1472,6 +1594,7 @@ function renderAll() {
   });
   if (detail) renderDetail(detail);
   else if (ui.reviewOpen) renderReview();
+  else if (ui.trainOpen) renderTrain();
   else {
     if (ui.tab === 'today') renderToday();
     if (ui.tab === 'habits') renderHabits();
@@ -1526,7 +1649,7 @@ function renderToday() {
         </span>
         <span class="wctl">
           <span class="wnum"><b>${n}</b>&thinsp;/&thinsp;${w.goal || 0}</span>
-          <button class="btn icon plus" data-act="train-inc" data-id="${esc(w.id)}" aria-label="+1 к «${esc(w.name)}»">+</button>
+          <button class="btn icon plus" data-act="train-inc" data-id="${esc(w.id)}" aria-label="записать тренировку: «${esc(w.name)}»">+</button>
         </span>
       </div>
       ${n ? `<button class="undo" data-act="train-undo" data-id="${esc(w.id)}" aria-label="отменить последний: «${esc(w.name)}»">отменить последний</button>` : ''}`;
@@ -1709,7 +1832,9 @@ function riseValue(it, v) {
 
 function riseBlocks() {
   let h = '';
-  for (const it of store.items) {
+  // упражнения идут после пунктов и по тем же правилам: у них та же
+  // история нагрузки, что и планка у пункта (задача 16D)
+  for (const it of store.items.concat(store.exercises)) {
     const s = riseSeries(it);
     if (!s) continue;
     const a = s.points[0].value, b = s.points[s.points.length - 1].value;
@@ -1792,6 +1917,49 @@ function renderProgress() {
     : `<p class="muted rev">Следующий разбор — в понедельник</p>`;
 
   el('scr-progress').innerHTML = h;
+}
+
+/* ── Лист «Тренировка» (задача 16D) ────────────────────────────
+   Открывается кнопкой «+» недельного счётчика вместо немедленного
+   инкремента: сначала записывается, что сделано, потом растёт счёт.
+   «Отмена» не пишет ничего. */
+function renderTrain() {
+  const w = store.items.find(i => i.id === ui.trainId);
+  let h = `
+    <header class="page">
+      <p class="overline">${esc(w ? w.name : 'Тренировка')}</p>
+      <h1>Тренировка</h1>
+    </header>`;
+
+  const list = activeExercises();
+  if (!list.length) {
+    h += `<p class="muted">Упражнений пока нет — добавить можно в «Настройках».</p>`;
+  }
+  for (const ex of list) {
+    const v = (typeof ex.value === 'number' && isFinite(ex.value)) ? String(ex.value) : '';
+    h += `
+      <div class="exline">
+        <span class="txt">
+          <span class="tname">${esc(ex.name)}</span>
+          ${ex.unit ? `<span class="note">${esc(ex.unit)}</span>` : ''}
+        </span>
+        <span class="exctl">
+          <button class="btn icon quiet" data-act="ex-step" data-id="${esc(ex.id)}" data-dir="down" aria-label="меньше: «${esc(ex.name)}»">&minus;</button>
+          <input class="num" id="ex-${esc(ex.id)}" type="text" inputmode="decimal" value="${esc(v)}" aria-label="${esc(ex.name)}">
+          <button class="btn icon quiet" data-act="ex-step" data-id="${esc(ex.id)}" data-dir="up" aria-label="больше: «${esc(ex.name)}»">+</button>
+        </span>
+      </div>`;
+  }
+
+  h += `
+    <label class="field">
+      <span>Заметка</span>
+      <input type="text" id="tr-note" value="${esc(ui.trainNote)}" placeholder="необязательно">
+    </label>
+    <button class="btn primary wide" data-act="train-save">Записать</button>
+    <button class="btn wide" data-act="train-cancel">Отмена</button>`;
+
+  el('scr-train').innerHTML = h;
 }
 
 /* Экран 4 — «Заметки»: наполняется в фазе E */
@@ -2356,6 +2524,58 @@ function groupEditor() {
   return h;
 }
 
+/* Редактор упражнений (задача 16D): та же механика, что у пунктов —
+   строка с именем раскрывает правку, стрелки задают порядок, тумблер
+   выключает. Нагрузку правит запись тренировки, не форма. */
+function exerciseEditor() {
+  let h = '';
+  if (!store.exercises.length) {
+    h += `<p class="muted">Упражнений пока нет.</p>`;
+  }
+  store.exercises.forEach((ex, i) => {
+    const meta = [valUnit(ex)].filter(Boolean).join(' · ');
+    h += `
+      <div class="rowwrap${ex.active ? '' : ' off'}">
+        <div class="row item">
+          <button class="itxt" data-act="ex-open" data-id="${esc(ex.id)}" aria-label="изменить «${esc(ex.name)}»">
+            <span class="tname">${esc(ex.name)}</span>
+            ${meta ? `<span class="meta">${esc(meta)}</span>` : ''}
+            ${barHistory(ex)}
+          </button>
+          <span class="ictl">
+            <button class="btn icon quiet" data-act="ex-up" data-id="${esc(ex.id)}"${i === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
+            <button class="btn icon quiet" data-act="ex-down" data-id="${esc(ex.id)}"${i === store.exercises.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
+            <label class="switch" aria-label="включено: «${esc(ex.name)}»">
+              <input type="checkbox" data-act="ex-active" data-id="${esc(ex.id)}"${ex.active ? ' checked' : ''}>
+              <span></span>
+            </label>
+          </span>
+        </div>
+        ${ui.exEditingId === ex.id ? `
+        <div class="card form" data-form="ex-edit" data-id="${esc(ex.id)}">
+          <label class="field"><span>Название</span><input type="text" id="x-name" value="${esc(ex.name)}"></label>
+          <label class="field"><span>Единица</span><input type="text" id="x-unit" value="${esc(ex.unit)}" placeholder="кг, повт."></label>
+          <div class="btns">
+            <button class="btn primary" data-act="ex-save" data-id="${esc(ex.id)}">Сохранить</button>
+            <button class="btn quiet" data-act="ex-cancel">Отмена</button>
+          </div>
+        </div>` : ''}
+      </div>`;
+  });
+  h += ui.exAddOpen
+    ? `<div class="card form" data-form="ex-add">
+        <label class="field"><span>Название</span><input type="text" id="x-add-name" placeholder="Например: Жим лёжа"></label>
+        <label class="field"><span>Единица</span><input type="text" id="x-add-unit" placeholder="кг, повт."></label>
+        <label class="field"><span>Рабочая нагрузка</span><input type="text" id="x-add-value" inputmode="decimal" placeholder="необязательно"></label>
+        <div class="btns">
+          <button class="btn primary" data-act="ex-add-save">Добавить</button>
+          <button class="btn quiet" data-act="ex-add-cancel">Отмена</button>
+        </div>
+      </div>`
+    : `<button class="btn wide" data-act="ex-add-open">Добавить упражнение</button>`;
+  return h;
+}
+
 /* Сворачиваемая секция «Настроек» на нативном details: раскрытие —
    дело браузера, ui хранит только состояние, чтобы перерисовка после
    действия внутри секции её не захлопнула. */
@@ -2431,6 +2651,7 @@ function renderSettings() {
     <p class="muted">Отметки до этого часа относятся к предыдущему дню.</p>`;
 
   h += sect('items', 'Пункты', body);
+  h += sect('exercises', 'Упражнения', exerciseEditor());
 
   const exp = (typeof store.settings.exportedAt === 'number' && isFinite(store.settings.exportedAt))
     // логический день — как в имени файла экспорта (инвариант 1)
@@ -2636,6 +2857,13 @@ function closeReview() {
   ui.reviewFrom = null;
 }
 
+function closeTrain() {
+  ui.trainOpen = false;
+  ui.trainId = null;
+  ui.trainFrom = null;
+  ui.trainNote = '';
+}
+
 function onClick(e) {
   const b = e.target.closest('[data-act]');
   if (!b) return;
@@ -2740,11 +2968,81 @@ function onClick(e) {
       break;
     }
 
-    case 'train-inc': {
-      const hadFail = saveFailed;
-      incTrain(id);
-      if (saveFailed !== hadFail) renderToday(); // баннер хранилища — редкий структурный путь
-      else updateWeekCount(id);
+    // «+» открывает лист тренировки: сначала записывается, что сделано
+    case 'train-inc':
+      ui.trainScroll = window.scrollY || 0;
+      ui.trainFrom = ui.tab;
+      ui.trainId = id;
+      ui.trainNote = '';
+      ui.trainOpen = true;
+      renderAll();
+      break;
+
+    case 'train-save': {
+      const entries = activeExercises().map(ex => {
+        const inp = el('ex-' + ex.id);
+        return { exId: ex.id, value: inp ? parsePositive(inp.value) : null };
+      });
+      const note = el('tr-note') ? el('tr-note').value : '';
+      const back = ui.trainFrom, y = ui.trainScroll, weekly = ui.trainId;
+      recordSession(weekly, entries, note);
+      closeTrain();
+      if (back) ui.tab = back;
+      renderAll();
+      window.scrollTo(0, y);
+      break;
+    }
+
+    case 'train-cancel': { // ничего не пишет
+      const back = ui.trainFrom, y = ui.trainScroll;
+      closeTrain();
+      if (back) ui.tab = back;
+      renderAll();
+      window.scrollTo(0, y);
+      break;
+    }
+
+    // шаг ±1 правит поле на месте: перерисовка листа сбросила бы соседние
+    case 'ex-step': {
+      const inp = el('ex-' + id);
+      if (!inp) break;
+      const cur = parseNum(inp.value);
+      const next = (cur === null ? 0 : cur) + (b.dataset.dir === 'up' ? 1 : -1);
+      inp.value = String(Math.max(0, Math.round(next * 100) / 100));
+      break;
+    }
+
+    case 'ex-add-open': ui.exAddOpen = true; ui.exEditingId = null; renderSettings(); break;
+    case 'ex-add-cancel': ui.exAddOpen = false; renderSettings(); break;
+    case 'ex-add-save': {
+      const name = el('x-add-name') ? el('x-add-name').value : '';
+      if (!name.trim()) break; // безымянное упражнение не заводится
+      addExercise(name, el('x-add-unit') ? el('x-add-unit').value : '',
+        el('x-add-value') ? parsePositive(el('x-add-value').value) : null);
+      ui.exAddOpen = false;
+      ui.savedFlash = true;
+      renderSettings();
+      break;
+    }
+    case 'ex-open': ui.exEditingId = id; ui.exAddOpen = false; renderSettings(); break;
+    case 'ex-cancel': ui.exEditingId = null; renderSettings(); break;
+    case 'ex-save':
+      if (updateExercise(id, el('x-name') ? el('x-name').value : '', el('x-unit') ? el('x-unit').value : '')) {
+        ui.exEditingId = null;
+        ui.savedFlash = true;
+      }
+      renderSettings();
+      break;
+    case 'ex-up':
+    case 'ex-down': {
+      if (!moveExercise(id, act === 'ex-up' ? 'up' : 'down')) break;
+      renderSettings();
+      // фокус — той же кнопке пересозданной строки, как у пунктов
+      const find = a => [...el('scr-settings').querySelectorAll(`[data-act="${a}"]`)].find(x => x.dataset.id === id);
+      const same = find(act);
+      const pair = find(act === 'ex-up' ? 'ex-down' : 'ex-up');
+      if (same && !same.disabled) same.focus();
+      else if (pair) pair.focus();
       break;
     }
     case 'train-undo': {
@@ -3016,6 +3314,14 @@ function onChange(e) {
     toggleMark(todayKey(), t.dataset.id);
     if (saveFailed !== hadFail) renderAll(); // баннер хранилища — редкий структурный путь
     else updateTodayMark(t);
+  } else if (act === 'ex-active') {
+    const ex = findExercise(t.dataset.id);
+    if (ex) {
+      ex.active = t.checked;
+      save();
+      const wrap = t.closest('.rowwrap');
+      if (wrap) wrap.classList.toggle('off', !ex.active);
+    }
   } else if (act === 'toggle-active') {
     const item = store.items.find(i => i.id === t.dataset.id);
     if (item) {
@@ -3086,6 +3392,7 @@ async function init() {
       if (b.dataset.tab !== ui.tab) { ui.missOpen = {}; ui.raiseEdit = {}; }
       closeDetail(); // таб-бар уводит с листов, черновик формы не переносится
       closeReview();
+      closeTrain();
       ui.tab = b.dataset.tab;
       if (!syncDay()) renderAll(); // при смене дня syncDay уже перерисовал новую вкладку
     }));
@@ -3111,6 +3418,8 @@ if (typeof module !== 'undefined' && module.exports) {
     acceptRaise, closeWeek, missedYesterday, markYesterday, plural, parseNum,
     // планка вниз (задача 16C)
     lowerEligible, lowerSuggest, acceptLower, keepBar,
+    // упражнения и тренировки (задача 16D)
+    activeExercises, findExercise, addExercise, updateExercise, moveExercise, recordSession,
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, recordBar, parsePositive, isDayKey, load,

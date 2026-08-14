@@ -531,7 +531,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .card.lower .btns, .card.step .btns { margin-top: 12px; }
 .raise-line { font-size: 17px; }
 .raise-line b { color: var(--accent); }
-.raise-line .num {
+/* поле числа: карточка повышения и строка упражнения в листе тренировки */
+.raise-line .num, .exline .num {
   width: 84px;
   display: inline-block;
   font: inherit;     /* как у полей .field */
@@ -586,6 +587,21 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 }
 
 .rev { margin-top: var(--gap-section); }
+
+/* ── Лист «Тренировка» (задача 16D) ────────────────────────────
+   Строка упражнения: название слева, шаг ±1 и поле нагрузки справа. */
+
+.exline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 9px 0;
+}
+.exline + .exline { border-top: 1px solid var(--line); }
+.exline .txt { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.exctl { flex: none; display: flex; align-items: center; gap: 6px; }
+.exline .num { width: 72px; text-align: center; }
 
 /* ── Секции «Настроек» (задача 16B) ────────────────────────────
    Нативный details: раскрытие без JS, состояние помнит ui. */

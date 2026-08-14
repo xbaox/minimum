@@ -54,7 +54,9 @@ const THRESHOLDS = [
    темах против --bg и против --surface (поля лежат и на карточках). */
 const SWITCH_VAR = (CSS.match(/\.switch span\s*\{[^}]*background:\s*var\(--([\w-]+)\)/) || [])[1];
 const FIELD_VAR = (CSS.match(/\.field input[^{]*\{[^}]*border:\s*1px solid var\(--([\w-]+)\)/) || [])[1];
-const RAISE_VAR = (CSS.match(/\.raise-line \.num\s*\{[^}]*border:\s*1px solid var\(--([\w-]+)\)/) || [])[1];
+/* [^{]* вместо \s*: правило поля числа стало списком селекторов —
+   его делят карточка повышения и строка упражнения (задача 16D) */
+const RAISE_VAR = (CSS.match(/\.raise-line \.num[^{]*\{[^}]*border:\s*1px solid var\(--([\w-]+)\)/) || [])[1];
 
 test('контраст: трек тумблера, рамка поля и raise-инпут привязаны к переменным', () => {
   assert.ok(SWITCH_VAR, 'у .switch span фон из переменной');
