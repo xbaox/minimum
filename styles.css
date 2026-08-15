@@ -681,7 +681,22 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
    строка приподнимается и не анимируется — она под пальцем.
    При reduced-motion переходы снимает глобальный блок ниже. */
 
-.drag-row { transition: transform .18s ease-out; }
+/* Захвату предшествуют 250 мс удержания: за это время iOS успевает вызвать
+   лупу и выделение текста, и перетаскивание срывается ещё до старта. Снимаем
+   их со строки постоянно, а не только при body.dragging (задача 22, п. 7.6):
+   к моменту, когда класс появится, звать уже поздно. Поля открытой формы
+   исключены — в них выделение нужно. */
+.drag-row {
+  transition: transform .18s ease-out;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.drag-row input, .drag-row textarea {
+  -webkit-touch-callout: default;
+  -webkit-user-select: auto;
+  user-select: auto;
+}
 .drag-row.drag-live {
   transition: none;
   position: relative;

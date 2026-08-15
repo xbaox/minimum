@@ -156,6 +156,38 @@ function programQuotes(today) {
 
 const programGroups = () => SEED_GROUPS.map(name => ({ name }));
 
+/* День посева — по нему подсказка «одна новая привычка за раз» отличает
+   программу от пунктов владельца (задача 22, п. 7.2). Пометить посевные
+   пункты полем нельзя, не меняя схему, но у всех девяти один addedAt:
+   день первого запуска, самый ранний в store.
+
+   Одиночный пункт с минимальным addedAt посевным не считается никогда:
+   после чистки store пуст, а settings.seed17 стоит намеренно (инвариант
+   18) — первый же пункт владельца оказался бы самым ранним и выпал бы из
+   счёта, и подсказка не показалась бы при добавлении второй привычки.
+   Посев кладёт девять пунктов одной датой, владелец добавляет по одному —
+   количество в группе и есть различитель (решение архитектора). */
+function seedDayKey() {
+  if (store.settings.seed17 !== true || !store.items.length) return null;
+  let min = null, n = 0;
+  for (const it of store.items) {
+    if (min === null || it.addedAt < min) { min = it.addedAt; n = 1; }
+    else if (it.addedAt === min) n++;
+  }
+  return n > 1 ? min : null;
+}
+
+/* Позже всех заведённый пункт владельца; посев в счёт не идёт */
+function ownerNewestItem() {
+  const seedDay = seedDayKey();
+  let newest = null;
+  for (const it of store.items) {
+    if (seedDay !== null && it.addedAt === seedDay) continue;
+    if (!newest || it.addedAt > newest.addedAt) newest = it;
+  }
+  return newest;
+}
+
 function seedProgram(s, today) {
   s.groups = programGroups();
   s.items = programItems(today);
@@ -824,10 +856,23 @@ function toggleMark(dayKey, itemId) {
   save();
 }
 
-/* «Не пропускай дважды»: пункт существовал вчера и не был отмечен. */
+/* Отмечался ли пункт хоть раз — не позже дня upto, если он задан.
+   Чистая функция от days{}: reviews в счёт не идут (инвариант 4). */
+function everMarked(item, upto) {
+  for (const k of Object.keys(store.days)) {
+    if ((upto === undefined || k <= upto) && store.days[k][item.id]) return true;
+  }
+  return false;
+}
+
+/* «Не пропускай дважды»: пункт существовал вчера и не был отмечен.
+   Пропустить можно только начатое (задача 22, п. 2): до первой отметки
+   точки нет вовсе — иначе владелец в первый же день видел бы у всей
+   программы «вчера — пропуск» за день, в который её ещё не было. */
 function missedYesterday(item, tKey) {
   const y = addDays(tKey, -1);
-  return item.addedAt <= y && !isMarked(y, item.id);
+  if (!(item.addedAt <= y) || isMarked(y, item.id)) return false;
+  return everMarked(item);
 }
 
 /* Единственная допустимая правка прошлого (инвариант 7): установить отметку
@@ -1075,6 +1120,11 @@ function lowerEligible(item) {
   // которые пункта не было (аудит, находка 6). Повышению такая защита
   // не нужна: там критерий требует ≥6 отметок, а у нового пункта их нет.
   if (!(item.addedAt <= W[0])) return false;
+  // и пункт должен быть начат (задача 22, п. 1): ни одной отметки за всё
+  // время до конца окна — облегчать нечего, планка ещё не проверялась.
+  // Владелец, засеявший программу и не успевший отметиться, получал
+  // предложение урезать её за недели, в которые не мог отмечаться.
+  if (!everMarked(item, addDays(W[W.length - 1], 6))) return false;
   if (!W.every(w => itemWeekCount(item, w) <= 3)) return false;
   return item.lowerAfterWeek === null || W[0] > item.lowerAfterWeek;
 }
@@ -1647,6 +1697,16 @@ const EPS = 1e-9;
    подписи степпера: минимальное done, при котором done/total ≥ порога */
 function dayNeed(total) {
   return total > 0 ? Math.ceil(total * dayThreshold() - EPS) : 0;
+}
+
+/* Подпись под степпером порога. Отдельной функцией, потому что тумблер
+   пункта меняет число применимых пунктов и обязан её обновить точечно
+   (задача 22, п. 5): полная перерисовка убила бы переход тумблера.
+   Пунктов нет — подписи нет, но узел остаётся: его нечем было бы
+   создать, когда первый пункт включат обратно. */
+function thresholdNote() {
+  const total = minDayItems(todayKey()).length;
+  return total ? `День зачтён, если отмечено не меньше ${dayNeed(total)} из ${total}.` : '';
 }
 
 /* «В системе N дней»: логические дни от calendarSince до сегодня
@@ -2252,7 +2312,7 @@ function renderToday() {
     </div>`;
     h += `<div class="list">` + groupSections(items, t, false) + `</div>`;
   } else {
-    h += `<p class="muted">Пунктов пока нет — добавить можно в «Пунктах».</p>`;
+    h += `<p class="muted">Пунктов пока нет — добавить можно в Настройках → Пункты.</p>`;
   }
 
   // area у недельного счётчика не проверяется: migrate принудительно ставит
@@ -2399,7 +2459,7 @@ function renderHabits() {
     </div>
     <div class="list">` + groupSections(habits, t, true) + `</div>`;
   } else {
-    h += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
+    h += `<p class="muted">Привычек пока нет — добавить можно в Настройках → Пункты.</p>`;
   }
 
   const params = store.items.filter(i => i.type === 'param' && i.active);
@@ -2486,9 +2546,11 @@ function chainGrid() {
   const names = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   let cells = '';
   let drawn = 0; // ячеек с отметками: пустая цепь показывает свою строку
+  let shown = 0; // видимых ячеек вообще: ни одной — сетки нет (задача 22, п. 3.2)
   const sr = [];
   for (const mon of weeks) {
     let hit = 0;
+    let vis = 0;
     for (let i = 0; i < 7; i++) {
       const k = addDays(mon, i);
       if (k > t) { cells += `<i class="cd fut"></i>`; continue; }
@@ -2497,10 +2559,17 @@ function chainGrid() {
       const full = s !== null && s >= dayThreshold() - EPS;
       if (full) hit++;
       if (s) drawn++;
+      vis++;
       cells += `<i class="cd${full ? ' full' : (s ? ' part' : '')}"></i>`;
     }
-    sr.push(`Неделя с ${fmtShort(mon)}: зачтено ${hit} из 7`);
+    shown += vis;
+    // неделя целиком до начала отсчёта не существует — скринридер не должен
+    // слышать про неё «зачтено 0 из 7» (задача 22, п. 3.4)
+    if (vis) sr.push(`Неделя с ${fmtShort(mon)}: зачтено ${hit} из 7`);
   }
+  // все восемь недель до начала отсчёта (эпоха ещё не наступила или только
+  // что задана вперёд) — рисовать нечего: одна строка вместо пустой сетки
+  if (!shown) return `<p class="muted">Цепь начнётся с первого дня отсчёта.</p>`;
   return `<p class="sr-only">${esc(sr.join('. '))}</p>` +
     `<div class="cdays" aria-hidden="true">` +
     names.map(d => `<span class="cd-head">${d}</span>`).join('') + cells + `</div>` +
@@ -2567,11 +2636,17 @@ function renderProgress() {
   const inOrder = area => groupedItems(activeDaily().filter(i => i.area === area))
     .reduce((acc, sec) => acc.concat(sec.items), []);
   const listed = inOrder('min').concat(inOrder('habit'));
+  // ряд нулей — не картина, а её отсутствие (задача 22, п. 3.1): пока ни у
+  // одного пункта нет ни одной отметки в окне, блок показывает одну строку,
+  // как того и требует инвариант 14 от пустого блока
   let marks = '';
-  for (const it of listed) {
-    marks += `<p class="line muted">${esc(it.name)} · ${marksInSystem(it)} из ${marksWindow(it)}</p>`;
+  if (listed.some(it => marksInSystem(it) > 0)) {
+    for (const it of listed) {
+      marks += `<p class="line muted">${esc(it.name)} · ${marksInSystem(it)} из ${marksWindow(it)}</p>`;
+    }
   }
-  h += pcard('Отметки', marks || `<p class="muted">Пунктов пока нет.</p>`);
+  h += pcard('Отметки', marks ||
+    `<p class="muted">${listed.length ? 'Первые отметки появятся здесь.' : 'Пунктов пока нет.'}</p>`);
 
   h += reviewDue()
     ? `<button class="banner rev" data-act="goto-review"><span>Разбор недели</span><span class="chev" aria-hidden="true">&rsaquo;</span></button>`
@@ -2593,15 +2668,17 @@ function renderProgress() {
    «Отмена» не пишет ничего. */
 function renderTrain() {
   const w = store.items.find(i => i.id === ui.trainId);
+  // имя недельного пункта — заголовок, надстрочник — день записи: прежде
+  // оба говорили «Тренировка» (задача 22, п. 7.3)
   let h = `
     <header class="page">
-      <p class="overline">${esc(w ? w.name : 'Тренировка')}</p>
-      <h1>Тренировка</h1>
+      <p class="overline">${esc(fmtDay(todayKey()))}</p>
+      <h1>${esc(w ? w.name : 'Тренировка')}</h1>
     </header>`;
 
   const list = activeExercises();
   if (!list.length) {
-    h += `<p class="muted">Упражнений пока нет — добавить можно в «Настройках».</p>`;
+    h += `<p class="muted">Упражнений пока нет — добавить можно в Настройках → Упражнения.</p>`;
   }
   for (const ex of list) {
     const v = (typeof ex.value === 'number' && isFinite(ex.value)) ? String(ex.value) : '';
@@ -2624,6 +2701,7 @@ function renderTrain() {
       <span>Заметка</span>
       <input type="text" id="tr-note" value="${esc(ui.trainNote)}" placeholder="необязательно">
     </label>
+    <p class="muted" id="tr-empty" role="status" hidden>Нечего записать: ни одно упражнение не заполнено.</p>
     <button class="btn primary wide" data-act="train-save">Записать</button>
     <button class="btn wide" data-act="train-cancel">Отмена</button>`;
 
@@ -2692,6 +2770,16 @@ function renderNotes() {
    Существующие узлы не пересоздаются — CSS-переходы чекбокса и
    планки дня реально проигрываются. Структурные изменения идут
    через полную перерисовку экрана. */
+
+/* Подпись зачёта дня в «Настройках» — тот же горячий путь, что и тумблер
+   пункта: узел уже в DOM, меняется только текст (задача 22, п. 5) */
+function updateThresholdNote() {
+  const n = el('thr-note');
+  if (!n) return;
+  const s = thresholdNote();
+  n.textContent = s;
+  n.hidden = !s;
+}
 
 function updateDayline() {
   const t = todayKey();
@@ -3141,7 +3229,7 @@ function renderReview() {
     }
     wk += consist(habitItems);
   } else {
-    wk += `<p class="muted">Привычек пока нет — добавить можно в «Пунктах».</p>`;
+    wk += `<p class="muted">Привычек пока нет — добавить можно в Настройках → Пункты.</p>`;
   }
 
   for (const p of store.items.filter(i => i.type === 'param' && i.active)) {
@@ -3497,7 +3585,7 @@ function renderSettings() {
   // порог зачёта дня (задача 17): «день зачтён» — доля, а не всё подряд.
   // Живёт рядом с границей дня: обе настройки — про то, как считается день.
   const th = dayThreshold();
-  const total = minDayItems(todayKey()).length;
+  const thrNote = thresholdNote();
   body += `
     <h2>Зачёт дня</h2>
     <div class="field inline norm">
@@ -3506,8 +3594,8 @@ function renderSettings() {
         <button type="button" class="btn icon quiet" data-act="thr-dec"${th <= THRESHOLD_MIN + EPS ? ' disabled' : ''} aria-label="ниже порог">&minus;</button>
         <button type="button" class="btn icon quiet" data-act="thr-inc"${th >= THRESHOLD_MAX - EPS ? ' disabled' : ''} aria-label="выше порог">+</button>
       </span>
-    </div>` +
-    (total ? `<p class="muted">День зачтён, если отмечено не меньше ${dayNeed(total)} из ${total}.</p>` : '');
+    </div>
+    <p class="muted" id="thr-note"${thrNote ? '' : ' hidden'}>${thrNote}</p>`;
 
   h += sect('items', 'Пункты', body);
   h += sect('exercises', 'Упражнения', exerciseEditor());
@@ -3529,7 +3617,7 @@ function renderSettings() {
     <h2>Начало отсчёта</h2>
     <label class="field">
       <span>Первый день в системе</span>
-      <input type="date" id="since" data-act="since" max="${esc(todayKey())}" value="${esc(isDayKey(store.settings.calendarSince) ? store.settings.calendarSince : '')}">
+      <input type="date" id="since" data-act="since" value="${esc(isDayKey(store.settings.calendarSince) ? store.settings.calendarSince : '')}">
     </label>
     <p class="muted">Меняет счёт дней в системе, серию и доступность разбора. Отметки не затрагивает.</p>` + wipeBlock());
 
@@ -3775,6 +3863,20 @@ function closeTrain() {
   ui.trainNote = '';
 }
 
+/* Взведённое подтверждение вторым тапом — временное состояние одного
+   экрана, а не решение владельца: уход с экрана его снимает (задача 22,
+   п. 4). Иначе «Подтвердить: стереть» переживало смену вкладки, и один
+   тап по возвращении стирал всё. Список полный и живёт здесь одним
+   местом: новое подтверждение добавляется сюда, а не в обработчики. */
+function resetConfirms() {
+  ui.wipeConfirm = false;
+  ui.wipeDropConfirm = false;
+  ui.groupDelete = null;
+  ui.noteDelete = null;
+  ui.ladderConfirm = false;
+  ui.ladderDoneConfirm = false;
+}
+
 /* ── Перетаскивание (задача 16F) ───────────────────────────────
    Pointer Events без библиотек. Захват — долгим нажатием (250 мс):
    до него любое движение считается скроллом. Соседи раздвигаются
@@ -3956,8 +4058,8 @@ function onClick(e) {
 
     case 'review-done': {
       const back = ui.reviewFrom, y = ui.reviewScroll;
-      ui.reviewOpen = false;
-      ui.reviewFrom = null;
+      closeReview();
+      resetConfirms(); // «Готово» уводит с листа — как таб-бар
       if (back) ui.tab = back;
       renderAll();
       window.scrollTo(0, y); // прежняя вкладка с прежним скроллом
@@ -3995,6 +4097,7 @@ function onClick(e) {
     case 'detail-done': {
       const y = ui.detailScroll;
       closeDetail();
+      resetConfirms();
       renderAll();
       window.scrollTo(0, y); // прежняя вкладка с прежним скроллом
       break;
@@ -4064,14 +4167,28 @@ function onClick(e) {
       break;
 
     case 'train-save': {
-      const entries = activeExercises().map(ex => {
+      const list = activeExercises();
+      const entries = list.map(ex => {
         const inp = el('ex-' + ex.id);
         return { exId: ex.id, value: inp ? parsePositive(inp.value) : null };
       });
+      // заполнять было что, но не заполнено ничего — записывать нечего
+      // (задача 22, п. 7.4): ни сессии, ни счётчика. Упражнений нет вовсе —
+      // поведение прежнее: лист вырождается в подтверждение «тренировка была»,
+      // и это единственный способ засчитать её (решение архитектора).
+      if (list.length && !entries.some(e => e.value !== null)) {
+        // отказ молчаливым не бывает: лист остаётся и говорит. Строка
+        // раскрывается точечно — перерисовка листа вернула бы в поля
+        // сохранённые нагрузки, и отказ противоречил бы тому, что видно.
+        const n = el('tr-empty');
+        if (n) n.hidden = false;
+        break;
+      }
       const note = el('tr-note') ? el('tr-note').value : '';
       const back = ui.trainFrom, y = ui.trainScroll, weekly = ui.trainId;
       recordSession(weekly, entries, note);
       closeTrain();
+      resetConfirms();
       if (back) ui.tab = back;
       renderAll();
       window.scrollTo(0, y);
@@ -4081,6 +4198,7 @@ function onClick(e) {
     case 'train-cancel': { // ничего не пишет
       const back = ui.trainFrom, y = ui.trainScroll;
       closeTrain();
+      resetConfirms();
       if (back) ui.tab = back;
       renderAll();
       window.scrollTo(0, y);
@@ -4092,8 +4210,12 @@ function onClick(e) {
       const inp = el('ex-' + id);
       if (!inp) break;
       const cur = parseNum(inp.value);
-      const next = (cur === null ? 0 : cur) + (b.dataset.dir === 'up' ? 1 : -1);
-      inp.value = String(Math.max(0, Math.round(next * 100) / 100));
+      const next = Math.round(((cur === null ? 0 : cur) + (b.dataset.dir === 'up' ? 1 : -1)) * 100) / 100;
+      // вниз до нуля не доводим (задача 22, п. 7.5): сессия берёт только
+      // значение > 0, а ноль в поле «Записать» молча выбросил бы — поле
+      // показывало бы одно, а записалось бы другое
+      if (!(next > 0)) break;
+      inp.value = String(next);
       break;
     }
 
@@ -4390,8 +4512,9 @@ function onClick(e) {
       ui.addArea = b.dataset.area === 'habit' ? 'habit' : 'min';
       ui.addPkind = 'time';
       ui.groupPick = null; ui.groupNew = false;
-      // Подсказка «одна новая привычка за раз» видима все 14 дней после добавления пункта
-      const newest = store.items.reduce((a, x) => (!a || x.addedAt > a.addedAt) ? x : a, null);
+      // Подсказка «одна новая привычка за раз» видима все 14 дней после
+      // добавления пункта — но считается только по добавленному владельцем
+      const newest = ownerNewestItem();
       ui.addHint = !!(newest && diffDays(todayKey(), newest.addedAt) < 14);
       renderSettings();
       break;
@@ -4544,6 +4667,7 @@ function onChange(e) {
       save();
       const wrap = t.closest('.rowwrap');
       if (wrap) wrap.classList.toggle('off', !item.active); // переход тумблера играет
+      updateThresholdNote(); // применимых пунктов стало другое число (задача 22, п. 5)
     }
   } else if (act === 'boundary') {
     store.settings.dayBoundary = Number(t.value) || 0;
@@ -4557,9 +4681,11 @@ function onChange(e) {
       ui.renderedDayKey = todayKey();
     }
   } else if (act === 'since') {
-    // начало отсчёта: приводится к понедельнику своей недели, будущее не берётся
+    // начало отсчёта: приводится к понедельнику своей недели. Дата вперёд
+    // законна (задача 22, п. 8): пустая эпоха — обычное состояние приложения,
+    // в неё же кладёт чистка, и владелец вправе назначить старт сам.
     const v = t.value;
-    if (isDayKey(v) && v <= todayKey()) {
+    if (isDayKey(v)) {
       store.settings.calendarSince = weekStartOf(v);
       save();
     }
@@ -4630,6 +4756,7 @@ async function init() {
     b.addEventListener('click', () => {
       ui.importNote = null;
       if (b.dataset.tab !== ui.tab) { ui.missOpen = {}; ui.raiseEdit = {}; }
+      resetConfirms(); // взведённое подтверждение не переживает уход с экрана
       closeDetail(); // таб-бар уводит с листов, черновик формы не переносится
       closeReview();
       closeTrain();
@@ -4683,7 +4810,9 @@ if (typeof module !== 'undefined' && module.exports) {
     chainWeeks, marksInSystem, riseSeries, risePath,
     // доля дня, порог и рекорд (задача 17)
     dayScore, dayNeed, dayThreshold, clampThreshold, bestStreak,
-    marksWindow, seedProgram, SEED_QUOTES
+    marksWindow, seedProgram, SEED_QUOTES,
+    // задача 22
+    everMarked, thresholdNote, seedDayKey, ownerNewestItem
   };
 } else if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', init);

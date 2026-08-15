@@ -631,7 +631,8 @@ test('смена границы дня не перерисовывает «Пу�
 test('подпись «вчера — пропуск» закрывается при смене вкладки', async () => {
   const seed = dueSeed();
   seed.weekStart = daysAgo(2);
-  seed.days = {}; // вчера не отмечено — у пункта есть точка-маркер
+  // вчера не отмечено, но пункт начат — иначе точки нет вовсе (задача 22, п. 2)
+  seed.days = { [addKey(prevMonday(), 1)]: { it1: true } };
   const { document, window } = await boot({ seed });
   const dot = document.querySelector('[data-act="miss-note"]');
   assert.ok(dot, 'точка-маркер есть');
@@ -695,7 +696,8 @@ test('импорт при открытой форме: черновик не н�
 test('доступность: точка вне label, aria-expanded, имена контролов, aria-live', async () => {
   const seed = dueSeed();
   seed.weekStart = daysAgo(2);
-  seed.days = {}; // вчера не отмечено — у обоих пунктов есть точка-маркер
+  // вчера не отмечено, но оба пункта начаты — иначе точек нет (задача 22, п. 2)
+  seed.days = { [addKey(prevMonday(), 1)]: { it1: true, it2: true } };
   seed.items.push({
     id: 'it2', name: 'Второй пункт', value: null, unit: '', type: 'daily',
     goal: null, note: '', group: '', active: true, addedAt: daysAgo(10),
@@ -767,7 +769,8 @@ test('доступность: сетка разбора скрыта от AT, с
 test('ретро-отметка: «отметить» ставит вчера, точка исчезает, фокус на чекбоксе', async () => {
   const seed = dueSeed();
   seed.weekStart = daysAgo(2);
-  seed.days = {}; // вчера не отмечено — есть точка
+  // вчера не отмечено, но пункт начат — иначе точки нет (задача 22, п. 2)
+  seed.days = { [addKey(prevMonday(), 1)]: { it1: true } };
   const { document, window } = await boot({ seed });
 
   document.querySelector('[data-act="miss-note"]').click();
@@ -789,7 +792,9 @@ test('ретро-отметка: «отметить» ставит вчера, �
 
 test('ретро-отметка видна в сетке разбора и входит в count при закрытии', async () => {
   const seed = dueSeed();
-  seed.days = {};
+  // единственная отметка — до разбираемой недели: пункт начат (точка-маркер
+  // требует этого с задачи 22, п. 2), а сетка разбора остаётся пустой
+  seed.days = { [addKey(prevMonday(), -7)]: { it1: true } };
   // прошлая неделя уже разобрана — разбор появится после смены недели
   seed.reviews = [{ closedAt: 1, week: prevMonday(), keys: [], perItem: {}, trainings: {}, oneChange: '', raises: [] }];
   const { document, window } = await boot({ seed });
@@ -943,7 +948,8 @@ test('«Привычки»: пустая секция — тихая строк�
   const seed = dueSeed(); // habitSeeded: soft-блок поставит false, посева нет — привычек нет
   const { document } = await boot({ seed });
   document.querySelector('#tabs button[data-tab="habits"]').click();
-  assert.match(document.getElementById('scr-habits').textContent, /Привычек пока нет — добавить можно в «Пунктах»/);
+  assert.match(document.getElementById('scr-habits').textContent,
+    /Привычек пока нет — добавить можно в Настройках → Пункты\./);
 });
 
 test('разбор: секции «Минимум» и «Привычки», карточка параметра, готовность', async () => {
@@ -2460,7 +2466,9 @@ test('разбор: карточка «Сделать легче» — шаг п
   const seed = dueSeed();
   seed.items[0].value = 20;
   seed.items[0].history = [{ date: addKey(prevMonday(), -14), value: 20 }];
-  seed.days = {}; // две закрытые недели без отметок — планка не держится
+  // две закрытые недели без отметок — планка не держится; одна отметка до
+  // окна делает пункт начатым, иначе предложения нет (задача 22, п. 1)
+  seed.days = { [addKey(prevMonday(), -14)]: { it1: true } };
   const { document, window } = await boot({ seed });
   openReview(document);
   const scr = () => document.getElementById('scr-review');
@@ -3171,8 +3179,10 @@ test('пустая эпоха: шесть экранов после чистки
   // блоки на месте, пустоту объясняют строки п. 8.3 (прежде блоки исчезали)
   assert.match(prog.textContent, /Пунктов пока нет\./);
   assert.match(prog.textContent, /Отсчёт идёт с /);
-  assert.equal(prog.querySelectorAll('.cdays i.pre').length + prog.querySelectorAll('.cdays i.fut').length, 56,
-    'вся цепь — до эпохи либо в будущем');
+  // задача 22, п. 3.2: ни одной видимой ячейки — сетки нет вовсе, одна строка
+  assert.equal(prog.querySelector('.cdays'), null, 'сетка не рисуется');
+  assert.match(prog.textContent, /Цепь начнётся с первого дня отсчёта\./);
+  assert.equal(prog.querySelector('.sr-only'), null, 'нечего объявлять скринридеру');
   assert.match(prog.textContent, /Следующий разбор — в понедельник/);
   assert.equal(prog.querySelector('[data-act="goto-review"]'), null);
 
@@ -3402,7 +3412,7 @@ test('«Настройки» 17: степпер порога и подпись �
   assert.match(line(), /не меньше 5 из 5\./);
 });
 
-test('«Настройки» 17: начало отсчёта — понедельник недели, будущее не принимается', async () => {
+test('«Настройки» 22: начало отсчёта — понедельник недели, будущая дата принимается', async () => {
   const { document, window } = await boot({ seed: t17Seed() });
   document.querySelector('#tabs button[data-tab="settings"]').click();
   openData(document);
@@ -3414,6 +3424,7 @@ test('«Настройки» 17: начало отсчёта — понедел�
   };
 
   assert.equal(field().value, mondayOf(daysAgo(30)));
+  assert.equal(field().hasAttribute('max'), false, 'потолка у поля нет (задача 22, п. 8.1)');
   assert.match(document.getElementById('scr-settings').textContent,
     /Меняет счёт дней в системе, серию и доступность разбора\. Отметки не затрагивает\./);
 
@@ -3423,10 +3434,8 @@ test('«Настройки» 17: начало отсчёта — понедел�
   assert.equal(saved().settings.calendarSince, mondayOf(wed));
   assert.equal(field().value, mondayOf(wed), 'поле показывает принятое значение');
 
-  // будущая дата и мусор не принимаются
+  // мусор по-прежнему не принимается
   const before = saved().settings.calendarSince;
-  set(addKey(daysAgo(0), 7));
-  assert.equal(saved().settings.calendarSince, before);
   set('не дата');
   assert.equal(saved().settings.calendarSince, before);
   assert.equal(field().value, before);
@@ -3435,6 +3444,32 @@ test('«Настройки» 17: начало отсчёта — понедел�
   openProgress(document);
   const days = [...document.querySelectorAll('#scr-progress .stat')][0].textContent;
   assert.match(days, new RegExp('^' + (Math.round((new Date(daysAgo(0)) - new Date(before)) / 86400000) + 1) + ' '));
+
+  // задача 22, п. 8: будущая дата законна — эпоха просто ещё не наступила
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  openData(document);
+  const ahead = addKey(daysAgo(0), 7);
+  set(ahead);
+  assert.equal(saved().settings.calendarSince, mondayOf(ahead), 'принята и нормализована');
+  assert.ok(saved().settings.calendarSince > daysAgo(0), 'эпоха впереди');
+
+  // все экраны в этой пустой эпохе работают, как после чистки
+  openProgress(document);
+  const prog = document.getElementById('scr-progress');
+  assert.match(prog.textContent, /^\s*Накопленное/);
+  assert.deepEqual([...prog.querySelectorAll('.stat')].map(x => x.textContent), ['0 дней', '0 дней']);
+  assert.equal(prog.querySelector('.cdays'), null, 'цепи нет — видимых ячеек ноль');
+  assert.match(prog.textContent, /Цепь начнётся с первого дня отсчёта\./);
+  assert.match(prog.textContent, /Первые отметки появятся здесь\./);
+  assert.doesNotMatch(prog.innerHTML, /NaN/);
+  for (const tab of ['today', 'habits', 'notes', 'settings']) {
+    document.querySelector(`#tabs button[data-tab="${tab}"]`).click();
+    const scr = document.getElementById('scr-' + tab);
+    assert.equal(scr.hidden, false, tab);
+    assert.doesNotMatch(scr.innerHTML, /NaN/, tab);
+  }
+  window.renderReview();
+  assert.match(document.getElementById('scr-review').textContent, /Разбор откроется в понедельник/);
 });
 
 test('посев 17 в браузере: пустой localStorage через migrate даёт программу и выписки', async () => {
@@ -4298,4 +4333,303 @@ test('З21/4.3: форма лестницы — слот, освобождённ
   const items = JSON.parse(window.localStorage.getItem(NS)).items;
   assert.ok(items.find(i => i.id === 'it2').ladder, 'новая лестница заведена');
   assert.ok(items.find(i => i.id === 'it1').ladder.done, 'закрытая не снята');
+});
+
+/* ── Задача 22. Первая неделя ──────────────────────────────── */
+
+/* Состояние владельца в первый день практики: программа посева,
+   эпоха началась, ни одной отметки. */
+function firstWeekSeed() {
+  const seed = t17Seed();
+  seed.days = {};                       // ноль отметок
+  seed.items.forEach(i => { i.addedAt = mondayOf(daysAgo(30)); });
+  return seed;
+}
+
+test('З22/3: пустые «Отметки» — одна строка вместо ряда нулей', async () => {
+  const { document, window } = await boot({ seed: firstWeekSeed() });
+  openProgress(document);
+  const card = () => [...document.querySelectorAll('#scr-progress .pcard')]
+    .find(c => c.querySelector('h2').textContent === 'Отметки');
+
+  assert.match(card().textContent, /^Отметки\s*Первые отметки появятся здесь\.$/);
+  assert.equal(card().querySelectorAll('p').length, 1, 'ровно одна строка');
+  assert.doesNotMatch(card().textContent, /0 из /);
+
+  // первая отметка возвращает обычный вид — все пять строк, включая нулевые
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('input[data-act="mark"]').click();
+  openProgress(document);
+  assert.equal(card().querySelectorAll('p.line').length, 5);
+  assert.match(card().textContent, /Пункт 0 · 1 из /);
+  assert.match(card().textContent, /Пункт 1 · 0 из /);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).days[daysAgo(0)].m0, true);
+});
+
+test('З22/3: цепь дней — сетки нет, пока нет ни одной видимой ячейки', async () => {
+  const seed = firstWeekSeed();
+  seed.settings.calendarSince = mondayOf(addKey(daysAgo(0), 14)); // эпоха впереди
+  const { document } = await boot({ seed });
+  openProgress(document);
+  const card = () => [...document.querySelectorAll('#scr-progress .pcard')]
+    .find(c => c.querySelector('h2').textContent === 'Цепь дней');
+
+  assert.equal(card().querySelector('.cdays'), null, 'сетки нет вовсе');
+  assert.equal(card().querySelector('.sr-only'), null, 'и объявлять нечего');
+  assert.match(card().textContent, /Цепь начнётся с первого дня отсчёта\./);
+});
+
+test('З22/3.4: sr-only не объявляет недели, целиком лежащие до эпохи', async () => {
+  const seed = firstWeekSeed();
+  seed.settings.calendarSince = curMonday(); // эпоха — ровно текущая неделя
+  const { document } = await boot({ seed });
+  openProgress(document);
+  const sr = document.querySelector('#scr-progress .sr-only').textContent;
+  const weeks = sr.split('. ').filter(Boolean);
+
+  // цепь рисует восемь недель, существует из них одна — остальные молчат
+  assert.equal(document.querySelectorAll('#scr-progress .cdays i.pre').length, 49);
+  assert.equal(weeks.length, 1, 'объявлены только существующие недели');
+  assert.match(weeks[0], /^Неделя с .+: зачтено \d из 7$/);
+});
+
+test('З22/4: взведённое подтверждение гаснет при смене вкладки', async () => {
+  const seed = trainSeed();
+  seed.groups = [{ name: 'Блок' }];
+  seed.items[0].group = 'Блок';
+  seed.notes = [{ id: 'n1', date: daysAgo(0), text: 'мысль', kind: 'note', source: '', updatedAt: 1 }];
+  const { document, window } = await boot({ seed });
+  const away = () => {
+    document.querySelector('#tabs button[data-tab="progress"]').click();
+    document.querySelector('#tabs button[data-tab="settings"]').click();
+  };
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const itemCount = saved().items.length;
+
+  // 1. «Стереть»: первый тап взводит, уход гасит, данные на месте
+  openData(document);
+  document.querySelector('[data-act="wipe-open"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  assert.match(document.querySelector('[data-act="wipe-do"]').textContent, /Подтвердить: стереть/);
+  away();
+  openData(document);
+  assert.match(document.querySelector('[data-act="wipe-do"]').textContent, /^Стереть$/);
+  document.querySelector('[data-act="wipe-do"]').click();
+  assert.equal(saved().items.length, itemCount, 'первый тап после сброса только взводит');
+  assert.match(document.querySelector('[data-act="wipe-do"]').textContent, /Подтвердить: стереть/);
+  document.querySelector('[data-act="wipe-cancel"]').click();
+
+  // 2. удаление блока
+  const groupSect = () => [...document.querySelectorAll('#scr-settings details.sect')]
+    .find(d => /Блоки/.test(d.querySelector('summary').textContent));
+  groupSect().querySelector('summary').click();
+  document.querySelector('[data-act="group-open"]').click();
+  document.querySelector('[data-act="group-del"]').click();
+  assert.match(document.querySelector('[data-act="group-del"]').textContent, /Подтвердить удаление/);
+  away();
+  // правка блока переживает уход (её никто не отменял), а подтверждение — нет
+  assert.match(document.querySelector('[data-act="group-del"]').textContent, /^Удалить$/);
+  assert.equal(saved().groups.length, 1, 'блок на месте');
+
+  // 3. удаление заметки
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  document.querySelector('[data-act="note-open"]').click();
+  document.querySelector('[data-act="note-del"]').click();
+  assert.match(document.querySelector('[data-act="note-del"]').textContent, /Подтвердить удаление/);
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  // открытая правка заметки уход переживает, взведённое удаление — нет
+  assert.match(document.querySelector('[data-act="note-del"]').textContent, /^Удалить$/);
+  document.querySelector('[data-act="note-del"]').click();
+  assert.equal(saved().notes.length, 1, 'первый тап после сброса не удаляет');
+});
+
+test('З22/5: подпись зачёта дня следует за тумблером без перерисовки', async () => {
+  const { document, window } = await boot({ seed: t17Seed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const note = () => document.getElementById('thr-note');
+  const before = note();
+  assert.match(before.textContent, /День зачтён, если отмечено не меньше 4 из 5\./);
+
+  const toggles = () => [...document.querySelectorAll('input[data-act="toggle-active"]')];
+  toggles()[0].click();
+  assert.equal(document.getElementById('thr-note'), before, 'узел тот же — экран не перерисован');
+  assert.match(note().textContent, /не меньше 4 из 4\./);
+  assert.equal(note().hidden, false);
+
+  // подпись совпадает с фактическим числом активных пунктов
+  const active = () => JSON.parse(window.localStorage.getItem(NS))
+    .items.filter(i => i.active && i.type === 'daily' && i.area === 'min').length;
+  toggles()[1].click();
+  assert.match(note().textContent, new RegExp('из ' + active() + '\\.'));
+
+  // последний выключенный пункт: подпись прячется, а не врёт
+  toggles().forEach(t => { if (t.checked) t.click(); });
+  assert.equal(active(), 0);
+  assert.equal(note().textContent, '');
+  assert.equal(note().hidden, true);
+
+  // обратно — узел всё ещё тот же и снова говорит правду
+  toggles()[0].click();
+  assert.equal(document.getElementById('thr-note'), before);
+  assert.match(note().textContent, /не меньше 1 из 1\./);
+});
+
+test('З22/6: полоса дня при нуле применимых пунктов — без NaN в разметке', async () => {
+  const seed = t17Seed();
+  seed.items.forEach(i => { i.active = false; }); // применимых пунктов нет
+  const { document } = await boot({ seed });
+  openProgress(document);
+  const prog = document.getElementById('scr-progress');
+
+  assert.equal(prog.querySelector('.dbar'), null, 'полосы нет — измерять нечего');
+  assert.equal(prog.querySelector('.dbar-note'), null);
+  assert.doesNotMatch(prog.innerHTML, /0 из 0/);
+
+  // ни один style в разметке не содержит NaN — ни на одном экране
+  for (const tab of ['today', 'habits', 'progress', 'notes', 'settings']) {
+    document.querySelector(`#tabs button[data-tab="${tab}"]`).click();
+    const scr = document.getElementById('scr-' + tab);
+    for (const n of scr.querySelectorAll('[style]')) {
+      assert.doesNotMatch(n.getAttribute('style'), /NaN/, tab);
+    }
+  }
+});
+
+test('З22/7.4: «Записать» без единого значения не пишет ничего и говорит об этом', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+
+  document.querySelector('[data-act="train-inc"]').click();
+  document.getElementById('ex-e1').value = '';
+  document.getElementById('ex-e2').value = 'ноль';
+  document.getElementById('tr-note').value = 'без цифр';
+  document.querySelector('[data-act="train-save"]').click();
+
+  assert.equal(document.getElementById('scr-train').hidden, false, 'лист остался открыт');
+  assert.deepEqual(saved().sessions, [], 'сессии нет');
+  assert.deepEqual(saved().weekLog, [], 'счётчик не вырос');
+  assert.equal(document.getElementById('tr-empty').hidden, false);
+  assert.match(document.getElementById('tr-empty').textContent,
+    /Нечего записать: ни одно упражнение не заполнено\./);
+  assert.equal(document.getElementById('tr-note').value, 'без цифр', 'черновик заметки цел');
+  // отказ ничего не переписал: поля остались такими, какими их видел владелец
+  assert.equal(document.getElementById('ex-e1').value, '');
+  assert.equal(document.getElementById('ex-e2').value, 'ноль');
+
+  // одно заполненное — записывается только оно, счёт растёт
+  document.getElementById('ex-e1').value = '45';
+  document.querySelector('[data-act="train-save"]').click();
+  assert.equal(document.getElementById('scr-today').hidden, false);
+  const s = saved();
+  assert.equal(s.sessions.length, 1);
+  assert.deepEqual(s.sessions[0].entries, [{ exId: 'e1', value: 45 }]);
+  assert.equal(s.sessions[0].note, 'без цифр');
+  assert.equal(s.weekLog.length, 1);
+  assert.equal(s.exercises.find(e => e.id === 'e1').value, 45);
+  assert.equal(s.exercises.find(e => e.id === 'e2').value, 60, 'незаполненное не тронуто');
+});
+
+test('З22/7.4: упражнений нет вовсе — «Записать» по-прежнему засчитывает тренировку', async () => {
+  const seed = trainSeed();
+  seed.exercises = [];
+  const { document, window } = await boot({ seed });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+
+  document.querySelector('[data-act="train-inc"]').click();
+  assert.match(document.getElementById('scr-train').textContent,
+    /Упражнений пока нет — добавить можно в Настройках → Упражнения\./);
+  document.querySelector('[data-act="train-save"]').click();
+
+  assert.equal(document.getElementById('scr-today').hidden, false, 'лист закрылся');
+  const s = saved();
+  assert.equal(s.sessions.length, 1);
+  assert.deepEqual(s.sessions[0].entries, []);
+  assert.equal(s.weekLog.length, 1, 'счётчик вырос');
+  assert.match(document.querySelector('#scr-today .wnum b').textContent, /1/);
+});
+
+test('З22/7.5: степпер не уводит поле в значение, которое «Записать» выбросит', async () => {
+  const seed = trainSeed();
+  seed.exercises[0].value = 2;
+  const { document } = await boot({ seed });
+  document.querySelector('[data-act="train-inc"]').click();
+  const field = document.getElementById('ex-e1');
+  const step = dir => [...document.querySelectorAll('[data-act="ex-step"]')]
+    .find(b => b.dataset.id === 'e1' && b.dataset.dir === dir);
+
+  step('down').click();
+  assert.equal(field.value, '1');
+  step('down').click();
+  assert.equal(field.value, '1', 'ниже минимального сессия не примет — поле стоит');
+
+  // пустое поле «минусом» не превращается в ноль
+  field.value = '';
+  step('down').click();
+  assert.equal(field.value, '', 'из пустого поля ноль не рождается');
+  step('up').click();
+  assert.equal(field.value, '1');
+
+  // дробная нагрузка: шаг вниз не переваливает через ноль
+  field.value = '0,5';
+  step('down').click();
+  assert.equal(field.value, '0,5');
+});
+
+test('З22/7.3: шапка листа тренировки не повторяет слово дважды', async () => {
+  const { document } = await boot({ seed: trainSeed() });
+  document.querySelector('[data-act="train-inc"]').click();
+  const head = document.querySelector('#scr-train header.page');
+  assert.equal(head.querySelector('h1').textContent, 'Тренировка');
+  assert.notEqual(head.querySelector('.overline').textContent, 'Тренировка');
+  assert.match(head.querySelector('.overline').textContent, /\d/, 'надстрочник — день записи');
+});
+
+test('З22/7.2: подсказка «одна новая привычка за раз» — только по пунктам владельца', async () => {
+  // засеянный store: девять пунктов одной датой — подсказки нет
+  const { document, window } = await boot();
+  const store = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(store.items.length, 9);
+  assert.equal(new Set(store.items.map(i => i.addedAt)).size, 1, 'посев одной датой');
+
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('[data-act="add-open"]').click();
+  assert.equal(document.querySelector('#scr-settings .hint'), null, 'посев подсказку не вызывает');
+
+  // пункт владельца, заведённый на следующий день, — вызывает
+  shiftWindowDate(window, 86400000);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  document.querySelector('[data-act="add-open"]').click();
+  document.getElementById('f-name').value = 'Своё';
+  document.querySelector('[data-act="add-save"]').click();
+  document.querySelector('[data-act="add-open"]').click();
+  assert.match(document.querySelector('#scr-settings .hint').textContent,
+    /одна новая привычка за раз/);
+});
+
+test('З22/7.2: стёртый store — первый пункт владельца подсказку не глушит', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  wipeThroughUi(document);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 0);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).settings.seed17, true);
+
+  const openItems = () => {
+    document.querySelector('#tabs button[data-tab="settings"]').click();
+    [...document.querySelectorAll('#scr-settings details.sect')]
+      .find(d => /^Пункты/.test(d.querySelector('summary').textContent))
+      .querySelector('summary').click();
+  };
+  openItems();
+  document.querySelector('[data-act="add-open"]').click();
+  assert.equal(document.querySelector('#scr-settings .hint'), null, 'заводить пока нечего');
+  document.getElementById('f-name').value = 'Первая';
+  document.querySelector('[data-act="add-save"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 1);
+
+  // три дня спустя владелец заводит вторую — подсказка обязана показаться
+  shiftWindowDate(window, 3 * 86400000);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  document.querySelector('[data-act="add-open"]').click();
+  assert.match(document.querySelector('#scr-settings .hint').textContent,
+    /Последний пункт добавлен меньше 14 дней назад/);
 });

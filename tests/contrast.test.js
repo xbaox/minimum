@@ -157,3 +157,20 @@ test('цепь дней: обводка пустой ячейки — контр
     }
   }
 });
+
+/* Задача 22, п. 7.6: 250 мс удержания до захвата успевают вызвать на iOS
+   системную лупу и выделение текста — и перетаскивание срывается ещё до
+   старта. Правило обязано стоять на самой строке постоянно, а не в
+   body.dragging: к моменту, когда класс появится, звать уже поздно. */
+test('перетаскивание: лупа и выделение сняты со строки постоянно, не только при захвате', () => {
+  const rule = (CSS.match(/\n\.drag-row\s*\{([^}]*)\}/) || [])[1];
+  assert.ok(rule, 'правило .drag-row существует');
+  assert.match(rule, /-webkit-touch-callout:\s*none/);
+  assert.match(rule, /-webkit-user-select:\s*none/);
+  assert.match(rule, /(^|[^-])user-select:\s*none/m);
+
+  // поля открытой формы — исключение: в них выделение нужно
+  const inputs = (CSS.match(/\n\.drag-row input, \.drag-row textarea\s*\{([^}]*)\}/) || [])[1];
+  assert.ok(inputs, 'исключение для полей ввода');
+  assert.match(inputs, /user-select:\s*auto/);
+});

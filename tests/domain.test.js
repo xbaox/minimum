@@ -1890,8 +1890,13 @@ test('И7: точка-маркер — пункт существовал вче�
   // добавлен сегодня — точки нет
   assert.equal(app.missedYesterday(it, t), false);
 
-  // существовал вчера и не отмечен — точка есть
+  // существовал вчера, не отмечен, но и НИ РАЗУ не отмечался — точки нет
+  // (задача 22, п. 2): пропустить можно только начатое
   it.addedAt = app.addDays(t, -1);
+  assert.equal(app.missedYesterday(it, t), false, 'до первой отметки точки нет');
+
+  // первая отметка была когда-то раньше — точка появляется
+  app.toggleMark(app.addDays(t, -5), it.id);
   assert.equal(app.missedYesterday(it, t), true);
 
   // давно добавлен — тоже есть (сегодняшняя отметка не влияет)
@@ -1902,6 +1907,13 @@ test('И7: точка-маркер — пункт существовал вче�
   // отмечен вчера — точки нет
   app.toggleMark(app.addDays(t, -1), it.id);
   assert.equal(app.missedYesterday(it, t), false);
+
+  // единственная отметка — сегодняшняя: пункт начат, вчера пропущено
+  const fresh = s.items[1];
+  fresh.addedAt = app.addDays(t, -30);
+  assert.equal(app.missedYesterday(fresh, t), false, 'ни одной отметки — точки нет');
+  app.toggleMark(t, fresh.id);
+  assert.equal(app.missedYesterday(fresh, t), true, 'начат сегодня — вчера уже пропуск');
 });
 
 /* ── Задача 16, фаза B. Прогресс (инвариант 14) ────────────── */
@@ -2102,6 +2114,12 @@ test('З16C: lowerEligible — две недели по ≤3 из 7, грани�
   const item = s.items.find(i => i.name === 'Подтягивания + отжимания');
   const W = app.closedWeeks(2);
 
+  // задача 22, п. 1: две пустые недели у пункта, которого НЕ НАЧИНАЛИ,
+  // предложения не дают — облегчать нечего, планка ещё не проверялась
+  assert.equal(app.lowerEligible(item), false, 'ни одной отметки за всё время — предложения нет');
+
+  // тот же пункт, но однажды отмеченный: две пустые недели — не держится
+  app.toggleMark(app.addDays(W[0], -7), item.id);
   assert.equal(app.lowerEligible(item), true, 'две пустые недели — планка не держится');
 
   setWeekMarks(item.id, W[0], 3);
@@ -2133,8 +2151,18 @@ test('З16C: lowerEligible — две недели по ≤3 из 7, грани�
   // пункт без числовой планки предложение получает — решение сводится
   // к «Оставить», кнопки шага у него нет (lowerSuggest === null)
   const noValue = s.items.find(i => i.name === 'Умыться');
+  assert.equal(app.lowerEligible(noValue), false, 'и он должен быть начат');
+  app.toggleMark(app.addDays(W[0], -7), noValue.id);
   assert.equal(app.lowerEligible(noValue), true);
   assert.equal(app.lowerSuggest(noValue.value), null);
+
+  // граница окна: отметка ПОСЛЕ последнего дня разбираемых недель пункт
+  // начатым не делает — окно смотрит только назад (задача 22, п. 1.1)
+  const late = s.items.find(i => i.name === 'Пешком');
+  app.toggleMark(app.addDays(W[1], 7), late.id); // понедельник текущей недели
+  assert.equal(app.lowerEligible(late), false, 'отметка за пределами окна не считается');
+  app.toggleMark(app.addDays(W[1], 6), late.id); // последний день окна
+  assert.equal(app.lowerEligible(late), true, 'последний день окна входит');
 });
 
 test('З16C: понижение — планка, история, срез недели и якорь; «Оставить» гасит до недели после', () => {
@@ -2142,6 +2170,8 @@ test('З16C: понижение — планка, история, срез не�
   const s = freshStore();
   calendarPast(s);
   const item = s.items.find(i => i.name === 'Пешком'); // value 500
+  // пункт начат: без единой отметки предложения не бывает (задача 22, п. 1)
+  app.toggleMark(app.addDays(app.closedWeeks(2)[0], -7), item.id);
   assert.equal(app.lowerEligible(item), true);
 
   app.acceptLower(item, app.lowerSuggest(item.value));
@@ -3092,6 +3122,9 @@ test('З19/A.4.3: пункт, заведённый сегодня, предло�
   assert.equal(app.itemWeekCount(fresh, W[0]), 0);
   assert.equal(app.lowerEligible(fresh), false, 'пункта в этих неделях не было — предложения нет');
 
+  // границу addedAt проверяем на НАЧАТОМ пункте: без отметок её съел бы
+  // второй guard задачи 22 (п. 1), и тест перестал бы проверять своё
+  app.toggleMark(W[0], fresh.id);
   // граница: заведён ровно в понедельник самой ранней недели — уже считается
   fresh.addedAt = W[0];
   assert.equal(app.lowerEligible(fresh), true, 'существовал с первого дня окна — предложение есть');
@@ -3768,4 +3801,110 @@ test('З21/7.6: миграция v15→v16 — done проставлен, иде
   const bl = back.items.find(i => i.id === it.id).ladder;
   assert.equal(bl.done, true, 'закрытость пережила импорт');
   assert.equal(JSON.stringify(bl), JSON.stringify(it.ladder), 'лестница побайтово та же');
+});
+
+/* ── Задача 22. Первая неделя ──────────────────────────────── */
+
+test('З22/1: everMarked — чистая функция от days{}, окно смотрит только назад', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  const t = app.todayKey();
+  const it = s.items[0];
+
+  assert.equal(app.everMarked(it), false, 'ни одной отметки');
+  app.toggleMark(app.addDays(t, -3), it.id);
+  assert.equal(app.everMarked(it), true);
+  assert.equal(app.everMarked(it, app.addDays(t, -3)), true, 'граница включительно');
+  assert.equal(app.everMarked(it, app.addDays(t, -4)), false, 'до отметки — ещё нет');
+
+  // отметка соседа своей не делает
+  assert.equal(app.everMarked(s.items[1]), false);
+  // reviews не читаются (инвариант 4): архив на ответ не влияет
+  s.reviews = [{ perItem: { [s.items[1].id]: { count: 7 } } }];
+  assert.equal(app.everMarked(s.items[1]), false);
+});
+
+test('З22/1: понижение адресуется только начатому пункту', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const item = s.items.find(i => i.name === 'Развитие');
+  const W = app.closedWeeks(2);
+
+  // засеянная программа без единой отметки: две пустые недели, но урезать нечего
+  assert.equal(app.lowerEligible(item), false);
+  for (const it of s.items) assert.equal(app.lowerEligible(it), false, it.name);
+
+  // одна отметка когда-то в прошлом — предложение появляется
+  app.toggleMark(app.addDays(W[0], -30), item.id);
+  assert.equal(app.lowerEligible(item), true);
+
+  // повышения эта дыра не касалась: его критерий требует ≥6 отметок в неделю
+  assert.equal(app.raiseEligible(item), false);
+});
+
+test('З22/7.2: подсказка считает пункты владельца, посев в счёт не идёт', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore(); // посев: девять пунктов одной датой, seed17 стоит
+  const t = app.todayKey();
+
+  assert.equal(s.settings.seed17, true);
+  assert.equal(app.seedDayKey(), t, 'девять пунктов одной датой — день посева');
+  assert.equal(app.ownerNewestItem(), null, 'владелец не заводил ничего');
+
+  // пункт, заведённый владельцем на следующий день, считается
+  advanceDays(1);
+  const own = { ...s.items[0], id: 'own1', name: 'Своё', addedAt: app.todayKey() };
+  s.items.push(own);
+  assert.equal(app.seedDayKey(), t, 'день посева прежний');
+  assert.equal(app.ownerNewestItem().id, 'own1');
+
+  // стёртый store: seed17 стоит намеренно (инвариант 18), пунктов нет —
+  // первый же пункт владельца одинок и посевным не считается никогда
+  s.items = [];
+  assert.equal(app.seedDayKey(), null, 'пустой store дня посева не имеет');
+  const first = { ...own, id: 'w1', addedAt: app.todayKey() };
+  s.items.push(first);
+  assert.equal(app.seedDayKey(), null, 'одиночный пункт — не посев');
+  assert.equal(app.ownerNewestItem().id, 'w1');
+
+  // не засеянный store (импорт): правило не применяется вовсе
+  s.settings.seed17 = false;
+  s.items = [{ ...own, id: 'a', addedAt: t }, { ...own, id: 'b', addedAt: t }];
+  assert.equal(app.seedDayKey(), null);
+  assert.ok(app.ownerNewestItem());
+});
+
+test('З22/5: подпись зачёта дня — от числа применимых пунктов', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  assert.match(app.thresholdNote(), /не меньше 5 из 6\./);
+
+  s.items.filter(i => i.type === 'daily' && i.area === 'min').slice(0, 3)
+    .forEach(i => { i.active = false; });
+  assert.match(app.thresholdNote(), /не меньше 3 из 3\./);
+
+  s.items.forEach(i => { i.active = false; });
+  assert.equal(app.thresholdNote(), '', 'применимых пунктов нет — подписи нет');
+});
+
+test('З22/8: будущее начало отсчёта — законная пустая эпоха', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  s.settings.calendarSince = app.addDays(app.weekStartOf(app.todayKey()), 14);
+
+  assert.equal(app.currentWeekStart(), null, 'как после чистки');
+  assert.equal(app.previousWeekStart(), null);
+  assert.equal(app.reviewDue(), false);
+  assert.deepEqual(app.closedWeeks(2), []);
+  assert.equal(app.daysInSystem(), 0);
+  assert.equal(app.dayStreak(), 0);
+  assert.equal(app.bestStreak(), 0);
+  assert.equal(app.marksWindow(s.items[0]), 0);
+  assert.equal(app.marksInSystem(s.items[0]), 0);
+  // механики планки в пустой эпохе молчат, а не падают
+  for (const it of s.items) {
+    assert.equal(app.raiseEligible(it), false);
+    assert.equal(app.lowerEligible(it), false);
+  }
 });
