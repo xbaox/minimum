@@ -18,5 +18,9 @@
   {
     "version": "minimum-v32",
     "hash": "8076b984ced9e9d0043b86510b4d510fe15591ef7b98ef0bada9d94dbc400c5f"
+  },
+  {
+    "version": "minimum-v33",
+    "hash": "a067fde302747e70d1eccd598ca03284c55fbbab1dbfd1dd0da6bdfe9c1a0f43"
   }
 ]
