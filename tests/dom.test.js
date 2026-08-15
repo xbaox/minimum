@@ -2387,11 +2387,26 @@ test('баннер хранилища: появляется при сбое save
   };
   Object.defineProperty(window, 'localStorage', { configurable: true, get: () => broken });
 
-  document.querySelector('input[data-act="mark"]').click(); // save падает, экран перерисовывается
-  assert.match(document.getElementById('scr-today').textContent, /Хранилище недоступно/);
+  // ПЕРЕПИСАНО в задаче 27.1 (п. 5.2): баннер ушёл из разметки «Сегодня» в
+  // постоянный узел над экранами. Прежде renderAll рисовал одну текущую
+  // вкладку, и отказ, случившийся на «Настройках» или в листе, не оставлял
+  // на экране владельца ни следа (задача 27, Д6). Узел точечно обновляет
+  // storageNote() — перерисовка экрана для этого больше не нужна.
+  const note = document.getElementById('storage-note');
+  assert.ok(note, 'постоянный узел баннера есть в разметке документа');
+  assert.equal(note.hidden, true, 'до отказа скрыт');
+
+  document.querySelector('input[data-act="mark"]').click(); // save падает
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /Хранилище недоступно/);
+  // и он виден на ЛЮБОМ экране, а не только на дневных
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  assert.equal(document.getElementById('storage-note').hidden, false);
+  document.querySelector('#tabs button[data-tab="today"]').click();
 
   Object.defineProperty(window, 'localStorage', { configurable: true, get: () => realLS });
   document.querySelector('input[data-act="mark"]').click(); // успешный save снимает флаг
+  assert.equal(document.getElementById('storage-note').hidden, true);
   assert.doesNotMatch(document.getElementById('scr-today').textContent, /Хранилище недоступно/);
 });
 
@@ -3042,8 +3057,11 @@ test('источники: новых кеглей и радиусов не за�
 
   // снимок шкалы, какой она была до задачи 16: новые поверхности обязаны
   // жить на ней. Токены — предпочтительная форма, сырые px — наследие.
+  // 11px из набора убран (задача 27, п. 9.8): ступень упразднена задачей 26
+  // вместе с прежним кеглем .g-label, но сторож продолжал её разрешать —
+  // упразднение держалось на слове, а не на проверке
   const SIZES = new Set(['var(--text-base)', 'var(--text-sm)', 'var(--text-xs)',
-    '10px', '11px', '12px', '13px', '14px', '15px', '16px', '17px', '18px', '20px', '22px', '24px', '32px']);
+    '10px', '12px', '13px', '14px', '15px', '16px', '17px', '18px', '20px', '22px', '24px', '32px']);
   const RADII = new Set(['var(--radius)', 'var(--radius-md)', 'var(--radius-sm)',
     '2px', '8px', '10px', '14px', '50%']);
 
@@ -4013,7 +4031,10 @@ test('C.6.4: копию некуда положить — чистка отме�
 
   assert.equal(window.localStorage.getItem(NS), before, 'данные не стёрты');
   assert.match(document.getElementById('scr-settings').textContent,
-    /Не удалось сохранить копию — чистка отменена/, 'отказ показан владельцу');
+    // текст обобщён в задаче 27.1 (п. 2): чистку теперь отменяет не только
+    // «копию некуда положить», но и отказ записи рабочего ключа — сообщение
+    // одно на оба повода и говорит главное: данные не изменены
+    /Чистка не выполнена — данные не изменены/, 'отказ показан владельцу');
   proto.setItem = real;
 });
 
@@ -4836,7 +4857,9 @@ test('З22/7.2: стёртый store — первый пункт владель�
    Сравнивается разметка экрана целиком, а не отдельный узел: тест не
    должен знать заранее, что именно точечный путь забудет.
 
-   Нормализация — ровно три, все обязательные и ни одна не про состояние:
+   Нормализация — ровно ЧЕТЫРЕ, все обязательные и ни одна не про состояние
+   (счёт поправлен в задаче 27.1, п. 4.3: четвёртая была добавлена вместе с
+   перетаскиванием, а слово «три» осталось прежним):
      1) .pop — класс-триггер scale-отклика (12.1). Его вешает tapPop
         поверх живого узла; свежая разметка его не несёт по построению.
      2) checked у чекбокса: точечный путь ставит СВОЙСТВО (его и видит
@@ -4887,11 +4910,46 @@ function pointVsFull(window, screenId, render, except = []) {
   return { point, full };
 }
 
-/* Изъятий у сторожа больше нет (задача 24, п. 7.4): единственное
-   известное расхождение — точка «вчера — пропуск», рождавшаяся полной
-   перерисовкой в момент первой в жизни отметки, — устранено правкой
-   missedYesterday в пользу поведения точечного пути. except остаётся
-   в pointVsFull как механизм, но ни один вызов им не пользуется. */
+/* Единственное изъятие сторожа (задача 27.1, п. 9.9) — строка резервной
+   копии на «Настройках». Она принципиально асинхронна: updateMirrorNote
+   читает IndexedDB и дописывает текст ПОСЛЕ того, как рендер вернул
+   управление. Сразу после синхронной перерисовки узел пуст и скрыт, а
+   через тик — заполнен: сравнивать эти два состояния значит сравнивать
+   не разметку, а момент. Изъятие не молчаливое — ниже стоит тест,
+   закрепляющий все три ветки updateMirrorNote поимённо, как задача 23
+   поступила с точкой «вчера — пропуск». */
+const MIRROR_EXCEPT = ['#mirror-note'];
+
+test('З27/9.9: updateMirrorNote — три ветки, изъятые из сторожа, закреплены здесь', async () => {
+  // 1) снапшот прочитан — строка с датой (асинхронная ветка)
+  const idb = new IDBFactory();
+  await idbPut(idb, { json: JSON.stringify(mirrorStore()), savedAt: Date.now(), schemaVersion: 4 });
+  const a = await boot({ idb });
+  a.document.querySelector('#tabs button[data-tab="settings"]').click();
+  const n1 = a.document.getElementById('mirror-note');
+  for (let i = 0; i < 100 && n1.hidden; i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(n1.hidden, false, 'снапшот есть — строка показана');
+  assert.match(n1.textContent, /^Резервная копия: /);
+  // и именно она расходится с перерисовкой: полная перерисовка её гасит,
+  // асинхронное дополнение возвращает — ради этого изъятие и сделано
+  a.window.renderSettings();
+  assert.equal(a.document.getElementById('mirror-note').hidden, true,
+    'сразу после перерисовки узел пуст — расхождение, ради которого изъятие');
+
+  // 2) база открылась, ключа нет — строки нет вовсе
+  const b = await boot({ idb: new IDBFactory() });
+  b.document.querySelector('#tabs button[data-tab="settings"]').click();
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(b.document.getElementById('mirror-note').hidden, true, 'снапшота нет — строки нет');
+
+  // 3) чтение не завершилось — «неизвестно» тем же muted, без тревоги
+  const c = await boot({ idb: slowIdb(new IDBFactory(), SLOW_IDB_MS) });
+  c.document.querySelector('#tabs button[data-tab="settings"]').click();
+  const n3 = c.document.getElementById('mirror-note');
+  assert.equal(n3.hidden, false);
+  assert.equal(n3.textContent, 'Резервная копия не проверена');
+  assert.equal(n3.className, 'muted', 'тон «неизвестно», а не тревога');
+});
 
 function assertSame(t, what) {
   if (t.point === t.full) return;
@@ -5007,17 +5065,17 @@ test('З23/6: тумблеры «Пунктов» — .off и подпись з�
   // выключение пункта минимума: строка гаснет, знаменатель подписи падает.
   // Ровно здесь жил дефект задачи 22 — подпись оставалась прежней
   document.querySelectorAll('#scr-settings input[data-act="toggle-active"]')[0].click();
-  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings'), 'выключение пункта');
+  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings', MIRROR_EXCEPT), 'выключение пункта');
 
   document.querySelectorAll('#scr-settings input[data-act="toggle-active"]')[0].click();
-  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings'), 'включение обратно');
+  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings', MIRROR_EXCEPT), 'включение обратно');
 
   // выключение упражнения — свой точечный путь, без подписи
   const sect = [...document.querySelectorAll('#scr-settings details.sect')]
     .find(d => /Упражнения/.test(d.querySelector('summary').textContent));
   sect.querySelector('summary').click();
   document.querySelector('#scr-settings input[data-act="ex-active"]').click();
-  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings'), 'выключение упражнения');
+  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings', MIRROR_EXCEPT), 'выключение упражнения');
 });
 
 /* ══ Задача 23, п. 7: дыры покрытия уровня рендера ════════════
@@ -6361,4 +6419,412 @@ test('З26/8.2: место будущей ячейки в раскладке о�
   const cells = [...document.querySelectorAll('#scr-habits .hstrip i')];
   assert.equal(cells.length, 7, 'семь ячеек на месте');
   assert.equal(document.querySelectorAll('#scr-habits .hstrip .hd').length, 7, 'и семь подписей дней');
+});
+
+/* ══ Задача 27.1: ремонт по приёмке — интерфейсный уровень ════ */
+
+/* Пункт с ЗАКРЫТОЙ лестницей плюс второй дневной пункт: слот свободен,
+   но на нём лежит пройденный путь. Сид для Д1 и Д2. */
+function closedLadderSeed() {
+  const mon = curMonday();
+  const old = addKey(mon, -70);
+  const item = (id, name, ladder, ladderLog) => ({
+    id, name, value: null, unit: '', type: 'daily', area: 'min', normPerWeek: 7,
+    goal: null, note: '', group: '', active: true, addedAt: old, raiseAfter: 0,
+    raiseAfterWeek: null, lowerAfterWeek: null, history: [], formula: null,
+    ladder: ladder || null, ladderLog: ladderLog || []
+  });
+  return {
+    schemaVersion: 16, groups: [], exercises: [], sessions: [], notes: [],
+    items: [
+      item('cl1', 'Пройденная', { steps: ['раз', 'два'], step: 1, steppedWeek: null, startedAt: old, done: true },
+        [{ date: old, step: 0, text: 'раз', start: true }, { date: addKey(old, 20), step: 1, text: 'два' },
+          { date: addKey(old, 40), step: 1, text: 'два', closed: true }]),
+      item('cl2', 'Свободный')
+    ],
+    days: {}, weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [],
+    paramDecided: {}, draftOneChange: '', weekStart: mon,
+    settings: { dayBoundary: 4, dayThreshold: 0.8, exportedAt: null,
+      calendarSince: old, habitSeeded: true, seed17: true }
+  };
+}
+
+/* Открыть лист детали пункта: «Настройки» → правка пункта → «Формула и лестница» */
+function openDetailFor(document, id) {
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector(`#scr-settings [data-act="edit-open"][data-id="${id}"]`).click();
+  document.querySelector(`#scr-settings [data-act="item-detail"][data-id="${id}"]`).click();
+}
+
+test('З27/1: слот занят — «Открыть заново» не предлагается, и сказано кем', async () => {
+  const { document } = await boot({ seed: closedLadderSeed() });
+  // сперва слот свободен: кнопка есть
+  openDetailFor(document, 'cl1');
+  assert.ok(document.querySelector('#scr-detail [data-act="ladder-reopen"]'), 'слот свободен — кнопка есть');
+  document.querySelector('[data-act="detail-done"]').click();
+
+  // занимаем слот другим пунктом
+  openDetailFor(document, 'cl2');
+  document.querySelector('#scr-detail [data-act="ladder-open"]').click();
+  document.getElementById('fx-steps').value = 'Н1\nН2';
+  document.querySelector('#scr-detail [data-act="ladder-save"]').click();
+  document.querySelector('[data-act="detail-done"]').click();
+
+  // теперь у пройденной кнопки нет, а есть нейтральная строка с именем
+  openDetailFor(document, 'cl1');
+  const d = document.getElementById('scr-detail');
+  assert.equal(d.querySelector('[data-act="ladder-reopen"]'), null, 'кнопки нет — сказано ДО тапа');
+  const line = [...d.querySelectorAll('p.muted')].find(p => /слот лестницы/.test(p.textContent));
+  assert.ok(line, 'строка о занятом слоте есть');
+  assert.match(line.textContent, /«Свободный»/, 'и она называет, кем занят');
+  assert.doesNotMatch(d.textContent, /провал|нельзя|ошибк/i, 'тон нейтральный');
+});
+
+test('З27/3: замена пройденной лестницы — вторым тапом, с предупреждением', async () => {
+  const { document, window } = await boot({ seed: closedLadderSeed() });
+  openDetailFor(document, 'cl1');
+  document.querySelector('#scr-detail [data-act="ladder-open"]').click();
+
+  const form = document.querySelector('#scr-detail [data-form="ladder"]');
+  assert.match(form.textContent, /Эта лестница пройдена/, 'предупреждение до тапа');
+  document.getElementById('fx-steps').value = 'Новая 1\nНовая 2';
+
+  // первый тап только взводит подтверждение — данные не тронуты
+  document.querySelector('#scr-detail [data-act="ladder-save"]').click();
+  const btn = document.querySelector('#scr-detail [data-act="ladder-save"]');
+  assert.match(btn.textContent, /Подтвердить: начать новую/);
+  let saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.deepEqual(saved.items[0].ladder.steps, ['раз', 'два'], 'текст пройденной ещё цел');
+  assert.equal(document.getElementById('fx-steps').value, 'Новая 1\nНовая 2', 'введённое на месте');
+
+  // второй тап заводит НОВУЮ
+  document.querySelector('#scr-detail [data-act="ladder-save"]').click();
+  saved = JSON.parse(window.localStorage.getItem(NS));
+  const L = saved.items[0].ladder;
+  assert.deepEqual(L.steps, ['Новая 1', 'Новая 2']);
+  assert.equal(L.done, false, 'новая живая');
+  assert.equal(L.step, 0, 'с первой ступени');
+  assert.equal(saved.items[0].ladderLog.filter(e => e.start).length, 2, 'вторая стартовая веха');
+});
+
+test('З27/5.1: запись не удалась — «Не сохранено», а не «Сохранено»', async () => {
+  const { document, window } = await boot();
+  const realLS = window.localStorage;
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    get: () => ({ getItem: k => realLS.getItem(k), setItem: () => { throw new Error('quota'); }, removeItem: () => {} })
+  });
+
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  document.getElementById('e-name').value = 'Имя под квотой';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.ok(flash, 'узел подтверждения на месте — у того же якоря');
+  assert.match(flash.textContent, /Не сохранено/, 'приложение не утверждает того, чего не было');
+  assert.doesNotMatch(flash.textContent, /^Сохранено$/);
+  // и постоянный баннер говорит о причине — на ЭТОМ экране
+  const note = document.getElementById('storage-note');
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /Хранилище недоступно/);
+
+  Object.defineProperty(window, 'localStorage', { configurable: true, get: () => realLS });
+});
+
+test('З27/4.1: узел подтверждения ищется на видимом экране, а не по всему документу', async () => {
+  const { document, window } = await boot();
+  // 1) сохраняем заметку — узел рождается в «Заметках»
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  document.querySelector('[data-act="note-add-open"]').click();
+  document.getElementById('n-text').value = 'Заметка';
+  document.querySelector('[data-act="note-save"]').click();
+  assert.ok(document.querySelector('#scr-notes .flash'), 'узел в «Заметках»');
+
+  // 2) уходим на «Настройки»: узлы скрытого экрана снимаются перерисовкой
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  assert.equal(document.querySelectorAll('#scr-notes .flash').length, 0,
+    'на скрытом экране узлов не остаётся (п. 4.2)');
+
+  // 3) сохраняем пункт — находится ИМЕННО его узел
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  const all = [...document.querySelectorAll('main .screen .flash:not(.keep)')];
+  assert.equal(all.length, 1, 'узел ровно один и он на видимом экране');
+  assert.ok(document.getElementById('scr-settings').contains(all[0]));
+});
+
+test('З27/5.3: «Вернуть» при отказе говорит строкой и данных не трогает', async () => {
+  const { document, window } = await boot();
+  // копия появляется чисткой
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('[data-act="wipe-open"]').click();
+  document.querySelector('[data-act="wipe-do"]').click(); // взвод
+  document.querySelector('[data-act="wipe-do"]').click(); // чистка
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 0);
+
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const copyBefore = window.localStorage.getItem(NS + ':wiped');
+  assert.ok(copyBefore, 'копия есть');
+
+  const realLS = window.localStorage;
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    get: () => ({
+      getItem: k => realLS.getItem(k),
+      setItem: (k, v) => { if (k === NS) throw new Error('quota'); return realLS.setItem(k, v); },
+      removeItem: k => realLS.removeItem(k)
+    })
+  });
+  document.querySelector('[data-act="wipe-undo"]').click();
+  Object.defineProperty(window, 'localStorage', { configurable: true, get: () => realLS });
+
+  assert.match(document.getElementById('scr-settings').textContent, /Возврат не выполнен — данные не изменены/,
+    'молчать о неудаче нельзя — у чистки для того же есть строка');
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), copyBefore, 'копия побайтово на месте');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 0, 'состояние прежнее');
+});
+
+
+test('З27/9.1: раскрытая правка блока не крадёт черновик формы пункта', async () => {
+  const { document } = await boot();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  document.getElementById('e-name').value = 'Умыться ХОЛОДНОЙ ВОДОЙ';
+  // секция «Блоки» стоит ВЫШЕ «Пунктов»: прежде её форма находилась первой
+  document.querySelector('#scr-settings [data-act="group-open"]').click();
+  assert.equal(document.getElementById('e-name').value, 'Умыться ХОЛОДНОЙ ВОДОЙ',
+    'черновик формы пункта пережил перерисовку по чужому поводу');
+});
+
+test('З27/9.1: форма блока получила черновик', async () => {
+  const { document } = await boot();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="group-add-open"]').click();
+  document.getElementById('g-add').value = 'Вечер';
+  // перерисовка по чужому поводу: тумблер пункта
+  document.querySelector('#scr-settings input[data-act="toggle-active"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  assert.equal(document.getElementById('g-add').value, 'Вечер', 'имя нового блока не пропало');
+});
+
+test('З27/9.4: «Добавить блок» закрывает открытую правку блока', async () => {
+  const { document } = await boot();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="group-open"]').click();
+  assert.ok(document.querySelector('#scr-settings [data-form="group-edit"]'), 'правка раскрыта');
+  document.querySelector('#scr-settings [data-act="group-add-open"]').click();
+  assert.equal(document.querySelector('#scr-settings [data-form="group-edit"]'), null, 'правка закрыта');
+  assert.ok(document.querySelector('#scr-settings [data-form="group-add"]'), 'открыта форма добавления');
+});
+
+test('З27/9.2: отказ формы объявляется постоянной областью, а не рождённым узлом', async () => {
+  const { document } = await boot();
+  const live = document.getElementById('live');
+  assert.ok(live, 'постоянная область есть в разметке документа');
+  assert.equal(live.getAttribute('aria-live'), 'polite');
+  assert.equal(live.getAttribute('role'), 'status');
+  assert.ok(live.classList.contains('sr-only'), 'видимого дубля не создаёт');
+  assert.equal(live.textContent, '');
+
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  document.getElementById('e-name').value = '   ';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+
+  assert.equal(document.getElementById('live').textContent, 'Название не заполнено',
+    'текст объявления — тот же, что видит зрячий');
+  const kept = document.querySelector('#scr-settings .flash.keep');
+  assert.ok(kept, 'видимая строка отказа на месте');
+  assert.equal(kept.getAttribute('role'), null,
+    'role="status" с рождённого узла снят: он всё равно не объявлялся');
+  // следующее действие область чистит — повторный отказ снова читается как изменение
+  document.querySelector('#scr-settings [data-act="edit-cancel"]').click();
+  assert.equal(document.getElementById('live').textContent, '');
+});
+
+test('З27/8: «Подъём» порога-времени — линия по кратчайшей дуге, подпись по сырым', async () => {
+  const seed = closedLadderSeed();
+  const old = addKey(curMonday(), -70);
+  seed.items.push({
+    id: 'pr1', name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
+    pkind: 'time', pvalue: 1410, pstep: -15, goal: null, note: '', group: '', active: true,
+    addedAt: old, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+    history: [{ date: old, value: 0 }, { date: addKey(old, 30), value: 1425 }, { date: addKey(old, 60), value: 1410 }],
+    formula: null, ladder: null, ladderLog: []
+  });
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  const block = [...document.querySelectorAll('#scr-progress .rise-b')]
+    .find(b => /Отбой/.test(b.textContent));
+  assert.ok(block, 'блок «Подъёма» у порога есть');
+  // подпись — словами владельца, по СЫРЫМ значениям
+  assert.match(block.querySelector('.rise-v').textContent, /00:00 → 23:30/);
+  // а линия не уходит на всю высоту холста: размах ряда — 30 минут, и
+  // вертикали пути ложатся внутрь, а не от края до края
+  // ...а линия показывает РАВНЫЕ шаги: два раза по 15 минут. На сырых
+  // значениях (0 → 1425 → 1410) первый «шаг» занимал весь холст, а второй
+  // становился неразличимым — отношение вертикалей 95:1
+  const d = block.querySelector('path').getAttribute('d');
+  const ys = [...d.matchAll(/[MV]\s?[\d.]*\s?([\d.]+)(?=[HV]|$)/g)];
+  const vs = [...d.matchAll(/V([\d.]+)/g)].map(m => Number(m[1]));
+  const start = Number(d.match(/^M[\d.]+ ([\d.]+)/)[1]);
+  const seq = [start, ...vs];
+  const steps = seq.slice(1).map((v, i) => Math.abs(v - seq[i])).filter(x => x > 0);
+  assert.equal(steps.length, 2, 'две вертикали — два шага порога');
+  const ratio = Math.max(...steps) / Math.min(...steps);
+  assert.ok(ratio <= 2, `шаги по 15 минут читаются одинаково, отношение ${ratio.toFixed(1)}:1`);
+});
+
+/* Д4, первая половина: armFlash снимает узел ВИДИМОГО экрана. Выборка по
+   всему документу брала первый в порядке секций index.html, то есть чужой
+   со скрытого экрана: при reduced-motion свежее «Сохранено» оставалось на
+   экране бессрочно, потому что таймер был взведён не на него. */
+test('З27/4.1: armFlash взводит таймер на узел видимого экрана, а не первый в документе', async () => {
+  const { document, window } = await boot({ timing: { FLASH_MS: 30 } });
+  window.matchMedia = q => ({ matches: /reduced-motion/.test(q), media: q, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
+
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  // «Заметки» идут в разметке РАНЬШЕ «Настроек»: кладём туда чужой узел уже
+  // ПОСЛЕ перерисовки — иначе его снимет чистка скрытых экранов (п. 4.2)
+  const stale = document.createElement('p');
+  stale.className = 'flash';
+  stale.textContent = 'чужое';
+  document.getElementById('scr-notes').appendChild(stale);
+  const fresh = document.createElement('p');
+  fresh.className = 'flash';
+  fresh.textContent = 'Сохранено';
+  document.getElementById('scr-settings').appendChild(fresh);
+
+  window.armFlash();
+  await wait(90);
+  assert.equal(fresh.isConnected, false, 'снят узел видимого экрана');
+  assert.equal(stale.isConnected, true, 'чужой со скрытого не тронут — он не предмет');
+});
+
+/* Д4, вторая половина: keepInPlace действительно двигает скролл. В jsdom
+   getBoundingClientRect отдаёт нули, поэтому геометрию подменяем — без неё
+   путь проверялся только замером в браузере. */
+test('З27/9.3: keepInPlace подгоняет скролл — узел встаёт туда, где стояла кнопка', async () => {
+  const { document, window } = await boot();
+  const calls = [];
+  window.scrollTo = (x, y) => calls.push(y);
+  Object.defineProperty(window, 'scrollY', { configurable: true, get: () => 1000 });
+
+  // кнопка стояла на 400; перерисовка родила узел подтверждения на 460 —
+  // скролл обязан уйти на те же 60, чтобы точка нажатия осталась на месте.
+  // Геометрия подменяется: в jsdom getBoundingClientRect отдаёт нули, и
+  // без подмены этот путь проверялся только замером в браузере
+  const btn = { getBoundingClientRect: () => ({ top: 400 }) };
+  const render = () => {
+    const p = document.createElement('p');
+    p.className = 'flash';
+    p.textContent = 'Сохранено';
+    p.getBoundingClientRect = () => ({ top: 460 });
+    document.getElementById('scr-today').appendChild(p);
+  };
+  window.keepInPlace(btn, render);
+  assert.deepEqual(calls, [1060], 'скролл ушёл ровно на смещение узла относительно кнопки');
+
+  // узел на своём месте — трогать скролл незачем
+  calls.length = 0;
+  document.querySelectorAll('#scr-today .flash').forEach(n => n.remove());
+  window.keepInPlace({ getBoundingClientRect: () => ({ top: 460 }) }, render);
+  assert.deepEqual(calls, [], 'смещения нет — скролл не трогается');
+
+  // узла подтверждения не родилось — тоже не трогается
+  calls.length = 0;
+  document.querySelectorAll('#scr-today .flash').forEach(n => n.remove());
+  window.keepInPlace(btn, () => {});
+  assert.deepEqual(calls, []);
+});
+
+/* 10.3. Умолчание свёртки снимается ОДИН РАЗ — при открытии разбора.
+   Прежде reviewActionable() пересчитывался на каждой перерисовке, и
+   последнее принятое решение само раскрывало картину недели под пальцем. */
+test('З27/10.3: принятое решение не раскрывает свёртку недели само', async () => {
+  const seed = dueSeed();
+  const mon = prevMonday();
+  // пункт нейтрален: 5 из 7 в каждой из трёх закрытых недель — ни повышения
+  // (нужно ≥6), ни понижения (нужно ≤3). Иначе карточка планки осталась бы
+  // действенной и свёртка была бы закрыта в обоих случаях — мутант выжил бы
+  seed.days = {};
+  for (let w = 1; w <= 3; w++) {
+    for (let d = 0; d < 5; d++) seed.days[addKey(mon, -7 * (w - 1) + d)] = { it1: true };
+  }
+  seed.settings.calendarSince = addKey(mon, -35);
+  seed.items[0].addedAt = addKey(mon, -35);
+  // единственное действенное решение — нерешённый параметр
+  seed.items.push({
+    id: 'pp1', name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
+    pkind: 'time', pvalue: 1380, pstep: -15, goal: null, note: '', group: '', active: true,
+    addedAt: addKey(mon, -70), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+    history: [], formula: null, ladder: null, ladderLog: []
+  });
+  const { document } = await boot({ seed });
+  document.querySelector('[data-act="goto-review"]').click();
+
+  const fold = () => document.querySelector('#scr-review details.sect.week');
+  assert.equal(fold().open, false, 'есть что решать — свёртка закрыта');
+  assert.ok(document.querySelector('#scr-review [data-act="param-keep"]'), 'карточка параметра на месте');
+
+  document.querySelector('#scr-review [data-act="param-keep"]').click();
+  await wait(T.MOTION_MS + T.MOTION_TAIL_MS + 60); // карточка уходит переходом
+  assert.equal(document.querySelector('#scr-review [data-act="param-keep"]'), null, 'решение принято');
+  assert.equal(fold().open, false, 'свёртка НЕ раскрылась сама — умолчание снято при открытии');
+
+  // а тап владельца по ней по-прежнему работает
+  fold().querySelector('summary').click();
+  assert.equal(fold().open, true);
+});
+
+/* 10.5. Копия из одних заметок не читается пустой. */
+test('З27/10.5: строка копии считает и записи, а не только пункты и дни', async () => {
+  const seed = dueSeed();
+  seed.items = [];                       // ни одного пункта
+  seed.days = {};                        // ни одной отметки
+  seed.schemaVersion = 16;
+  seed.settings.seed17 = true;            // пустой items не должен засеваться
+  seed.settings.habitSeeded = true;
+  seed.notes = [
+    { id: 'n1', date: daysAgo(1), text: 'мысль', kind: 'note', source: '', updatedAt: 2 },
+    { id: 'n2', date: daysAgo(2), text: 'выписка', kind: 'quote', source: 'Сенека', updatedAt: 1 }
+  ];
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('[data-act="wipe-open"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+
+  const line = [...document.querySelectorAll('#scr-settings .restore p')]
+    .find(p => /В копии/.test(p.textContent));
+  assert.ok(line, 'строка копии есть');
+  assert.match(line.textContent, /2 записи/, 'копия из одних заметок не выглядит пустой');
+  assert.match(line.textContent, /0 пунктов/);
+});
+
+/* Д7. Взведённое подтверждение не переживает возврат. */
+test('З27/5.4: подтверждения гасятся возвратом — обмен не уничтожается одним тапом', async () => {
+  const { document, window } = await boot();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('[data-act="wipe-open"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  // после чистки состояние пустое — менять не на что, и копия при возврате
+  // просто убирается. Наработаем отметку, чтобы обмен был настоящим
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="add-open"]').click();
+  document.getElementById('f-name').value = 'Новый после чистки';
+  document.querySelector('#scr-settings [data-act="add-save"]').click();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+
+  document.querySelector('[data-act="wipe-drop"]').click(); // взвели «Убрать копию»
+  assert.match(document.querySelector('[data-act="wipe-drop"]').textContent, /Подтвердить/);
+
+  document.querySelector('[data-act="wipe-undo"]').click(); // возврат
+  const drop = document.querySelector('[data-act="wipe-drop"]');
+  assert.ok(drop, 'копия обменялась и по-прежнему есть');
+  assert.doesNotMatch(drop.textContent, /Подтвердить/, 'подтверждение погашено возвратом');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 9, 'практика вернулась');
 });

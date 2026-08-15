@@ -204,7 +204,10 @@ test('И3: closeWeek пишет срез завершённой недели и 
     { itemId: weekly.id, date: app.todayKey(), ts: 3 }
   );
   s.draftOneChange = '  раньше ложиться  ';
+  // якорь недели ставит acceptRaise вместе с записью — он и служит датой
+  // решения (задача 27.1, п. 10.2): в срез идут решения ТЕКУЩЕЙ недели
   s.pendingRaises.push({ itemId: daily.id, name: daily.name, from: 5, to: 6 });
+  daily.raiseAfterWeek = app.currentWeekStart();
 
   assert.equal(app.closeWeek(), true);
 
@@ -1362,10 +1365,18 @@ test('З14: шаг вперёд — критерий двух недель, од
   assert.equal(app.ladderStep(h.id, 'fwd'), true);
   assert.equal(h.ladder.step, 2);
   assert.equal(app.canStepForward(h), false);
-  // на последней ступени обе недели уже по норме — это и есть «встала»
-  // (задача 21): пятый текст состояния вытесняет прежний «Последняя ступень»
-  assert.equal(app.ladderStatus(h), 'Последняя ступень держится две недели — привычка встала.');
+  // ПЕРЕПИСАНО в задаче 27.1 (п. 6.1). Прежде здесь ожидалось «привычка
+  // встала» СРАЗУ после шага: обе недели нормы были набраны, а что набраны
+  // они на ПРЕДЫДУЩЕЙ ступени, ladderSettled не различал. Один тап
+  // «Шагнуть» в разборе — и та же карточка в ту же секунду предлагала
+  // закрыть привычку, утверждая выдержку, которой не было (задача 27, Д3)
+  assert.equal(app.ladderSettled(h), false, 'шаг сделан на этой неделе — ступень ещё не выстояла');
+  assert.equal(app.ladderStatus(h), 'Последняя ступень');
+  // неделя прошла, обе завершённые недели по норме — теперь встала
+  advanceDays(7);
+  markWeek(h.id, app.previousWeekStart(), 7);
   assert.equal(app.ladderSettled(h), true);
+  assert.equal(app.ladderStatus(h), 'Последняя ступень держится две недели — привычка встала.');
   // а без выдержанных недель на той же последней ступени — прежний текст
   // (setWeekMarks ставит состояние, а не переключает: 0 действительно чистит)
   setWeekMarks(h.id, app.previousWeekStart(), 0);
@@ -4444,4 +4455,253 @@ test('З25/6.4: чистка нечитаемые данные не трогае
   assert.equal(app.restoreWiped(), true);
   assert.equal(app.corruptCopy().raw, '{битый json', 'и возврат');
   clearLocalStorage();
+});
+
+/* ══ Задача 27.1: ремонт по приёмке ═══════════════════════════ */
+
+/* Запись в localStorage отказывает — как переполненная квота на устройстве.
+   Возвращает всё на место, даже если тело бросило. */
+function withBrokenWrite(fn) {
+  const real = global.localStorage;
+  global.localStorage = {
+    getItem: k => real.getItem(k),
+    setItem: (k, v) => {
+      if (k === 'minimum:data') { const e = new Error('quota'); e.name = 'QuotaExceededError'; throw e; }
+      return real.setItem(k, v);
+    },
+    removeItem: k => real.removeItem(k),
+    key: i => real.key(i),
+    get length() { return real.length; }
+  };
+  try { fn(); } finally { global.localStorage = real; }
+}
+
+/* Д1. «Открыть заново» подчинено правилу одной активной лестницы.
+   Прежде проверки не было вовсе: тап давал ДВЕ живые лестницы, вторая
+   была невидима, а дедуп migrate при следующем запуске снимал ту, у
+   которой startedAt старше, — то есть открытую заново ВСЕГДА. */
+test('З27/1: «Открыть заново» при занятом слоте не выполняется', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const { s, h } = ladderReadyHabit();
+  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
+  app.setLadder(h.id, 'раз\nдва');
+  h.ladder.step = 1;                       // последняя ступень
+  assert.equal(app.ladderSettled(h), true);
+  assert.equal(app.closeLadder(h.id), true);
+  assert.equal(app.activeLadderItem(), null, 'слот освободился');
+
+  assert.equal(app.setLadder(m.id, 'Н1\nН2'), true); // слот занял другой пункт
+  assert.equal(app.activeLadderItem().id, m.id);
+
+  assert.equal(app.reopenLadder(h.id), false, 'открыть заново нельзя — слот занят');
+  assert.equal(h.ladder.done, true, 'закрытая осталась закрытой');
+  assert.equal(s.items.filter(i => i.ladder && !i.ladder.done).length, 1, 'живая по-прежнему одна');
+
+  // слот освободился — возврат снова доступен и обратим
+  assert.equal(app.clearLadder(m.id), true);
+  assert.equal(app.reopenLadder(h.id), true);
+  assert.equal(h.ladder.done, false);
+  assert.deepEqual(h.ladder.steps, ['раз', 'два'], 'ступени целы');
+});
+
+/* Д2. Новая лестница на пункте с ЗАКРЫТОЙ — именно новая, а не правка
+   текста внутри закрытой (прежде done оставался true, step не сбрасывался,
+   стартовой записи не появлялось, а текст пройденной исчезал молча). */
+test('З27/3: setLadder на пункте с закрытой лестницей заводит новую', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const { h } = ladderReadyHabit();
+  app.setLadder(h.id, 'раз\nдва');
+  h.ladder.step = 1;
+  assert.equal(app.closeLadder(h.id), true);
+  const logLen = h.ladderLog.length;
+
+  assert.equal(app.setLadder(h.id, 'Новая 1\nНовая 2\nНовая 3'), true);
+  assert.equal(h.ladder.done, false, 'done снят');
+  assert.equal(h.ladder.step, 0, 'путь читается с первой ступени');
+  assert.equal(h.ladder.startedAt, app.todayKey(), 'startedAt новый');
+  assert.equal(h.ladderLog.length, logLen + 1, 'в журнал дописана стартовая запись');
+  assert.equal(h.ladderLog[h.ladderLog.length - 1].start, true);
+  assert.equal(app.activeLadderItem().id, h.id, 'новая лестница слот ЗАНИМАЕТ');
+  assert.ok(h.ladderLog.some(e => e.closed), 'веха закрытия прежнего пути осталась историей');
+});
+
+/* Д2, вторая половина: закрытая лестница слот не держит — значит и права
+   завести новую поверх неё, пока слот у другого пункта, не даёт. */
+test('З27/3: пункт с закрытой лестницей не обходит занятый слот', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const { s, h } = ladderReadyHabit();
+  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
+  app.setLadder(h.id, 'раз\nдва');
+  h.ladder.step = 1;
+  app.closeLadder(h.id);
+  app.setLadder(m.id, 'Н1\nН2');
+
+  assert.equal(app.ladderBlockedBy(h).id, m.id, 'форма скажет, кем занят слот');
+  assert.equal(app.setLadder(h.id, 'Ещё\nОдна'), false, 'новую завести нельзя');
+  assert.deepEqual(h.ladder.steps, ['раз', 'два'], 'текст закрытой не тронут');
+  assert.equal(s.items.filter(i => i.ladder && !i.ladder.done).length, 1);
+  // а носитель ЖИВОЙ лестницы сам у себя слот не занимает — правка работает
+  assert.equal(app.ladderBlockedBy(m), null);
+  assert.equal(app.setLadder(m.id, 'Н1\nН2\nН3'), true);
+  assert.equal(m.ladder.step, 0, 'правка живой step не сбрасывает (был 0)');
+});
+
+/* Д3. Шаг на последнюю ступень, сделанный на этой неделе, «вставшей»
+   привычку не делает: две недели нормы были набраны на предыдущей. */
+test('З27/6: ladderSettled требует, чтобы неделя шага прошла', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const { h } = ladderReadyHabit();
+  app.setLadder(h.id, 'раз\nдва');
+  assert.equal(app.canStepForward(h), true);
+  assert.equal(app.ladderStep(h.id, 'fwd'), true);
+  assert.equal(h.ladder.step, 1, 'стоим на последней ступени');
+  assert.equal(h.ladder.steppedWeek, app.currentWeekStart());
+
+  assert.equal(app.ladderSettled(h), false, 'ступень стоит ноль дней');
+  assert.equal(app.ladderStatus(h), 'Последняя ступень');
+  assert.equal(app.closeLadder(h.id), false, 'и закрыть привычку нельзя');
+
+  // неделя прошла, обе завершённые недели по норме — теперь встала
+  advanceDays(7);
+  markWeek(h.id, app.previousWeekStart(), 7);
+  assert.equal(app.ladderSettled(h), true);
+  assert.equal(app.closeLadder(h.id), true);
+});
+
+/* Д5. Копия расходуется только после успешной записи. Прежде возврат
+   снимал копию ДО save(), а успех записи никто не проверял: отказ квоты
+   уничтожал практику и на диске, и в копии. */
+test('З27/2: отказ записи откатывает чистку целиком — копия и store на месте', () => {
+  setNow(2026, 7, 17, 12, 0);
+  fakeLocalStorage();
+  const s = freshStore();
+  calendarPast(s);
+  app.toggleMark(app.todayKey(), s.items[0].id);
+  const before = JSON.stringify(app.store);
+
+  withBrokenWrite(() => {
+    assert.equal(app.wipeAll(), false, 'чистка не выполнена');
+  });
+  assert.equal(JSON.stringify(app.store), before, 'store в памяти прежний');
+  assert.equal(app.wipedCopy(), null, 'копия не осталась висеть');
+  assert.equal(app.lastSaveOk(), false, 'и приложение знает, что записи не было');
+});
+
+test('З27/2: отказ записи откатывает возврат — копия не расходуется', () => {
+  setNow(2026, 7, 17, 12, 0);
+  fakeLocalStorage();
+  const s = freshStore();
+  calendarPast(s);
+  app.toggleMark(app.todayKey(), s.items[0].id);
+  const practice = JSON.stringify(app.store);
+  assert.equal(app.wipeAll(), true);
+  assert.equal(app.store.items.length, 0, 'после чистки пусто');
+  const copyRaw = app.wipedRaw();
+  assert.ok(copyRaw, 'копия есть');
+
+  withBrokenWrite(() => {
+    assert.equal(app.restoreWiped(), false, 'возврат не выполнен');
+  });
+  assert.equal(app.store.items.length, 0, 'состояние прежнее — пустое');
+  assert.equal(app.wipedRaw(), copyRaw, 'копия НА МЕСТЕ побайтово');
+  // и при живой записи возврат по-прежнему работает
+  assert.equal(app.restoreWiped(), true);
+  assert.equal(JSON.stringify(app.store), practice, 'практика вернулась целиком');
+});
+
+/* 10.2. Решения по планке из ДВУХ разборов не складываются в один срез. */
+test('З27/10.2: в срез идут решения только текущей недели', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const [a, b] = s.items.filter(i => i.type === 'daily' && i.area === 'min');
+  // решение прошлой недели: запись есть, якорь пункта — прошлая неделя
+  s.pendingRaises.push({ itemId: a.id, name: a.name, from: 5, to: 6 });
+  a.raiseAfterWeek = app.addDays(app.currentWeekStart(), -7);
+  // решение этой недели
+  s.pendingRaises.push({ itemId: b.id, name: b.name, from: 10, to: 11 });
+  b.raiseAfterWeek = app.currentWeekStart();
+
+  const cur = app.pendingThisWeek(s.pendingRaises, 'raiseAfterWeek');
+  assert.deepEqual(cur.map(r => r.itemId), [b.id], 'чужая неделя в срез не идёт');
+
+  assert.equal(app.closeWeek(), true);
+  assert.deepEqual(s.reviews[0].raises.map(r => r.itemId), [b.id]);
+  assert.deepEqual(s.pendingRaises, [], 'накопленное чистится целиком');
+});
+
+test('З27/10.2: пункт, решённый дважды, отдаёт в срез последнее решение', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const a = s.items.find(i => i.type === 'daily' && i.area === 'min');
+  s.pendingRaises.push({ itemId: a.id, name: a.name, from: 5, to: 6 });
+  s.pendingRaises.push({ itemId: a.id, name: a.name, from: 6, to: 7 });
+  a.raiseAfterWeek = app.currentWeekStart();
+  const cur = app.pendingThisWeek(s.pendingRaises, 'raiseAfterWeek');
+  assert.equal(cur.length, 1);
+  assert.deepEqual(cur[0], { itemId: a.id, name: a.name, from: 6, to: 7 });
+});
+
+/* Д8. exportedAt вне диапазона Date нормализуется миграцией. */
+test('З27/7: exportedAt вне диапазона Date не доезжает до рендера', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const one = () => [{ id: 'x', name: 'П', type: 'daily' }];
+  for (const bad of [8640000000000001, 1e18, -1e18, Infinity, NaN, 'вчера', {}]) {
+    const s = app.migrate({ schemaVersion: 16, items: one(), settings: { exportedAt: bad, seed17: true } });
+    assert.equal(s.settings.exportedAt, null, 'мусор сведён к «экспорта не было»: ' + String(bad));
+  }
+  // граница: последняя представимая дата остаётся как есть
+  const ok = app.migrate({ schemaVersion: 16, items: one(), settings: { exportedAt: 8640000000000000 } });
+  assert.equal(ok.settings.exportedAt, 8640000000000000);
+  const norm = app.migrate({ schemaVersion: 16, items: one(), settings: { exportedAt: 1750000000000 } });
+  assert.equal(norm.settings.exportedAt, 1750000000000, 'нормальная отметка не тронута');
+});
+
+/* п. 8. Полуночный переход — обёртка суток, а не подъём на всю высоту. */
+test('З27/8: минуты суток разворачиваются по кратчайшей дуге', () => {
+  const p = (date, value) => ({ date, value });
+  // 00:00 → 23:45 — пятнадцать минут назад, а не 1425 вперёд
+  const a = app.unwrapDayMinutes([p('2026-07-01', 0), p('2026-07-08', 1425), p('2026-07-15', 1410)]);
+  assert.deepEqual(a.map(x => x.value), [0, -15, -30]);
+  // и обратно: 23:45 → 00:00 — пятнадцать минут вперёд
+  const b = app.unwrapDayMinutes([p('2026-07-01', 1425), p('2026-07-08', 0)]);
+  assert.deepEqual(b.map(x => x.value), [1425, 1440]);
+  // обычный ряд без перехода через полночь не меняется
+  const c = [p('2026-07-01', 1380), p('2026-07-08', 1365), p('2026-07-15', 1350)];
+  assert.deepEqual(app.unwrapDayMinutes(c).map(x => x.value), [1380, 1365, 1350]);
+  // даты не трогаются
+  assert.deepEqual(a.map(x => x.date), ['2026-07-01', '2026-07-08', '2026-07-15']);
+  // размах после разворота сопоставим с шагом: линия читается
+  const vals = a.map(x => x.value);
+  assert.equal(Math.max(...vals) - Math.min(...vals), 30, 'размах — два шага по 15, а не 1425');
+});
+
+/* 9.3. Арифметика keepInPlace — чистой функцией, а не только замером. */
+test('З27/9.3: holdScrollTarget — куда встанет скролл, чтобы точка нажатия не ушла', () => {
+  // узел ниже кнопки на 20 px — скролл вниз на столько же
+  assert.equal(app.holdScrollTarget(400, 420, 1000), 1020);
+  // узел выше кнопки — скролл вверх
+  assert.equal(app.holdScrollTarget(500, 430, 1000), 930);
+  // смещения нет — трогать скролл незачем
+  assert.equal(app.holdScrollTarget(300, 300, 1000), null);
+  // ниже нуля не уходим: отрицательного скролла не бывает
+  assert.equal(app.holdScrollTarget(600, 0, 100), 0);
+  // scrollY может отсутствовать — считается как ноль
+  assert.equal(app.holdScrollTarget(0, 40, undefined), 40);
+});
+
+/* 9.1. Ключ формы по разметке — формы блока и упражнения его получили. */
+test('З27/9.1: domFormKey — формы блока и упражнения получили ключ', () => {
+  const f = (form, id) => ({ dataset: id === undefined ? { form } : { form, id } });
+  assert.equal(app.domFormKey(f('add')), 'add');
+  assert.equal(app.domFormKey(f('edit', 'i1')), 'edit:i1');
+  assert.equal(app.domFormKey(f('group-edit', 'Утро')), 'group:Утро');
+  assert.equal(app.domFormKey(f('group-add')), 'group:new');
+  assert.equal(app.domFormKey(f('ex-edit', 'x1')), 'ex:x1');
+  assert.equal(app.domFormKey(f('ex-add')), 'ex:new');
+  assert.equal(app.domFormKey(f('note', 'new')), 'note:new');
+  assert.equal(app.domFormKey(f('formula', 'i1')), 'formula:i1');
+  assert.equal(app.domFormKey(f('ladder', 'i1')), 'ladder:i1');
+  assert.equal(app.domFormKey(f('train', 'w1')), 'train:w1');
 });

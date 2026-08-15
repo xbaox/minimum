@@ -126,8 +126,10 @@ const MUTANTS = [
     id: '24.9-свёртка-не-открывается',
     file: 'app.js',
     note: 'при пустых решениях свёртка остаётся закрытой',
-    edits: [['const weekFoldOpen = () => (ui.weekOpen === null ? !reviewActionable() : ui.weekOpen);',
-      'const weekFoldOpen = () => (ui.weekOpen === null ? false : ui.weekOpen);']]
+    // якорь обновлён в задаче 27.1, п. 10.3: умолчание стало сниматься
+    // один раз при первом рендере разбора, и прежнее выражение исчезло
+    edits: [['  if (ui.weekOpen === null) ui.weekOpen = !reviewActionable();',
+      '  if (ui.weekOpen === null) ui.weekOpen = false;']]
   },
   {
     id: '24.10-placeholder-убран',
@@ -139,9 +141,10 @@ const MUTANTS = [
     id: '25.2-импорт-без-копии',
     file: 'app.js',
     note: 'импорт снова замещает данные необратимо — копии перед подменой нет',
+    // якорь обновлён в задаче 27.1, п. 2.3: перед keepPrev встал снимок
+    // ключа копии для отката (wasCopy), и прежний текст исчез
     edits: [[
-      `    const prev = store;
-    if (!keepPrev(prev, 'import')) {
+      `    if (!keepPrev(prev, 'import')) {
       alert('Импорт не выполнен: копию прежних данных некуда сохранить. Текущие данные не изменены.');
       return;
     }
@@ -205,9 +208,10 @@ const MUTANTS = [
     id: '26.1-возврат-не-кладёт-копию',
     file: 'app.js',
     note: '«Вернуть» снова необратим — наработанное после чистки или импорта теряется',
+    // якорь обновлён в задаче 27.1, п. 2.1: перед keepPrev встал снимок
+    // ключа копии для отката (wasCopy)
     edits: [[
-      `  const prev = store;
-  if (hasData(prev)) {
+      `  if (hasData(prev)) {
     if (!keepPrev(prev, 'restore')) return false; // копию некуда положить — возврат не выполняется
   } else {
     dropWiped();
@@ -393,6 +397,219 @@ const MUTANTS = [
     file: 'app.js',
     note: 'стык 24×26: reviewActionable перестаёт считать нерешённый параметр действенным — картина недели раскрывается поверх живого решения',
     edits: [['  if (pendingParams().length) return true;\n', '']]
+  },
+  /* ── Задача 27.1: ремонт по приёмке ────────────────────────────
+     По мутанту на каждую правку. Д1 и Д5 — пути безвозвратной потери:
+     они обязаны умирать от теста, а не от рассуждения. */
+  {
+    id: '27.1-Д1-открыть-заново-без-слота',
+    file: 'app.js',
+    note: 'Д1: «Открыть заново» снова не проверяет слот — две живые лестницы, и следующий запуск стирает одну вместе со ступенями',
+    edits: [['  if (activeLadderItem()) return false; // слот занят — снимать чужую молча нельзя\n', '']]
+  },
+  {
+    id: '27.1-Д1-кнопка-возврата-при-занятом-слоте',
+    file: 'app.js',
+    note: 'Д1: кнопка «Открыть заново» предлагается и при занятом слоте — отказ приходит после тапа, а не до',
+    edits: [['      const busy = activeLadderItem();', '      const busy = null;']]
+  },
+  {
+    id: '27.1-Д2-новая-лестница-правит-закрытую',
+    file: 'app.js',
+    note: 'Д2: setLadder снова не различает живую и закрытую — done остаётся, стартовой записи нет, текст пройденной исчезает',
+    edits: [['  if (item.ladder && !item.ladder.done) {\n    // правка ЖИВОЙ лестницы', '  if (item.ladder) {\n    // правка ЖИВОЙ лестницы']]
+  },
+  {
+    id: '27.1-Д2-закрытая-держит-слот',
+    file: 'app.js',
+    note: 'Д2: носитель закрытой лестницы снова обходит занятый слот — вторая живая лестница другим путём',
+    edits: [['  if (item.ladder && !item.ladder.done) return null;\n  return activeLadderItem();',
+      '  if (item.ladder) return null;\n  return activeLadderItem();']]
+  },
+  {
+    id: '27.1-Д2-замена-без-подтверждения',
+    file: 'app.js',
+    note: 'Д2: пройденная лестница заменяется одним тапом — её ступени исчезают молча',
+    edits: [["      if (item && item.ladder && item.ladder.done && String(steps).trim() && !ui.ladderNewConfirm) {",
+      '      if (false) {']]
+  },
+  {
+    id: '27.1-Д3-settled-сразу-после-шага',
+    file: 'app.js',
+    note: 'Д3: ladderSettled снова истинно в день шага — «привычка встала» через секунду после того, как на ступень встали',
+    // якорь берётся вместе с комментарием: сама строка guard'а встречается
+    // дважды (та же проверка есть у canStepForward), и мутация была бы неопределённой
+    edits: [['  // Д3). Guard тот же, что у canStepForward: неделя шага должна пройти.\n  if (L.steppedWeek && L.steppedWeek === currentWeekStart()) return false;',
+      '  // Д3). Guard тот же, что у canStepForward: неделя шага должна пройти.']]
+  },
+  {
+    id: '27.1-Д5-save-не-сообщает-об-успехе',
+    file: 'app.js',
+    note: 'Д5: save() снова молчит об успехе — замещение считает записанным то, чего на диске нет',
+    edits: [['  storageNote(); // вне try: своей ошибкой она не должна выглядеть отказом записи\n  return ok;',
+      '  storageNote();\n  return true;']]
+  },
+  {
+    id: '27.1-Д5-возврат-расходует-копию-до-записи',
+    file: 'app.js',
+    note: 'Д5: возврат снова необратим — копия израсходована, запись не удалась, практика потеряна в обоих местах',
+    edits: [[`  if (!save()) {
+    store = prev;
+    setWipedRaw(wasCopy);
+    return false;
+  }
+  flushMirror();
+  return true;
+}
+
+/* ── Экспорт / импорт`, `  save();
+  flushMirror();
+  return true;
+}
+
+/* ── Экспорт / импорт`]]
+  },
+  {
+    id: '27.1-Д5-чистка-без-отката',
+    file: 'app.js',
+    note: 'Д5: чистка не откатывается при отказе записи — экран пуст, копия «до чистки», а на диске нетронутая практика',
+    edits: [[`  if (!save()) {
+    store = prev;
+    setWipedRaw(wasCopy);
+    return false;
+  }
+  flushMirror();
+  return true;
+}
+
+/* Возврат: копия проходит migrate`, `  save();
+  flushMirror();
+  return true;
+}
+
+/* Возврат: копия проходит migrate`]]
+  },
+  {
+    id: '27.1-Д6-сохранено-без-записи',
+    file: 'app.js',
+    note: 'Д6: «Сохранено» снова печатается при отказе хранилища — приложение утверждает то, чего не произошло',
+    edits: [["  flashOk(key, lastSaveOk() ? okText : 'Не сохранено: хранилище недоступно');", '  flashOk(key, okText);']]
+  },
+  {
+    id: '27.1-Д6-баннер-только-на-дневных',
+    file: 'app.js',
+    note: 'Д6: баннер отказа хранилища снова не показывается — отказ на «Настройках» проходит без следа',
+    edits: [["  p.textContent = saveFailed ? 'Хранилище недоступно — отметки сейчас не сохраняются' : '';\n  p.hidden = !saveFailed;",
+      "  p.textContent = '';\n  p.hidden = true;"]]
+  },
+  {
+    id: '27.1-Д4-flash-по-всему-документу',
+    file: 'app.js',
+    note: 'Д4: узел подтверждения снова ищется по всему документу — берётся чужой со скрытого экрана, страница прыгает',
+    edits: [["const visibleFlash = () => document.querySelector('main .screen:not([hidden]) .flash:not(.keep)');",
+      "const visibleFlash = () => document.querySelector('.flash:not(.keep)');"]]
+  },
+  {
+    id: '27.1-Д4-keepInPlace-снят',
+    file: 'app.js',
+    note: 'Д4/9.3: арифметика удержания точки нажатия снята — узел подтверждения рождается за краем экрана',
+    edits: [['  const dy = nodeTop - anchorTop;\n  if (!dy) return null;\n  return Math.max(0, (scrollY || 0) + dy);',
+      '  return null;']]
+  },
+  {
+    id: '27.1-9.3-keepInPlace-снят',
+    file: 'app.js',
+    note: '9.3: подгонка скролла снята целиком — тот самый мутант, который до задачи 27.1 выжил бы (проверять было нечем)',
+    edits: [['  const to = holdScrollTarget(y, n.getBoundingClientRect().top, window.scrollY);\n  if (to !== null) window.scrollTo(0, to);',
+      '  return;']]
+  },
+  {
+    id: '27.1-Д7-возврат-отказывает-молча',
+    file: 'app.js',
+    note: 'Д7: «Вернуть» снова ничего не говорит при отказе — владелец видит кнопку, которая не сработала',
+    edits: [["      if (!restoreWiped()) { ui.restoreFailed = true; renderSettings(); break; }\n      ui.restoreFailed = false;",
+      '      if (!restoreWiped()) break;']]
+  },
+  {
+    id: '27.1-Д7-подтверждение-переживает-возврат',
+    file: 'app.js',
+    note: 'Д7: взведённое «Подтвердить: стереть» снова переживает возврат — один тап уничтожает обмен',
+    edits: [['      ui.wipeOpen = false;\n      resetConfirms();\n      closeDetail(); // лист детали принадлежал прежним данным\n', '']]
+  },
+  {
+    id: '27.1-Д8-invalid-date',
+    file: 'app.js',
+    note: 'Д8: exportedAt вне диапазона Date снова доезжает до рендера — «Экспорт запускался: Invalid Date»',
+    edits: [['        && Math.abs(s.settings.exportedAt) <= MAX_TIME)) {', '        )) {']]
+  },
+  {
+    id: '27.1-подъём-параметра-через-полночь',
+    file: 'app.js',
+    note: 'п. 8: полуночный переход снова рисуется подъёмом на всю высоту, и настоящие шаги неразличимы',
+    edits: [["    const geo = (it.type === 'param' && it.pkind === 'time') ? unwrapDayMinutes(s.points) : s.points;",
+      '    const geo = s.points;']]
+  },
+  {
+    id: '27.1-10.2-решения-двух-разборов-в-одном-срезе',
+    file: 'app.js',
+    note: '10.2: срез снова забирает всё накопленное — решения двух разборов ложатся в одну неделю',
+    edits: [["    raises: pendingThisWeek(store.pendingRaises, 'raiseAfterWeek'),\n    lowers: pendingThisWeek(store.pendingLowers, 'lowerAfterWeek'),",
+      '    raises: store.pendingRaises,\n    lowers: [...store.pendingLowers],']]
+  },
+  {
+    id: '27.1-9.1-снимок-берёт-первую-форму',
+    file: 'app.js',
+    note: '9.1: снимок черновика снова берёт первую форму экрана — раскрытая правка блока крадёт черновик «Пунктов»',
+    edits: [[`  let form = null;
+  for (const f of document.querySelectorAll(formScope(key) + ' [data-form]')) {
+    if (domFormKey(f) === key) { form = f; break; }
+  }`,
+      `  const form = document.querySelector(formScope(key) + ' [data-form]:not([data-form="group-add"])');`]]
+  },
+  {
+    id: '27.1-9.1-форма-блока-без-черновика',
+    file: 'app.js',
+    note: '9.1: форма блока снова без ключа — введённое имя пропадает при перерисовке по чужому поводу',
+    edits: [["  if (ui.groupAdd) return 'group:new';\n  if (ui.groupRename !== null) return 'group:' + ui.groupRename;\n", '']]
+  },
+  {
+    id: '27.1-9.2-отказ-не-объявляется',
+    file: 'app.js',
+    note: '9.2: отказ формы снова не доходит до скринридера — узел рождается вместе с текстом и молчит',
+    edits: [['  announce(text);\n}', '}']]
+  },
+  {
+    id: '27.1-9.4-добавить-блок-не-закрывает-правку',
+    file: 'app.js',
+    note: '9.4: «Добавить блок» снова оставляет открытой правку блока — на экране две формы блока разом',
+    edits: [["    case 'group-add-open': ui.groupAdd = true; ui.groupRename = null; ui.groupDelete = null; renderSettings(); break;",
+      "    case 'group-add-open': ui.groupAdd = true; ui.groupDelete = null; renderSettings(); break;"]]
+  },
+  {
+    id: '27.1-9.5-hstrip-обводка-невидима',
+    file: 'styles.css',
+    note: '9.5: кружок дня в полосе недели снова обведён тоном разделителей (1,45:1) — день без отметки не виден',
+    edits: [['  border: 1.5px solid var(--control-border);\n  /* заполнение сегодняшней',
+      '  border: 1.5px solid var(--line-strong);\n  /* заполнение сегодняшней']]
+  },
+  {
+    id: '27.1-10.3-свёртка-пересчитывается-каждый-рендер',
+    file: 'app.js',
+    note: '10.3: умолчание свёртки снова пересчитывается на каждой перерисовке — последнее решение само раскрывает картину недели',
+    edits: [['  if (ui.weekOpen === null) ui.weekOpen = !reviewActionable();\n  return ui.weekOpen;',
+      '  return ui.weekOpen === null ? !reviewActionable() : ui.weekOpen;']]
+  },
+  {
+    id: '27.1-5.1-посев-расходится-с-migrate',
+    file: 'app.js',
+    note: 'п. 5.1: посевные выписки снова в другом порядке ключей — первый экспорт со свежей установки не равен следующему',
+    edits: [["    id: uid(), date: today, text, kind: 'quote', source,", "    id: uid(), date: today, text, source, kind: 'quote',"]]
+  },
+  {
+    id: '27.1-10.5-копия-из-заметок-читается-пустой',
+    file: 'app.js',
+    note: '10.5: строка копии снова считает только пункты и дни — копия из одних заметок выглядит пустой',
+    edits: [["  if (q) parts.push(`${q} ${plural(q, 'запись', 'записи', 'записей')}`);\n", '']]
   }
 ];
 

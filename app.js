@@ -85,7 +85,8 @@ const NS = 'minimum:data';
 const SCHEMA_VERSION = 16;
 
 let store = null;
-let saveFailed = false; // хранилище недоступно — «Сегодня» показывает тихий баннер
+let saveFailed = false; // хранилище недоступно — постоянный баннер над экраном
+const MAX_TIME = 8640000000000000; // предел представимой даты: за ним new Date() — Invalid Date
 
 const uid = () => (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
   ? crypto.randomUUID()
@@ -181,9 +182,15 @@ function programItems(today) {
 
 /* Выписки программы идут в общий список заметок; updatedAt задаёт
    порядок сверху вниз (notesByDate: день, при равенстве — правка) */
+/* Порядок ключей — как у нормализации notes в migrate (kind перед source):
+   живой store не должен отличаться от прошедшего migrate ни полем, ни
+   байтом — то же правило, что записано в setLadder. Прежде посев давал
+   {…, source, kind, …}, и ПЕРВЫЙ экспорт со свежей установки байт-в-байт
+   не совпадал ни с одним следующим экспортом тех же данных: файл сам себе
+   не равен (задача 27, п. 5.1). Потери данных не было — только порядок. */
 function programQuotes(today) {
   return SEED_QUOTES.map(([text, source], i) => ({
-    id: uid(), date: today, text, source, kind: 'quote',
+    id: uid(), date: today, text, kind: 'quote', source,
     updatedAt: SEED_QUOTES.length - i
   }));
 }
@@ -372,6 +379,17 @@ function migrate(s, opts) {
     : 4;
   // v13 → v14 (задача 17): порог зачёта дня — доля отмеченного, шаг 0,1
   s.settings.dayThreshold = clampThreshold(s.settings.dayThreshold);
+  // отметка экспорта — момент времени, и она обязана быть представимой
+  // датой. isFinite её пропускал: 8.64e15 + 1 даёт Invalid Date, оттуда
+  // «NaN-NaN-NaN» и английская строка «Экспорт запускался: Invalid Date»
+  // в русском интерфейсе (задача 27, Д8). Тот же класс враждебного числа
+  // у dayBoundary зажат строкой выше — здесь зажимаем тем же приёмом.
+  // Вне диапазона — не «починить наугад», а «экспорта не было»: подделывать
+  // дату, которой не было, приложение не должно
+  if (!(typeof s.settings.exportedAt === 'number' && isFinite(s.settings.exportedAt)
+        && Math.abs(s.settings.exportedAt) <= MAX_TIME)) {
+    if (s.settings.exportedAt !== undefined) s.settings.exportedAt = null;
+  }
   const today = dateKeyShift(new Date(), s.settings.dayBoundary);
 
   // пункты: только объекты; id и addedAt достраиваются, id дедуплицируются
@@ -687,15 +705,31 @@ function load() {
   }
 }
 
+/* true = записалось. Возвращать успех save() обязан по двум причинам
+   (задача 27, Д5 и Д6): замещающие операции расходуют копию прежних данных
+   и обязаны откатиться, если рабочий ключ записать не удалось; а тихое
+   «Сохранено» не должно печататься там, где записи не было. Значение
+   добавлено к прежнему поведению, не заменяет его: saveFailed по-прежнему
+   взводится и гасится здесь же, прежние вызовы результат просто игнорируют. */
 function save() {
+  let ok = false;
   try {
     localStorage.setItem(NS, JSON.stringify(store));
     saveFailed = false; // первый успешный save снимает флаг
     scheduleMirror();   // успешное сохранение дублируется в зеркало (инвариант 9)
+    ok = true;
   } catch (e) {
-    saveFailed = true; // приватный режим / переполнение — баннер на «Сегодня» при следующем рендере
+    saveFailed = true; // приватный режим / переполнение — баннер на текущем экране
   }
+  storageNote(); // вне try: своей ошибкой она не должна выглядеть отказом записи
+  return ok;
 }
+
+/* Успех ПОСЛЕДНЕЙ записи. Доменные функции зовут save() внутри и возвращают
+   своё (сработала ли доменная операция), а обработчику нужно знать именно
+   про запись — иначе подтверждение печатается там, где на диск ничего не
+   легло (задача 27, Д6). */
+const lastSaveOk = () => !saveFailed;
 
 /* ── Зеркало в IndexedDB (инвариант 9) ─────────────────────────
    Тонкая обёртка: open/get/put, все ошибки глушатся — недоступность
@@ -1418,6 +1452,13 @@ function ladderWeeksReady(item) {
 function ladderSettled(item) {
   const L = item && item.ladder;
   if (!L || L.step < L.steps.length - 1) return false;
+  // шаг НА последнюю ступень, сделанный на этой неделе, «вставшей» её не
+  // делает: две недели нормы были набраны на ПРЕДЫДУЩЕЙ ступени, а новая
+  // стоит ноль дней. Прежде тап «Шагнуть» в разборе превращал ту же
+  // карточку в «привычка встала» в ту же секунду, и closeLadder был уже
+  // разрешён — приложение утверждало выдержку, которой не было (задача 27,
+  // Д3). Guard тот же, что у canStepForward: неделя шага должна пройти.
+  if (L.steppedWeek && L.steppedWeek === currentWeekStart()) return false;
   return ladderWeeksReady(item);
 }
 
@@ -1520,10 +1561,18 @@ function closeLadder(itemId) {
 }
 
 /* Открыть заново: закрытие обратимо, как любой шаг прогрессии. Журнал не
-   правится — веха закрытия остаётся историей, она была (инвариант 12). */
+   правится — веха закрытия остаётся историей, она была (инвариант 12).
+   Обратимость подчинена правилу одной активной лестницы: пока слот занят
+   живой, открыть заново нельзя. Прежде проверки не было вовсе, и тап давал
+   ДВЕ живые лестницы; вторая была невидима (activeLadderItem отдаёт первую
+   по items[]), а дедуп migrate при следующем запуске снимал ту, у которой
+   startedAt старше, — то есть открытую заново ВСЕГДА, вместе со списком
+   ступеней и признаком done. Необратимая потеря в интерфейсе, которого
+   обратимость и есть предмет (задача 27, Д1). */
 function reopenLadder(itemId) {
   const item = store.items.find(i => i.id === itemId);
   if (!item || !item.ladder || !item.ladder.done) return false;
+  if (activeLadderItem()) return false; // слот занят — снимать чужую молча нельзя
   item.ladder.done = false;
   save();
   return true;
@@ -1536,10 +1585,16 @@ function ladderClosedAt(item) {
   return null;
 }
 
-/* Пункт, занявший единственный слот лестницы, — или null, если слот свободен
-   (для самого носителя лестницы слот не занят) */
+/* Пункт, занявший единственный слот лестницы, — или null, если слот свободен.
+   Носитель ЖИВОЙ лестницы сам у себя слот не занимает. А вот носитель
+   ЗАКРЫТОЙ проверяется наравне с пунктом без лестницы: закрытая слот не
+   держит (инвариант 12), значит и права завести новую поверх неё, пока
+   слот у другого, не даёт. Прежнее условие `item.ladder` не различало
+   живую и закрытую, и заведение новой на пункте с закрытой давало вторую
+   живую лестницу тем же путём, что «Открыть заново» (задача 27, Д2). */
 function ladderBlockedBy(item) {
-  if (!item || item.ladder) return null;
+  if (!item) return null;
+  if (item.ladder && !item.ladder.done) return null;
   return activeLadderItem();
 }
 
@@ -1556,11 +1611,19 @@ function setLadder(itemId, text) {
     save();
     return true;
   }
-  if (item.ladder) {
+  if (item.ladder && !item.ladder.done) {
+    // правка ЖИВОЙ лестницы: step не сбрасывается, только подтягивается
     item.ladder.steps = steps;
     if (item.ladder.step > steps.length - 1) item.ladder.step = steps.length - 1;
   } else {
-    // порядок ключей и состав — как у normLadder: живой store не должен
+    // НОВОЙ лестницей считается и первая, и следующая после закрытой:
+    // done снимается, путь читается с первой ступени, журнал получает новую
+    // стартовую веху (инвариант 12). Прежде ветка `if (item.ladder)` живую
+    // и закрытую не различала — steps правились на месте, done оставался
+    // true, стартовой записи не появлялось, и лестница выходила
+    // мертворождённой: слот не занимала, в «Решении 2» не показывалась,
+    // а текст пройденной исчезал молча (задача 27, Д2).
+    // Порядок ключей и состав — как у normLadder: живой store не должен
     // отличаться от прошедшего migrate ни полем, ни байтом (задача 21)
     item.ladder = { steps, step: 0, steppedWeek: null, startedAt: todayKey(), done: false };
     recordLadderStep(item, true); // старт пути: путь читается с первой ступени
@@ -1987,6 +2050,31 @@ function riseSeries(item) {
 
 /* ── Закрытие недели ───────────────────────────────────────── */
 
+/* Решения по планке, принятые В ТЕКУЩУЮ календарную неделю. Приём тот же,
+   что у счётчика тренировок (инвариант 3): читаем только свою неделю, а не
+   всё накопленное. Датой служит якорь недели у самого пункта —
+   raiseAfterWeek / lowerAfterWeek, который ставят ОБЕ кнопки решения;
+   отдельного поля в записи для этого не нужно, схема не меняется.
+
+   Прежде пропущенное закрытие складывало решения двух разборов в ОДИН
+   срез: разбор недели W1 поднял планку «А», разбор не закрыли, назавтра
+   окно сменилось, разбор W2 поднял «Б» — и срез W2 приписывал себе оба
+   (задача 27). Пункт, решённый дважды, отдаёт в срез последнее решение. */
+function pendingThisWeek(list, field) {
+  const cur = currentWeekStart();
+  if (!cur) return [];
+  const seen = new Set();
+  const out = [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const r = list[i];
+    const it = store.items.find(x => x.id === r.itemId);
+    if (!it || it[field] !== cur || seen.has(r.itemId)) continue;
+    seen.add(r.itemId);
+    out.unshift(r);
+  }
+  return out;
+}
+
 function closeWeek() {
   if (!reviewDue()) return false; // guard: завершённой неразобранной недели нет
   const week = previousWeekStart();
@@ -2012,8 +2100,8 @@ function closeWeek() {
     perItem,
     trainings,
     oneChange: (store.draftOneChange || '').trim(),
-    raises: store.pendingRaises,
-    lowers: [...store.pendingLowers],
+    raises: pendingThisWeek(store.pendingRaises, 'raiseAfterWeek'),
+    lowers: pendingThisWeek(store.pendingLowers, 'lowerAfterWeek'),
     // в срез идут только решения разобранной недели; чистится paramDecided целиком
     params: Object.entries(store.paramDecided)
       .filter(([, d]) => d.week === week)
@@ -2064,6 +2152,25 @@ function wipedCopy() {
 
 function dropWiped() {
   try { localStorage.removeItem(WIPE_KEY); } catch (e) { /* нечего убирать */ }
+}
+
+/* Сырое содержимое ключа копии и его восстановление — для ОТКАТА.
+   Любое замещение трогает копию ДО записи рабочего ключа: иначе некуда
+   было бы отступить, если копию положить не удалось. Но и запись рабочего
+   ключа может не удаться, и тогда замещение остаётся совершённым
+   наполовину — копия израсходована, а на диске прежнее состояние.
+   Возврат при этом терял практику ЦЕЛИКОМ: dropWiped снимал копию,
+   save() падал, и на диске оставался пустой store (задача 27, Д5).
+   Пара функций возвращает ключ ровно в то состояние, в каком он был. */
+function wipedRaw() {
+  try { return localStorage.getItem(WIPE_KEY); } catch (e) { return null; }
+}
+
+function setWipedRaw(raw) {
+  try {
+    if (raw === null) localStorage.removeItem(WIPE_KEY);
+    else localStorage.setItem(WIPE_KEY, raw);
+  } catch (e) { /* откат копии не удался — сделать больше нечем */ }
 }
 
 /* Есть ли в store хоть что-нибудь владельца. Признак берётся из того же
@@ -2139,11 +2246,20 @@ function emptyStore(boundary, threshold) {
    восстановил бы стёртое из старого снапшота. */
 function wipeAll() {
   const prev = store;
+  const wasCopy = wipedRaw();
   if (!keepPrev(prev, 'wipe')) return false;
   store = emptyStore(
     prev.settings && prev.settings.dayBoundary,
     prev.settings && prev.settings.dayThreshold);
-  save();
+  // запись пустого store не удалась — откат целиком: на диске осталось
+  // прежнее, значит и в памяти, и в копии должно остаться прежнее. Иначе
+  // экран показывал бы чистый лист, копия — «до чистки», а на диске лежала
+  // бы нетронутая практика: три разных ответа на один вопрос (задача 27, Д5)
+  if (!save()) {
+    store = prev;
+    setWipedRaw(wasCopy);
+    return false;
+  }
   flushMirror();
   return true;
 }
@@ -2169,13 +2285,23 @@ function restoreWiped() {
   // external: копия — данные извне, посев ей не адресован (A.2.1)
   try { restored = migrate(c.store, { external: true }); } catch (e) { return false; }
   const prev = store;
+  const wasCopy = wipedRaw();
   if (hasData(prev)) {
     if (!keepPrev(prev, 'restore')) return false; // копию некуда положить — возврат не выполняется
   } else {
     dropWiped();
   }
   store = restored;
-  save();
+  // здесь и жила единственная необратимая операция интерфейса (задача 27,
+  // Д5): копия расходовалась ДО записи, а успех записи никто не проверял.
+  // Пустое нынешнее состояние + отказ квоты = копия снята, на диске пустой
+  // store, практика уничтожена в обоих местах. Откат возвращает и store,
+  // и ключ копии — после отказа не изменилось ничего
+  if (!save()) {
+    store = prev;
+    setWipedRaw(wasCopy);
+    return false;
+  }
   flushMirror();
   return true;
 }
@@ -2289,12 +2415,22 @@ function importJSON(file) {
     // чистке (инвариант 18). Копию некуда положить — импорт не выполняется:
     // необратимых операций в интерфейсе нет, импорт был последней
     const prev = store;
+    const wasCopy = wipedRaw();
     if (!keepPrev(prev, 'import')) {
       alert('Импорт не выполнен: копию прежних данных некуда сохранить. Текущие данные не изменены.');
       return;
     }
     store = incoming;
-    save();
+    // тот же откат, что у чистки и возврата (задача 27.1, п. 2.3): копия
+    // израсходована ДО записи, и если рабочий ключ не записался, импорт
+    // остался бы совершённым наполовину — в памяти новое, на диске старое,
+    // а копия уже подменена. Один класс, одно лечение
+    if (!save()) {
+      store = prev;
+      setWipedRaw(wasCopy);
+      alert('Импорт не выполнен: данные не удалось записать. Текущие данные не изменены.');
+      return;
+    }
     // импорт заменил состояние целиком: черновики форм и дневное ui-состояние
     // не переносятся, граница дня могла смениться — таймер и день заново
     ui.editingId = null;
@@ -2360,6 +2496,7 @@ const ui = {
   detailScroll: 0,      // позиция скролла вкладки, с которой открыт лист
   ladderConfirm: false, // «Снять лестницу» ждёт подтверждения вторым тапом
   ladderDoneConfirm: false, // «Закрыть привычку» — тоже вторым тапом (задача 21)
+  ladderNewConfirm: false, // замена ПРОЙДЕННОЙ лестницы новой — вторым тапом (задача 27.1, п. 3.2)
   formulaMode: null,    // режим в открытой форме формулы (null — как у самой формулы)
   detailDraft: null,    // черновик формы листа — отдельный слот от «Пунктов» (14.2, вопрос 2)
   groupRename: null,    // имя блока с раскрытой правкой
@@ -2394,7 +2531,8 @@ const ui = {
   noteDelete: null,     // заметка ждёт подтверждения удаления вторым тапом
   noteDraft: null,      // черновик формы заметки — свой слот, как у листа детали
   wipeOpen: false,      // раскрыто предупреждение «Начать с чистого листа» (16.1)
-  wipeFailed: false,    // копию некуда положить — чистка не выполнена (19, C.6.4)
+  wipeFailed: false,    // чистка не выполнена: копию некуда положить или запись отказала (19, C.6.4)
+  restoreFailed: false, // то же у возврата — молчать о нём нельзя (задача 27, Д7)
   wipeConfirm: false,   // «Стереть» ждёт подтверждения вторым тапом
   wipeDropConfirm: false, // «Убрать копию» — тоже вторым тапом
   corruptDropConfirm: false, // «Убрать» нечитаемые данные — вторым тапом (задача 25)
@@ -2436,6 +2574,34 @@ function valUnit(it) {
 
 function el(id) { return document.getElementById(id); }
 
+/* Баннер отказа хранилища — ПОСТОЯННЫЙ узел вне экранов (index.html),
+   обновляется точечно из save(). Прежде он жил в разметке «Сегодня» и
+   «Привычек», а renderAll рисует одну текущую вкладку — и все отказы,
+   случившиеся на «Настройках», «Заметках» и листах (правка пункта,
+   экспорт, «Вернуть»), проходили без единого следа на том экране, где
+   владелец стоял (задача 27, Д6). Тон прежний: тихая констатация, ни
+   красного, ни слова «ошибка».
+   Домен без DOM (доменные тесты) выходит сразу — save() зовётся и там. */
+function storageNote() {
+  if (typeof document === 'undefined') return;
+  const p = el('storage-note');
+  if (!p) return;
+  p.textContent = saveFailed ? 'Хранилище недоступно — отметки сейчас не сохраняются' : '';
+  p.hidden = !saveFailed;
+}
+
+/* Постоянная область объявлений (index.html): узел role="status",
+   рождённый ВМЕСТЕ с текстом, скринридером не объявляется — объявляется
+   только изменение текста в уже существующем узле. Так устроен анонс
+   планки дня; тем же путём идут отказы формы (задача 27.1, п. 9.2).
+   Чистится в начале onClick, чтобы повторный отказ после другого
+   действия снова читался как изменение. */
+function announce(text) {
+  if (typeof document === 'undefined') return;
+  const p = el('live');
+  if (p) p.textContent = text || '';
+}
+
 /* ── Движение (задача 12): короткая функциональная обратная связь ──
    Заполнение круга и ячейки полосы, fade экрана и flash сохранения —
    на CSS (transition/@keyframes). Уходу карточки разбора нужен JS:
@@ -2471,10 +2637,19 @@ function tapPop(node) {
    (задача 19, C.6.3). */
 const FLASH_MS = timing('FLASH_MS', 1200);
 
+/* Узел подтверждения — ТОЛЬКО на видимом экране. Выборка по всему
+   документу брала первый узел в порядке секций index.html, а renderAll
+   рисует одну текущую вкладку: узлы .flash с прежних экранов остаются в
+   DOM (CSS лишь возвращает их к opacity:0), и первым находился чужой,
+   скрытый. armFlash взводил таймер не на тот узел, keepInPlace считал по
+   нулевому rect скрытой секции и прыгал вверх на всю высоту кнопки
+   (задача 27, Д4). Экран всегда ровно один — hidden снимает renderAll. */
+const visibleFlash = () => document.querySelector('main .screen:not([hidden]) .flash:not(.keep)');
+
 function armFlash() {
   if (!prefersReducedMotion()) return;
   // строку отказа (.flash.keep) не трогаем: она обязана дождаться правки
-  const n = document.querySelector('.flash:not(.keep)');
+  const n = visibleFlash();
   if (!n) return;
   setTimeout(() => { if (n.isConnected) n.remove(); }, FLASH_MS);
 }
@@ -2494,6 +2669,15 @@ function armFlash() {
    нажатой кнопкой; тем же путём это делал лист тренировки до задачи 26. */
 const flashOk = (key, text) => { ui.savedAt = { key, text: text || 'Сохранено' }; };
 
+/* Подтверждение ПО ФАКТУ ЗАПИСИ. Прежде все одиннадцать вызовов были
+   безусловны, и «Сохранено» печаталось даже когда localStorage отказал:
+   в памяти новое, на диске прежнее, а приложение утверждает обратное
+   (задача 27, Д6). Узел, якорь и тон те же — меняется только текст;
+   постоянный баннер о недоступности хранилища ставит save() сам. */
+function flashWrite(key, okText) {
+  flashOk(key, lastSaveOk() ? okText : 'Не сохранено: хранилище недоступно');
+}
+
 function flashAt(key) {
   if (!ui.savedAt || ui.savedAt.key !== key) return '';
   const text = ui.savedAt.text;
@@ -2509,14 +2693,25 @@ function flashAt(key) {
    кнопка, и после перерисовки подгоняем скролл так, чтобы узел встал туда
    же. Скролл мгновенный — это не движение, а та же бухгалтерия положения,
    что у листов (п. 4.1). */
+/* Куда встанет скролл, чтобы узел подтверждения оказался там, где стояла
+   кнопка. Чистая функция: до задачи 27.1 арифметика жила внутри
+   keepInPlace и проверялась только замером в браузере — мутант «keepInPlace
+   снят» выжил бы (п. 9.3). Ниже нуля не уходим: отрицательного скролла нет.
+   Смещения нет — null, и трогать скролл незачем. */
+function holdScrollTarget(anchorTop, nodeTop, scrollY) {
+  const dy = nodeTop - anchorTop;
+  if (!dy) return null;
+  return Math.max(0, (scrollY || 0) + dy);
+}
+
 function keepInPlace(btn, render) {
   const y = btn ? btn.getBoundingClientRect().top : null;
   render();
   if (y === null) return;
-  const n = document.querySelector('.flash:not(.keep)');
+  const n = visibleFlash();
   if (!n) return;
-  const dy = n.getBoundingClientRect().top - y;
-  if (dy) window.scrollTo(0, Math.max(0, (window.scrollY || 0) + dy));
+  const to = holdScrollTarget(y, n.getBoundingClientRect().top, window.scrollY);
+  if (to !== null) window.scrollTo(0, to);
 }
 
 function refuse(btn, text) {
@@ -2525,7 +2720,11 @@ function refuse(btn, text) {
   const prev = box.previousElementSibling;
   // повторный отказ заменяет прежний, а не копится строками
   if (prev && prev.classList && prev.classList.contains('flash')) prev.remove();
-  box.insertAdjacentHTML('beforebegin', `<p class="flash keep" role="status">${esc(text)}</p>`);
+  // role="status" со вставленного узла снят намеренно: узел рождается ВМЕСТЕ
+  // с текстом, и такой скринридером не объявляется — обещание было ложным.
+  // Объявляет постоянная область (задача 27.1, п. 9.2), у неё меняется текст
+  box.insertAdjacentHTML('beforebegin', `<p class="flash keep">${esc(text)}</p>`);
+  announce(text);
 }
 
 function motionLeave(node, done) {
@@ -2569,6 +2768,12 @@ function renderAll() {
     if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
+  // узлы подтверждения и отказа со СКРЫТЫХ экранов снимаются (задача 27.1,
+  // п. 4.2): они принадлежали действию на другом экране и своё уже сказали,
+  // а оставаясь в DOM, копились там до следующей перерисовки той вкладки.
+  // Выборка по видимому экрану их и так не берёт — но держать мусор незачем
+  document.querySelectorAll('main .screen[hidden] .flash').forEach(n => n.remove());
+  storageNote(); // постоянный узел баннера — вне экранов, состояние сверяется здесь
   if (detail) renderDetail(detail);
   else if (ui.reviewOpen) renderReview();
   else if (ui.trainOpen) renderTrain();
@@ -2599,10 +2804,6 @@ function renderToday() {
       <p class="overline">${esc(fmtWeekday(t))}</p>
       <h1>${esc(fmtDay(t))}</h1>
     </header>`;
-
-  if (saveFailed) {
-    h += `<p class="banner static" role="status">Хранилище недоступно — отметки сейчас не сохраняются</p>`;
-  }
 
   if (reviewDue()) {
     h += `<button class="banner" data-act="goto-review"><span>Доступен разбор недели</span><span class="chev" aria-hidden="true">&rsaquo;</span></button>`;
@@ -2756,10 +2957,6 @@ function renderHabits() {
       <h1>Привычки</h1>
     </header>`;
 
-  if (saveFailed) {
-    h += `<p class="banner static" role="status">Хранилище недоступно — отметки сейчас не сохраняются</p>`;
-  }
-
   if (total) {
     h += `
     <div class="dayline">
@@ -2822,6 +3019,33 @@ function riseValue(it, v) {
   return it.type === 'param' ? fmtParam(it, v) : String(v);
 }
 
+/* Минуты суток цикличны: 00:00 и 23:45 — соседи, между ними 15 минут, а не
+   1425. На линейной шкале «Подъёма» переход через полночь уходил на всю
+   высоту холста, и все настоящие шаги по 15 минут становились неразличимы
+   навсегда — а у посевного «Отбоя» (pvalue 0, pstep −15) ровно такой шаг
+   первый же (задача 27, п. 8). Разворачиваем ряд по КРАТЧАЙШЕЙ дуге: из
+   эквивалентных представлений (±1440) берётся ближайшее к предыдущему.
+   Выбрана она, а не сглаживание и не отказ рисовать: движение порога и
+   есть предмет визуала, а по кратчайшей дуге оно читается тем, чем
+   является, — пятнадцатью минутами. Механика pvalue и pstep не тронута
+   (п. 8.3), подпись «00:00 → 23:45» печатается по сырым значениям. */
+const DAY_MIN = 1440;
+
+function unwrapDayMinutes(points) {
+  const out = [];
+  let prev = null;
+  for (const p of points) {
+    let v = p.value;
+    if (prev !== null) {
+      while (v - prev > DAY_MIN / 2) v -= DAY_MIN;
+      while (prev - v > DAY_MIN / 2) v += DAY_MIN;
+    }
+    out.push({ date: p.date, value: v });
+    prev = v;
+  }
+  return out;
+}
+
 function riseBlocks() {
   let h = '';
   // упражнения идут после пунктов и по тем же правилам: у них та же
@@ -2833,10 +3057,12 @@ function riseBlocks() {
     const label = s.kind === 'ladder'
       ? `Ступень ${a} → ${b}`
       : `${riseValue(it, a)} → ${riseValue(it, b)}${it.type !== 'param' && it.unit ? ' ' + it.unit : ''}`;
+    // геометрия у порога-времени своя (кратчайшая дуга), подпись — по сырым
+    const geo = (it.type === 'param' && it.pkind === 'time') ? unwrapDayMinutes(s.points) : s.points;
     h += `
       <div class="rise-b">
         <p class="rise-h"><span class="rise-n">${esc(it.name)}</span><span class="rise-v">${esc(label)}</span></p>
-        <svg class="rise" viewBox="0 0 ${RISE_W} ${RISE_H}" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path d="${risePath(s.points)}"/></svg>
+        <svg class="rise" viewBox="0 0 ${RISE_W} ${RISE_H}" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path d="${risePath(geo)}"/></svg>
       </div>`;
   }
   return h;
@@ -3286,8 +3512,14 @@ function renderDetail(it) {
     // Обе кнопки quiet: это операционное действие, а не награда (задача 21).
     if (L.done) {
       const at = ladderClosedAt(it);
+      // слот занят живой лестницей — «Открыть заново» не предлагается вовсе,
+      // и сказано это ДО тапа, а не отказом после (задача 27.1, п. 1.2).
+      // Тон нейтральный: слот занят, вот кем; ни отказа, ни укора
+      const busy = activeLadderItem();
       h += `<p class="muted">Привычка закрыта${at ? ' ' + esc(fmtDay(at)) : ''}</p>`
-        + `<div class="btns"><button class="btn quiet" data-act="ladder-reopen" data-id="${esc(it.id)}">Открыть заново</button></div>`;
+        + (busy
+          ? `<p class="muted">Открыть заново можно, когда освободится слот лестницы: сейчас он у пункта «${esc(busy.name)}».</p>`
+          : `<div class="btns"><button class="btn quiet" data-act="ladder-reopen" data-id="${esc(it.id)}">Открыть заново</button></div>`);
     } else if (ladderSettled(it)) {
       h += `<div class="btns"><button class="btn quiet" data-act="ladder-done" data-id="${esc(it.id)}">${ui.ladderDoneConfirm ? 'Подтвердить: закрыть привычку' : 'Закрыть привычку'}</button></div>`;
     }
@@ -3357,13 +3589,21 @@ function formulaForm(it) {
 function ladderForm(it) {
   const busy = ladderBlockedBy(it); // слот занят другим пунктом
   const text = it.ladder ? it.ladder.steps.join('\n') : (busy ? '' : LADDER_START);
+  // пройденная лестница правкой не считается: сохранение заведёт НОВУЮ с
+  // первой ступени, а её текст пропадёт. Говорим об этом до тапа и просим
+  // второй — тем же приёмом, что снятие лестницы и чистка (задача 27.1,
+  // п. 3.2). Путь на другой пункт был бы проще, но конституция прямо
+  // разрешает вторую лестницу на том же («повторное создание лестницы на
+  // том же пункте пишет новую стартовую запись») — запрещать его нельзя
+  const closed = !!(it.ladder && it.ladder.done && !busy);
   return `
     <div class="card form ladder-form" data-form="ladder" data-id="${esc(it.id)}">
       ${busy ? `<p class="muted">Лестница уже есть у пункта «${esc(busy.name)}». Снимите её там, чтобы начать здесь.</p>` : ''}
+      ${closed ? `<p class="muted">Эта лестница пройдена. Сохранение начнёт новую с первой ступени, а её ступени заменит введённым; пройденный путь останется в журнале ниже.</p>` : ''}
       <label class="field"><span>Ступени — по одной на строку</span>
         <textarea id="fx-steps" rows="6"${busy ? ' disabled' : ''}>${esc(text)}</textarea></label>
       <div class="btns">
-        <button class="btn primary" data-act="ladder-save" data-id="${esc(it.id)}"${busy ? ' disabled' : ''}>Сохранить</button>
+        <button class="btn primary" data-act="ladder-save" data-id="${esc(it.id)}"${busy ? ' disabled' : ''}>${closed && ui.ladderNewConfirm ? 'Подтвердить: начать новую' : 'Сохранить'}</button>
         <button class="btn quiet" data-act="ladder-cancel">Отмена</button>
         ${it.ladder ? `<button class="btn quiet" data-act="ladder-clear" data-id="${esc(it.id)}">${ui.ladderConfirm ? 'Подтвердить снятие' : 'Снять лестницу'}</button>` : ''}
       </div>
@@ -3398,7 +3638,16 @@ function reviewActionable() {
    трогал, тогда действует состояние по умолчанию. Тап пишет явное
    true/false, закрытие разбора возвращает null (задача 24, п. 9.1):
    чужая память о прошлом разборе следующему не принадлежит. */
-const weekFoldOpen = () => (ui.weekOpen === null ? !reviewActionable() : ui.weekOpen);
+const weekFoldOpen = () => {
+  // умолчание снимается ОДИН РАЗ — при первом рендере разбора, а не при
+  // каждом (задача 27.1, п. 10.3). Прежде reviewActionable() пересчитывался
+  // на каждой перерисовке, и последнее принятое решение само раскрывало
+  // картину недели под пальцем: тап по тихой второстепенной кнопке
+  // выкатывал сетки и счётчики. Снимок делает умолчание умолчанием, а не
+  // реакцией; тап владельца по свёртке перезаписывает его обычным путём
+  if (ui.weekOpen === null) ui.weekOpen = !reviewActionable();
+  return ui.weekOpen;
+};
 
 function renderReview() {
   let h = `<header class="page"><p class="overline">Раз в неделю</p><h1 tabindex="-1">Разбор недели</h1></header>`;
@@ -3675,7 +3924,30 @@ function currentFormKey() {
   }
   if (ui.addOpen) return 'add';
   if (ui.editingId !== null) return 'edit:' + ui.editingId;
+  // формы блока и упражнения черновиком не считались вовсе — ключ был null,
+  // и введённое имя пропадало при перерисовке по чужому поводу (задача 27,
+  // п. 7.1). Слот у них общий с «Пунктами»: он один на экран, а пятого
+  // заводить незачем — форму снимок теперь ищет по СОВПАДЕНИЮ КЛЮЧА, а не
+  // «первую по DOM», и потому чужую больше не подхватывает. Приоритет у
+  // форм пункта: они самые большие, и терять в них ввод дороже всего
+  if (ui.groupAdd) return 'group:new';
+  if (ui.groupRename !== null) return 'group:' + ui.groupRename;
+  if (ui.exAddOpen) return 'ex:new';
+  if (ui.exEditingId !== null) return 'ex:' + ui.exEditingId;
   return null;
+}
+
+/* Ключ формы по её разметке — та же строка, что даёт currentFormKey.
+   Пары «data-form → ключ» неоднозначны только у форм добавления: у них
+   нет data-id, и суффикс «new» проставляется здесь, а не в разметке. */
+const FORM_KIND = { 'group-edit': 'group', 'ex-edit': 'ex' };
+
+function domFormKey(form) {
+  const f = form.dataset.form;
+  if (f === 'add') return 'add';
+  if (f === 'group-add') return 'group:new';
+  if (f === 'ex-add') return 'ex:new';
+  return (FORM_KIND[f] || f) + ':' + (form.dataset.id || '');
 }
 
 /* Четыре слота черновика (задача 15, п. 6; лист тренировки — задача 26,
@@ -3695,14 +3967,18 @@ function snapshotOpenForm() {
   const key = currentFormKey();
   if (!key) return; // ничего не открыто — оба слота живут до смены своей формы
   const slot = draftSlot(key);
-  // форма ищется на том экране, которому принадлежит ключ: лист открывается
-  // поверх «Пунктов», где форма правки остаётся в DOM и стоит в разметке выше
-  // формы блока черновиком не считаются — одно поле и один тап.
+  // Форма ищется на том экране, которому принадлежит ключ, и именно ТА,
+  // чей ключ совпал. Прежде бралась ПЕРВАЯ форма экрана — а на «Настройках»
+  // секция «Блоки» стоит выше «Пунктов», и раскрытая правка блока крала
+  // черновик формы пункта: домашний ключ не совпадал с чужой разметкой, и
+  // снимок молча не снимался (задача 27, п. 7.1).
   // Признак формы — data-form, а не класс .card.form: поля листа тренировки
   // карточкой не обёрнуты, но черновик им нужен тот же (задача 26, п. 3.2)
-  const form = document.querySelector(formScope(key) + ' [data-form]:not([data-form="group-add"])');
-  const domKey = form ? (form.dataset.form === 'add' ? 'add' : form.dataset.form + ':' + form.dataset.id) : null;
-  if (domKey !== key) {
+  let form = null;
+  for (const f of document.querySelectorAll(formScope(key) + ' [data-form]')) {
+    if (domFormKey(f) === key) { form = f; break; }
+  }
+  if (!form) {
     if (ui[slot] && ui[slot].key !== key) ui[slot] = null; // открыли другую форму
     return;
   }
@@ -3869,10 +4145,20 @@ function restoreLine() {
   const whence = PREV_WHENCE[c.kind] || 'до чистки';
   const n = Number(st.items) || 0;
   const d = Number(st.days) || 0;
+  // копия из одних заметок читалась как пустая: считались только пункты и
+  // дни (задача 27.1, п. 10.5). Заметки и выписки — такие же слова
+  // владельца, и их отсутствие в строке делало содержательную копию немой
+  const q = Number(st.notes) || 0;
+  const parts = [
+    `${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}`,
+    `${d} ${plural(d, 'день', 'дня', 'дней')} отметок`
+  ];
+  if (q) parts.push(`${q} ${plural(q, 'запись', 'записи', 'записей')}`);
   return `
     <div class="restore">
-      <p class="muted">В копии — состояние ${whence}${when ? ', ' + esc(when) : ''} · ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ${d} ${plural(d, 'день', 'дня', 'дней')} отметок</p>
+      <p class="muted">В копии — состояние ${whence}${when ? ', ' + esc(when) : ''} · ${parts.join(', ')}</p>
       <p class="muted">«Вернуть» меняет местами: нынешнее состояние ляжет в копию.</p>
+      ${ui.restoreFailed ? `<p class="muted">Возврат не выполнен — данные не изменены</p>` : ''}
       <div class="btns">
         <button class="btn" data-act="wipe-undo">Вернуть</button>
         <button class="btn quiet" data-act="wipe-drop">${ui.wipeDropConfirm ? 'Подтвердить: убрать копию' : 'Убрать копию'}</button>
@@ -3922,7 +4208,7 @@ function wipeBlock() {
   return `
     <div class="danger">
       <p class="lead">Начать с чистого листа</p>
-      ${ui.wipeFailed ? `<p class="muted" role="status">Не удалось сохранить копию — чистка отменена</p>` : ''}
+      ${ui.wipeFailed ? `<p class="muted" role="status">Чистка не выполнена — данные не изменены</p>` : ''}
       <p class="muted">Будут стёрты: ${line}.</p>
       <p class="muted">Копия останется в приложении — вернуть можно, пока она не убрана.${wipedCopy() && hasData(store) ? ' Прежняя копия будет заменена новой: хранится одна, последняя.' : ''}</p>
       <div class="btns">
@@ -4339,6 +4625,7 @@ function resetConfirms() {
   ui.noteDelete = null;
   ui.ladderConfirm = false;
   ui.ladderDoneConfirm = false;
+  ui.ladderNewConfirm = false;
 }
 
 /* ── Перетаскивание (задача 16F) ───────────────────────────────
@@ -4509,6 +4796,10 @@ function onClick(e) {
   // и якорь подтверждения тоже: не отданный прошлым рендером, он не должен
   // всплыть позже у чужого действия (задача 26, п. 2.1)
   ui.savedAt = null;
+  // область объявлений чистится здесь же: скринридер объявляет ИЗМЕНЕНИЕ
+  // текста, и повторный тот же отказ после другого действия обязан снова
+  // читаться как изменение (задача 27.1, п. 9.2)
+  announce('');
   const act = b.dataset.act;
   const id = b.dataset.id;
   const item = id ? store.items.find(i => i.id === id) : null;
@@ -4602,19 +4893,29 @@ function onClick(e) {
       ui.detailForm = null;
       ui.detailDraft = null;
       ui.formulaMode = null;
-      flashOk('formula:' + id);
+      flashWrite('formula:' + id);
       keepInPlace(b, renderAll);
       break;
     }
 
-    case 'ladder-open': ui.detailForm = 'ladder'; ui.ladderConfirm = false; ui.detailDraft = null; renderAll(); break;
-    case 'ladder-cancel': ui.detailForm = null; ui.ladderConfirm = false; ui.detailDraft = null; renderAll(); break;
+    case 'ladder-open': ui.detailForm = 'ladder'; ui.ladderConfirm = false; ui.ladderNewConfirm = false; ui.detailDraft = null; renderAll(); break;
+    case 'ladder-cancel': ui.detailForm = null; ui.ladderConfirm = false; ui.ladderNewConfirm = false; ui.detailDraft = null; renderAll(); break;
     case 'ladder-save': {
-      setLadder(id, el('fx-steps') ? el('fx-steps').value : '');
+      const steps = el('fx-steps') ? el('fx-steps').value : '';
+      // замена ПРОЙДЕННОЙ лестницы — вторым тапом: её ступени исчезнут,
+      // а журнал хранит только пройденное с датами (задача 27.1, п. 3.2).
+      // Пустое поле сюда не идёт: это снятие лестницы, у него свой путь
+      if (item && item.ladder && item.ladder.done && String(steps).trim() && !ui.ladderNewConfirm) {
+        ui.ladderNewConfirm = true;
+        renderAll();
+        break;
+      }
+      setLadder(id, steps);
       ui.detailForm = null;
       ui.ladderConfirm = false; // незавершённое подтверждение не переживает форму
+      ui.ladderNewConfirm = false;
       ui.detailDraft = null;
-      flashOk('ladder:' + id);
+      flashWrite('ladder:' + id);
       keepInPlace(b, renderAll);
       break;
     }
@@ -4729,12 +5030,12 @@ function onClick(e) {
         // но и отказа владелец не видел (задача 26, п. 2.2)
         const n = addNote(text, ui.noteKind, src);
         if (!n) { refuse(b, 'Текст не заполнен'); break; }
-        flashOk('note:' + n.id);
+        flashWrite('note:' + n.id);
       } else if (updateNote(id, text, src)) {
         // пустой текст удаляет запись (инвариант 16) — своей строки у неё
         // больше нет, и подтверждение встаёт над списком, говоря что случилось
-        if (empty) flashOk('note-add', 'Запись удалена');
-        else flashOk('note:' + id);
+        if (empty) flashWrite('note-add', 'Запись удалена');
+        else flashWrite('note:' + id);
       }
       ui.noteAdd = false;
       ui.noteEditingId = null;
@@ -4766,7 +5067,7 @@ function onClick(e) {
       }
       const ex = addExercise(name, el('x-add-unit') ? el('x-add-unit').value : '', parsePositive(raw));
       ui.exAddOpen = false;
-      if (ex) flashOk('ex:' + ex.id); // подтверждение — у только что заведённой строки
+      if (ex) flashWrite('ex:' + ex.id); // подтверждение — у только что заведённой строки
       keepInPlace(b, renderSettings);
       break;
     }
@@ -4777,7 +5078,7 @@ function onClick(e) {
       if (!name) { refuse(b, 'Название не заполнено'); break; }
       updateExercise(id, name, el('x-unit') ? el('x-unit').value : '');
       ui.exEditingId = null;
-      flashOk('ex:' + id);
+      flashWrite('ex:' + id);
       keepInPlace(b, renderSettings);
       break;
     }
@@ -4794,10 +5095,11 @@ function onClick(e) {
       break;
     }
     case 'train-undo': {
-      const hadFail = saveFailed;
+      // баннер хранилища ушёл из разметки экрана в постоянный узел
+      // (задача 27.1, п. 5.2) — его появление больше не структурный путь
+      // и перерисовки не требует: storageNote() обновляет его сам
       undoTrain(id);
-      if (saveFailed !== hadFail) renderToday();
-      else updateWeekCount(id);
+      updateWeekCount(id);
       break;
     }
 
@@ -4894,7 +5196,7 @@ function onClick(e) {
       renameGroup(from, nm);
       ui.groupRename = null;
       ui.groupDelete = null;
-      flashOk('group:' + nm);
+      flashWrite('group:' + nm);
       keepInPlace(b, renderSettings);
       break;
     }
@@ -4906,7 +5208,9 @@ function onClick(e) {
       renderSettings();
       break;
     }
-    case 'group-add-open': ui.groupAdd = true; ui.groupDelete = null; renderSettings(); break;
+    // раскрыт один: «Добавить блок» закрывает открытую правку блока, как
+    // «Добавить упражнение» закрывает правку упражнения (задача 27, п. 7.4)
+    case 'group-add-open': ui.groupAdd = true; ui.groupRename = null; ui.groupDelete = null; renderSettings(); break;
     case 'group-add-cancel': ui.groupAdd = false; renderSettings(); break;
     case 'group-add-save': {
       const inp = el('g-add');
@@ -4915,7 +5219,7 @@ function onClick(e) {
       if (findGroup(nm)) { refuse(b, 'Блок с таким именем уже есть'); if (inp) inp.focus(); break; }
       addGroup(nm);
       ui.groupAdd = false;
-      flashOk('group:' + nm); // подтверждение — у только что заведённой строки
+      flashWrite('group:' + nm); // подтверждение — у только что заведённой строки
       keepInPlace(b, renderSettings);
       break;
     }
@@ -5027,7 +5331,7 @@ function onClick(e) {
       ui.editNorm = null;
       ui.groupPick = null;
       ui.groupNew = false;
-      flashOk('item:' + id); // тихое подтверждение у той же строки (задача 26)
+      flashWrite('item:' + id); // тихое подтверждение у той же строки (задача 26)
       keepInPlace(b, renderSettings);
       break;
     }
@@ -5116,7 +5420,7 @@ function onClick(e) {
       ui.addOpen = false;
       ui.groupPick = null;
       ui.groupNew = false;
-      flashOk('item:' + item.id); // подтверждение у только что появившейся строки
+      flashWrite('item:' + item.id); // подтверждение у только что появившейся строки
       keepInPlace(b, renderSettings);
       break;
     }
@@ -5161,11 +5465,23 @@ function onClick(e) {
     }
 
     case 'wipe-undo':
-      if (restoreWiped()) {
-        ui.wipeDropConfirm = false;
-        ui.tab = 'settings';
-        renderAll(); // вернулось всё сразу, включая дневные экраны
-      }
+      // возврат отказывает СТРОКОЙ, как чистка (задача 27, Д7): прежде
+      // ветки else не было вовсе, и владелец видел кнопку, которая ничего
+      // не сделала, — при том что в самой чистке про это написано прямо
+      if (!restoreWiped()) { ui.restoreFailed = true; renderSettings(); break; }
+      ui.restoreFailed = false;
+      // взведённые подтверждения относились к ПРЕЖНИМ данным: «Подтвердить:
+      // стереть» переживало возврат, и один тап уничтожал обмен, ради
+      // которого копия и заводится (задача 27, Д7). Список один — resetConfirms
+      ui.wipeOpen = false;
+      resetConfirms();
+      closeDetail(); // лист детали принадлежал прежним данным
+      // копия могла нести другую границу дня — день и таймер заново,
+      // тем же путём, что импорт (задача 27.1, п. 5.5)
+      ui.renderedDayKey = todayKey();
+      armDayTimer();
+      ui.tab = 'settings';
+      renderAll(); // вернулось всё сразу, включая дневные экраны
       break;
 
     case 'wipe-drop':
@@ -5202,10 +5518,10 @@ function onChange(e) {
   ui.importNote = null;
   const act = t.dataset.act;
   if (act === 'mark') {
-    const hadFail = saveFailed;
+    // отказ хранилища больше не меняет разметку экрана: баннер — постоянный
+    // узел вне экранов (задача 27.1, п. 5.2), и горячий путь остаётся горячим
     toggleMark(todayKey(), t.dataset.id);
-    if (saveFailed !== hadFail) renderAll(); // баннер хранилища — редкий структурный путь
-    else updateTodayMark(t);
+    updateTodayMark(t);
   } else if (act === 'ex-active') {
     const ex = findExercise(t.dataset.id);
     if (ex) {
@@ -5376,6 +5692,9 @@ if (typeof module !== 'undefined' && module.exports) {
     marksWindow, seedProgram, SEED_QUOTES,
     // задача 22
     everMarked, thresholdNote, seedDayKey, ownerNewestItem,
+    // задача 27.1: ремонт по приёмке
+    lastSaveOk, wipedRaw, setWipedRaw, pendingThisWeek,
+    holdScrollTarget, unwrapDayMinutes, domFormKey, currentFormKey,
     // константы времени (задача 23): TIMING — значения этой загрузки,
     // TIMING_DEFAULTS — рантайм приложения, подмене не подверженный
     TIMING, TIMING_DEFAULTS

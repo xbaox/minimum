@@ -18,6 +18,15 @@
 </head>
 <body>
   <main>
+    <!-- Отказ хранилища виден на ЛЮБОМ экране: renderAll рисует одну текущую
+         вкладку, и баннер внутри «Сегодня» не показывался там, где отказ и
+         происходил, — при правке пункта, экспорте, возврате (задача 27, Д6).
+         Узел постоянный, точечно обновляется storageNote(). -->
+    <p id="storage-note" class="banner static screen-note" role="status" hidden></p>
+    <!-- Постоянная область объявлений для скринридера: узел role="status",
+         рождённый вместе с текстом, не объявляется (задача 27.1, п. 9.2).
+         Сюда точечно кладётся текст отказа формы. -->
+    <p id="live" class="sr-only" role="status" aria-live="polite"></p>
     <section class="screen" id="scr-today"></section>
     <section class="screen" id="scr-habits" hidden></section>
     <section class="screen" id="scr-progress" hidden></section>
