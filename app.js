@@ -45,6 +45,33 @@ const SYSTEM_TEXTS = [
   }
 ];
 
+/* ── Константы времени (задача 23) ───────────────────────────
+   Каждая объявлена там, где работает, но проходит через timing():
+   первый аргумент — имя, второй — значение по умолчанию, оно же и есть
+   рантайм приложения. Ни одна не становится настройкой владельца и в
+   store не попадает.
+
+   Тест подменяет константу ДО загрузки app.js, положив объект в
+   globalThis.MINIMUM_TIMING ({ MOTION_MS: 20, … }); правка самого
+   app.js для этого не нужна. Значения читаются один раз при загрузке —
+   после неё поведение неизменно. Нечисловое, бесконечное и
+   отрицательное значение игнорируется: подмена не должна уметь то,
+   чего не умеет рантайм.
+
+   Блок стоит перед «Хранилищем», а не внутри: timing() зовут разделы
+   от зеркала до перетаскивания, и таблицы должны быть инициализированы
+   раньше первого вызова (const, не var — TDZ обязывает). */
+const TIMING_DEFAULTS = {}; // имя → значение по умолчанию (рантайм)
+const TIMING = {};          // имя → значение, с которым работает эта загрузка
+
+function timing(name, def) {
+  TIMING_DEFAULTS[name] = def;
+  const o = (typeof globalThis !== 'undefined' && globalThis.MINIMUM_TIMING) || null;
+  const v = o ? o[name] : undefined;
+  TIMING[name] = (typeof v === 'number' && isFinite(v) && v >= 0) ? v : def;
+  return TIMING[name];
+}
+
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
@@ -664,7 +691,7 @@ function save() {
 const IDB_NAME = 'minimum';
 const IDB_STORE = 'mirror';
 const IDB_KEY = 'snapshot';
-const MIRROR_PROBE_MS = 1500; // сколько ждать зеркало на старте, не задерживая первый рендер
+const MIRROR_PROBE_MS = timing('MIRROR_PROBE_MS', 1500); // сколько ждать зеркало на старте, не задерживая первый рендер
 
 let mirrorTimer = null;
 let mirrorDirty = false; // есть изменения, не доехавшие до зеркала
@@ -737,11 +764,13 @@ function mirrorWrite(snapshot) {
 }
 
 /* Дебаунс ~500 мс: частые отметки не молотят IndexedDB */
+const MIRROR_FLUSH_MS = timing('MIRROR_FLUSH_MS', 500);
+
 function scheduleMirror() {
   if (!mirrorReady || typeof indexedDB === 'undefined') return;
   mirrorDirty = true;
   clearTimeout(mirrorTimer);
-  mirrorTimer = setTimeout(flushMirror, 500);
+  mirrorTimer = setTimeout(flushMirror, MIRROR_FLUSH_MS);
 }
 
 /* Немедленный сброс незаписанного снапшота (pagehide, уход в фон, тесты) */
@@ -1769,6 +1798,14 @@ function dayStreak() {
    calendarSince: квадратично по дням. Замер аудита — 100 мс на годе,
    940 мс на трёх годах, и «Прогресс» замирал вместе с ним.
 
+   Требование к этому месту — наблюдаемое, а не предписывающее (задача
+   23, п. 8.1): конституция спрашивает не «сколькими проходами», а
+   «за сколько», и держит ответ тестом «bestStreak на трёх годах
+   истории укладывается в 50 мс». Линейный проход даёт 1,6 мс,
+   квадратичный возврат — 717 мс, то есть падение теста. Один проход —
+   способ уложиться, и он описан ниже; способ можно сменить, порог —
+   нет.
+
    Наблюдение, которое делает проход линейным: куда упрётся счёт,
    зависит не от дня, которым он кончается, а от ЦЕПОЧКИ незачтённых
    дней под ним. Счёт, начатый выше незачтённого дня u, прощает u,
@@ -2165,10 +2202,12 @@ function syncDay() {
   return true;
 }
 
+// +1 c запаса: таймеры iOS могут срабатывать на самой границе
+const DAY_TIMER_SLACK_MS = timing('DAY_TIMER_SLACK_MS', 1000);
+
 function armDayTimer() {
   clearTimeout(dayTimer);
-  // +1 c запаса: таймеры iOS могут срабатывать на самой границе
-  dayTimer = setTimeout(() => { syncDay(); armDayTimer(); }, msToNextBoundary() + 1000);
+  dayTimer = setTimeout(() => { syncDay(); armDayTimer(); }, msToNextBoundary() + DAY_TIMER_SLACK_MS);
 }
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -2188,7 +2227,8 @@ function el(id) { return document.getElementById(id); }
    на CSS (transition/@keyframes). Уходу карточки разбора нужен JS:
    класс-триггер, затем удаление узла перерисовкой. */
 
-const MOTION_MS = 240; // потолок движения (12.1); fallback ухода карточки — сверх него
+const MOTION_MS = timing('MOTION_MS', 240); // потолок движения (12.1); fallback ухода карточки — сверх него
+const MOTION_TAIL_MS = timing('MOTION_TAIL_MS', 60); // запас fallback'а сверх самого перехода
 
 function prefersReducedMotion() {
   try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
@@ -2215,7 +2255,7 @@ function tapPop(node) {
    невидимым (opacity: 0) — CSS показывает его статично, а убрать его после
    паузы может только JS: конечное состояние должно быть достижимо и здесь
    (задача 19, C.6.3). */
-const FLASH_MS = 1200;
+const FLASH_MS = timing('FLASH_MS', 1200);
 
 function armFlash() {
   if (!prefersReducedMotion()) return;
@@ -2236,7 +2276,7 @@ function motionLeave(node, done) {
   // перерисовавшим весь разбор) — повторная перерисовка не нужна
   const fin = () => { if (fired) return; fired = true; if (node.isConnected) done(); };
   node.addEventListener('transitionend', fin, { once: true });
-  setTimeout(fin, MOTION_MS + 60);
+  setTimeout(fin, MOTION_MS + MOTION_TAIL_MS);
 }
 
 /* Пять вкладок плюс два листа поверх них: лист детали пункта и разбор
@@ -2573,7 +2613,9 @@ function chainGrid() {
   return `<p class="sr-only">${esc(sr.join('. '))}</p>` +
     `<div class="cdays" aria-hidden="true">` +
     names.map(d => `<span class="cd-head">${d}</span>`).join('') + cells + `</div>` +
-    (drawn ? '' : `<p class="muted">Первые отметки появятся здесь.</p>`);
+    // своя строка, не «Отметок» (задача 23, п. 9.1): обе карточки «Прогресса»
+    // говорили одно слово в слово, и пустой экран читался как повтор
+    (drawn ? '' : `<p class="muted">Цепь заполнится с первой отметки.</p>`);
 }
 
 /* Блок «Прогресса» — карточка на --surface: заголовок и содержимое */
@@ -3884,8 +3926,9 @@ function resetConfirms() {
    Стрелки ↑↓ остаются: перетаскивание их не заменяет, а дополняет.
    Пункт двигается только среди соседей по блоку — как и стрелками. */
 
-const DRAG_HOLD = 250;   // мс удержания до захвата
-const DRAG_SLOP = 8;     // px до захвата: это скролл, а не перетаскивание
+const DRAG_HOLD = timing('DRAG_HOLD', 250);   // мс удержания до захвата
+const DRAG_SLOP = 8;     // px до захвата: это скролл, а не перетаскивание (не время — не в TIMING)
+const DRAG_CLICK_MS = timing('DRAG_CLICK_MS', 300); // сколько глушить клик после перетаскивания
 const DRAG_EDGE = 64;    // px от края экрана, где включается автоскролл
 const DRAG_SPEED = 12;   // px за кадр автоскролла
 const DRAG_OUT = 60;     // px вбок от списка — отмена
@@ -4019,7 +4062,7 @@ function dragStop() {
     // (pointercancel, отмена с клавиатуры), флаг снимается сам и не глотает
     // следующий, уже не связанный с перетаскиванием тап (аудит, находка 29)
     clearTimeout(dragClickTimer);
-    dragClickTimer = setTimeout(() => { dragSuppressClick = false; }, 300);
+    dragClickTimer = setTimeout(() => { dragSuppressClick = false; }, DRAG_CLICK_MS);
     drag.row.classList.remove('drag-live');
     drag.row.style.transform = '';
     drag.sibs.forEach(n => { n.style.transform = ''; });
@@ -4812,7 +4855,10 @@ if (typeof module !== 'undefined' && module.exports) {
     dayScore, dayNeed, dayThreshold, clampThreshold, bestStreak,
     marksWindow, seedProgram, SEED_QUOTES,
     // задача 22
-    everMarked, thresholdNote, seedDayKey, ownerNewestItem
+    everMarked, thresholdNote, seedDayKey, ownerNewestItem,
+    // константы времени (задача 23): TIMING — значения этой загрузки,
+    // TIMING_DEFAULTS — рантайм приложения, подмене не подверженный
+    TIMING, TIMING_DEFAULTS
   };
 } else if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', init);

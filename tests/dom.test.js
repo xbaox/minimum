@@ -1,5 +1,5 @@
 'use strict';
-/* Дымовые DOM-тесты в jsdom.
+/* Интерфейсный уровень тестов: рендер и взаимодействие в jsdom.
    app.js исполняется через vm в контексте window (см. CLAUDE.md, «Тесты»):
    в контексте jsdom нет module, поэтому ветка module.exports не срабатывает
    и app.js идёт по браузерному пути. К моменту запуска кода DOMContentLoaded
@@ -54,17 +54,40 @@ function fillWeek(days, id, mon, n) {
   return days;
 }
 
+/* ── Константы времени этих тестов (задача 23, п. 1.3) ───────
+   app.js читает их из globalThis.MINIMUM_TIMING при загрузке (см.
+   timing() в app.js). Здесь они укорочены: 62% прогона уходило в
+   фиксированные паузы, и новый DOM-тест обходился дороже, чем стоил.
+   Рантайм приложения при этом не меняется ни на миллисекунду — значения
+   по умолчанию проверяет отдельный тест домена, который эти подмены
+   не видит вовсе (TIMING_DEFAULTS).
+
+   Осторожно с порядком величин: MOTION_MS и DRAG_HOLD должны оставаться
+   заметно больше нуля, иначе ожидание «дольше таймаута» перестанет
+   отличаться от «сразу» и тест начнёт проходить по случайности. */
+const T = {
+  MIRROR_PROBE_MS: 50,
+  MIRROR_FLUSH_MS: 30,
+  DAY_TIMER_SLACK_MS: 5,
+  MOTION_MS: 20,
+  MOTION_TAIL_MS: 10,
+  FLASH_MS: 100,
+  DRAG_HOLD: 30,
+  DRAG_CLICK_MS: 30
+};
+
 /* Уход карточки разбора отложен (motionLeave: класс-триггер + перерисовка
-   по fallback-таймауту MOTION_MS+60, т.к. jsdom не шлёт transitionend).
-   Ждём дольше таймаута (12.1: MOTION_MS = 240), чтобы дождаться перерисовки. */
-const settle = () => new Promise(r => setTimeout(r, 400));
+   по fallback-таймауту MOTION_MS + MOTION_TAIL_MS, т.к. jsdom не шлёт
+   transitionend). Ждём заведомо дольше таймаута, чтобы дождаться перерисовки. */
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const settle = () => wait(T.MOTION_MS + T.MOTION_TAIL_MS + 40);
 
 /* app.js взводит таймер границы дня — окна нужно закрывать, иначе
    процесс node --test не завершится из-за живого setTimeout */
 const doms = [];
 after(() => { for (const d of doms) d.window.close(); });
 
-async function boot({ seed, raw, idb } = {}) {
+async function boot({ seed, raw, idb, timing } = {}) {
   const dom = new JSDOM(HTML, {
     url: 'https://example.org/minimum/',
     runScripts: 'outside-only',
@@ -85,6 +108,9 @@ async function boot({ seed, raw, idb } = {}) {
   if (idb) window.indexedDB = idb; // fake-indexeddb: app.js увидит его через window
   if (raw != null) window.localStorage.setItem(NS, raw);
   else if (seed) window.localStorage.setItem(NS, JSON.stringify(seed));
+  // константы времени — ДО исполнения app.js: он читает их один раз при
+  // загрузке. Правки самого app.js для подмены не требуется (задача 23, п. 1.2)
+  window.MINIMUM_TIMING = Object.assign({}, T, timing);
   vm.runInContext(APP, dom.getInternalVMContext());
   assert.equal(typeof window.init, 'function', 'app.js должен определить init() в window');
   await window.init(); // init асинхронный: стартовая проверка зеркала (инвариант 9)
@@ -585,6 +611,50 @@ test('фокус-событие окна после смены дня обнов
   shiftWindowDate(window, 24 * 3600000);
   window.dispatchEvent(new window.Event('focus'));
   assert.notEqual(document.querySelector('#scr-today h1').textContent, before);
+});
+
+/* ── Задача 23, п. 5: третий триггер инварианта 8 — таймер ────
+   visibilitychange и focus покрыты выше; таймер границы дня не
+   проверялся вовсе, и оба его отказа проходили молча: не позвал
+   syncDay (экран остаётся вчерашним при открытом приложении) и не
+   перевзвёлся (первая смена дня работает, вторая уже нет).
+
+   msToNextBoundary подменяется через window: в скрипте объявления
+   функций верхнего уровня становятся свойствами глобального объекта,
+   и app.js зовёт их через него — та же механика, что у подмены
+   matchMedia. Ждать настоящую границу дня, разумеется, нельзя. */
+async function armFastTimer(window, everyMs) {
+  window.msToNextBoundary = () => everyMs;
+  window.armDayTimer();               // перевзвести на короткий срок
+}
+
+test('З23/5: таймер границы дня зовёт syncDay и перевзводится на следующую', async () => {
+  const { document, window } = await boot();
+  const day0 = document.querySelector('#scr-today h1').textContent;
+  const tick = 20;
+  await armFastTimer(window, tick);
+
+  // первое срабатывание: день сменился — таймер обязан позвать syncDay
+  shiftWindowDate(window, 24 * 3600000);
+  await wait(tick + T.DAY_TIMER_SLACK_MS + 60);
+  const day1 = document.querySelector('#scr-today h1').textContent;
+  assert.notEqual(day1, day0, 'таймер позвал syncDay: экран показывает новый день');
+
+  // второе: таймер обязан быть взведён заново — иначе смена дня при
+  // открытом приложении сработает ровно один раз за запуск
+  shiftWindowDate(window, 48 * 3600000);
+  await wait(tick + T.DAY_TIMER_SLACK_MS + 60);
+  const day2 = document.querySelector('#scr-today h1').textContent;
+  assert.notEqual(day2, day1, 'таймер перевзвёлся: вторая смена дня тоже поймана');
+});
+
+test('З23/5: таймер молчит, пока логический день тот же', async () => {
+  const { document, window } = await boot();
+  const before = document.getElementById('scr-today').innerHTML;
+  await armFastTimer(window, 20);
+  await wait(20 + T.DAY_TIMER_SLACK_MS + 80); // несколько срабатываний подряд
+  assert.equal(document.getElementById('scr-today').innerHTML, before,
+    'день не сменился — перерисовки нет (syncDay возвращает false)');
 });
 
 test('тумблер активности переключает .off точечно, без перерисовки', async () => {
@@ -1564,10 +1634,12 @@ test('indexedDB отсутствует → прежнее поведение, б
 
 test('pagehide сбрасывает недописанный дебаунс-снапшот в зеркало', async () => {
   const idb = new IDBFactory();
-  const { document, window } = await boot({ idb });
-  document.querySelector('input[data-act="mark"]').click(); // дебаунс 500 мс ещё не истёк
+  // предмет теста — «сброс идёт РАНЬШЕ дебаунса», поэтому дебаунс здесь
+  // намеренно длинный: короткий не отличить от «просто дождались» (23, п. 1.4)
+  const { document, window } = await boot({ idb, timing: { MIRROR_FLUSH_MS: 5000 } });
+  document.querySelector('input[data-act="mark"]').click(); // дебаунс ещё не истёк
   window.dispatchEvent(new window.Event('pagehide'));
-  await new Promise(r => setTimeout(r, 50)); // много меньше дебаунса
+  await wait(50); // много меньше дебаунса
   const snap = await idbGet(idb);
   assert.ok(snap, 'flush по pagehide записал снапшот до истечения дебаунса');
   const marks = Object.values(JSON.parse(snap.json).days)[0];
@@ -1593,11 +1665,11 @@ test('снапшот старой схемы в зеркале проходит 
 
 test('уход в фон (visibilitychange→hidden) сбрасывает зеркало немедленно', async () => {
   const idb = new IDBFactory();
-  const { document, window } = await boot({ idb });
+  const { document, window } = await boot({ idb, timing: { MIRROR_FLUSH_MS: 5000 } }); // см. выше
   document.querySelector('input[data-act="mark"]').click(); // дебаунс ещё не истёк
   Object.defineProperty(window.document, 'visibilityState', { configurable: true, get: () => 'hidden' });
   window.document.dispatchEvent(new window.Event('visibilitychange'));
-  await new Promise(r => setTimeout(r, 50)); // много меньше дебаунса
+  await wait(50); // много меньше дебаунса
   const snap = await idbGet(idb);
   assert.ok(snap, 'flush по уходу в фон записал снапшот');
   assert.ok(Object.values(JSON.parse(snap.json).days)[0], 'снапшот содержит отметку');
@@ -2797,7 +2869,7 @@ function stubRows(rows, top = 200, h = 60) {
   });
 }
 
-const hold = () => new Promise(r => setTimeout(r, 320)); // дольше DRAG_HOLD
+const hold = () => wait(T.DRAG_HOLD + 40); // дольше DRAG_HOLD
 
 test('перетаскивание: pointerdown → pointermove → pointerup переставляет пункт внутри блока', async () => {
   const { document, window } = await boot({ seed: orderSeed() });
@@ -2984,7 +3056,9 @@ test('пустое хранилище: все экраны и листы рен�
   // задача 17, п. 8.3: блок остаётся, пустоту объясняет одна muted-строка
   assert.match(prog.textContent, /Появится, когда планка изменится во второй раз\./);
   assert.match(prog.textContent, /Пунктов пока нет\./);
-  assert.match(prog.textContent, /Первые отметки появятся здесь\./);
+  // задача 23, п. 9.1: у цепи своя строка — прежде обе карточки говорили
+  // «Первые отметки появятся здесь.» слово в слово
+  assert.match(prog.textContent, /Цепь заполнится с первой отметки\./);
   assert.match(prog.textContent, /Серия начнётся с первого зачтённого дня\./);
 
   // «Настройки» пусты, но живы
@@ -3505,9 +3579,14 @@ test('посев 17 в браузере: пустой localStorage через mi
 
 /* ── Задача 19, фаза A.1: три исхода чтения зеркала ────────── */
 
-/* IndexedDB, у которого open отвечает позже стартового таймаута (1500 мс),
-   но всё-таки отвечает: ровно тот случай, в котором прежний код успевал
-   объявить зеркало пустым и записать в него дефолтный store. */
+/* IndexedDB, у которого open отвечает позже стартового таймаута
+   (MIRROR_PROBE_MS), но всё-таки отвечает: ровно тот случай, в котором
+   прежний код успевал объявить зеркало пустым и записать в него
+   дефолтный store. Задержка задаётся кратно таймауту, а не числом
+   в миллисекундах: предмет проверки — «позже таймаута», и связь должна
+   держаться при любой его величине (задача 23, п. 1.4). */
+const SLOW_IDB_MS = T.MIRROR_PROBE_MS * 4;
+
 function slowIdb(real, delayMs) {
   return {
     open(name, ver) {
@@ -3529,14 +3608,14 @@ test('A.1.5: медленное зеркало при пустом localStorage 
   const real = new IDBFactory();
   await idbPut(real, { json: JSON.stringify(mirrorStore()), savedAt: 4242, schemaVersion: 4 });
 
-  // первый старт: localStorage пуст, IndexedDB отвечает на 1,8 с — позже таймаута
-  const a = await boot({ idb: slowIdb(real, 1800) });
+  // первый старт: localStorage пуст, IndexedDB отвечает позже таймаута
+  const a = await boot({ idb: slowIdb(real, SLOW_IDB_MS) });
   assert.equal(a.document.getElementById('scr-today').hidden, false, 'приложение работает');
   assert.equal(a.document.querySelectorAll('input[data-act="mark"]').length, 6, 'на экране дефолтная программа');
 
   // дать медленному open дойти: если бы зеркало считалось готовым,
   // именно здесь дефолт и уехал бы в снапшот
-  await new Promise(r => setTimeout(r, 2200));
+  await wait(SLOW_IDB_MS + 200);
   assert.equal(await a.window.flushMirror(), false, 'зеркало в этой сессии не пишется');
 
   const snap = await idbGet(real);
@@ -3808,16 +3887,17 @@ test('C.2 (И16): вид записи задан при создании и не
 test('C.2 (И18): чистка сбрасывает зеркало немедленно, без ожидания дебаунса', async () => {
   const idb = new IDBFactory();
   const seed = trainSeed();
-  const { document, window } = await boot({ idb, seed });
+  // дебаунс намеренно длинный: предмет теста — «раньше дебаунса» (23, п. 1.4)
+  const { document, window } = await boot({ idb, seed, timing: { MIRROR_FLUSH_MS: 5000 } });
   await window.flushMirror();               // в зеркале — данные владельца
   const before = JSON.parse((await idbGet(idb)).json);
   assert.ok(before.items.length > 0, 'снапшот с данными на месте');
 
   wipeThroughUi(document);
-  // ждём заметно меньше дебаунса (500 мс) и НЕ зовём flushMirror руками:
+  // ждём заметно меньше дебаунса и НЕ зовём flushMirror руками:
   // сброс обязан быть немедленным, иначе следующий старт при пропавшем
   // localStorage восстановил бы стёртое из старого снапшота
-  await new Promise(r => setTimeout(r, 60));
+  await wait(60);
   const after = JSON.parse((await idbGet(idb)).json);
   assert.deepEqual(after.items, [], 'зеркало уже пусто');
   assert.equal(after.settings.seed17, true, 'и несёт флаг посева');
@@ -3840,8 +3920,11 @@ test('C.6.3: при reduced-motion «Сохранено» видно, потом
   const block = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
   assert.match(block, /\.flash\s*\{[^}]*opacity:\s*1/, 'при reduced-motion .flash показан');
 
-  // и убирается сам, без анимации
-  await new Promise(r => setTimeout(r, 1400));
+  // и убирается сам, без анимации. Предмет теста — «видно, потом исчезает»:
+  // проверяем оба конца окна, иначе мгновенное удаление тоже прошло бы
+  await wait(Math.round(T.FLASH_MS / 2));
+  assert.ok(document.querySelector('#scr-settings .flash'), 'до срока подтверждение ещё видно');
+  await wait(T.FLASH_MS);
   assert.equal(document.querySelector('#scr-settings .flash'), null, 'подтверждение ушло');
 });
 
@@ -3877,8 +3960,8 @@ test('A.1.2: при недочитанном зеркале действие в�
   await idbPut(real, { json: JSON.stringify(mirrorStore()), savedAt: 777, schemaVersion: 4 });
 
   // localStorage пуст, IndexedDB отвечает позже стартового таймаута
-  const { document, window } = await boot({ idb: slowIdb(real, 1800) });
-  await new Promise(r => setTimeout(r, 2200)); // медленный open дошёл
+  const { document, window } = await boot({ idb: slowIdb(real, SLOW_IDB_MS) });
+  await wait(SLOW_IDB_MS + 200); // медленный open дошёл
 
   // владелец отмечает пункт: обычный save() → scheduleMirror(). Зеркало
   // объявлено непроверенным, писать в него нельзя — иначе снапшот владельца
@@ -3887,7 +3970,7 @@ test('A.1.2: при недочитанном зеркале действие в�
   cb.click();
   assert.ok(window.localStorage.getItem(NS), 'в localStorage отметка сохранилась');
 
-  await new Promise(r => setTimeout(r, 900)); // дольше дебаунса зеркала (500 мс)
+  await wait(T.MIRROR_FLUSH_MS * 3 + 60); // заведомо дольше дебаунса зеркала
   const snap = await idbGet(real);
   assert.equal(snap.savedAt, 777, 'снапшот не переписан');
   assert.equal(JSON.parse(snap.json).items[0].name, 'Восстановленный', 'данные владельца целы');
@@ -4071,9 +4154,36 @@ test('З20: подсказки живут только в форме — в бл
    Снимок — outerHTML всех девяти форм. Дат в формах нет, идентификаторы
    в сиде фиксированы, поэтому снимок стабилен от запуска к запуску.
    Пересобрать после осознанной правки разметки:
-       MARKUP_SNAPSHOT=write node --test tests/dom.test.js */
+       MARKUP_SNAPSHOT=write node --test tests/dom.test.js
+
+   Задача 23, п. 3: сторож больше не лечит себя. Прежде отсутствие файла
+   означало «запиши молча» — и снимок восстанавливался из той самой
+   разметки, которую сторожил: удалить файл (или не получить его при
+   клонировании) значило разоружить проверку, ничего об этом не узнав.
+   Теперь запись — только по переменной окружения, а отсутствие файла —
+   падение с инструкцией. */
 
 const SNAP_PATH = path.join(ROOT, 'tests', 'markup.snapshot.json');
+const SNAP_HOWTO = 'Пересобрать: MARKUP_SNAPSHOT=write node --test tests/dom.test.js';
+
+/* Чтение снимка: файла нет — исключение, а не тихая запись. Вынесено из
+   теста отдельной функцией, чтобы само правило проверялось тестом (п. 3.3). */
+function readMarkupSnapshot(p) {
+  if (!fs.existsSync(p)) {
+    throw new Error(`снимка разметки форм нет: ${p}\n  Сторож без снимка ничего не сторожит.\n  ${SNAP_HOWTO}`);
+  }
+  return JSON.parse(fs.readFileSync(p, 'utf8'));
+}
+
+test('З23/3.3: сторож разметки не восстанавливается сам — нет снимка, есть падение', () => {
+  const missing = path.join(ROOT, 'tests', 'markup.snapshot.НЕТ-ТАКОГО.json');
+  assert.equal(fs.existsSync(missing), false, 'путь заведомо пуст');
+  assert.throws(() => readMarkupSnapshot(missing), /снимка разметки форм нет/,
+    'отсутствие снимка обязано падать, а не записываться молча');
+  assert.equal(fs.existsSync(missing), false, 'и файл при этом не создаётся');
+  // сам снимок в репозитории на месте — иначе сторож ниже нечем кормить
+  assert.ok(fs.existsSync(SNAP_PATH), `снимок разметки должен лежать в репозитории. ${SNAP_HOWTO}`);
+});
 
 /* Сид с фиксированными id и именами: разметка не должна плавать */
 function markupSeed() {
@@ -4176,12 +4286,13 @@ test('З20/C.5: разметка форм совпадает со снимком
 
   assert.equal(Object.keys(got).length, 14, 'сняты все формы');
 
-  if (process.env.MARKUP_SNAPSHOT === 'write' || !fs.existsSync(SNAP_PATH)) {
+  // запись — только по явной переменной окружения (п. 3.2)
+  if (process.env.MARKUP_SNAPSHOT === 'write') {
     fs.writeFileSync(SNAP_PATH, JSON.stringify(got, null, 1) + '\n');
     console.log('снимок разметки форм записан: ' + SNAP_PATH);
     return;
   }
-  const want = JSON.parse(fs.readFileSync(SNAP_PATH, 'utf8'));
+  const want = readMarkupSnapshot(SNAP_PATH);
   assert.deepEqual(Object.keys(got).sort(), Object.keys(want).sort(), 'набор форм тот же');
   for (const k of Object.keys(want)) {
     if (got[k] !== want[k]) {
@@ -4189,8 +4300,7 @@ test('З20/C.5: разметка форм совпадает со снимком
       assert.fail(`разметка формы «${k}» разошлась со снимком на символе ${at}:\n` +
         `  было:  …${want[k].slice(Math.max(0, at - 60), at + 60)}…\n` +
         `  стало: …${got[k].slice(Math.max(0, at - 60), at + 60)}…\n` +
-        '  Если правка разметки осознанная — пересобрать снимок:\n' +
-        '  MARKUP_SNAPSHOT=write node --test tests/dom.test.js');
+        '  Если правка разметки осознанная — пересобрать снимок:\n  ' + SNAP_HOWTO);
     }
   }
 });
@@ -4632,4 +4742,310 @@ test('З22/7.2: стёртый store — первый пункт владель�
   document.querySelector('[data-act="add-open"]').click();
   assert.match(document.querySelector('#scr-settings .hint').textContent,
     /Последний пункт добавлен меньше 14 дней назад/);
+});
+
+/* ══ Задача 23, п. 6: точечный путь ≡ полная перерисовка ══════
+   Горячие пути «Сегодня», «Привычек» и «Пунктов» правят существующие
+   узлы, а не пересобирают экран: иначе CSS-переход круга и планки дня
+   не проигрывается (CLAUDE.md, «Архитектура»). Цена этого решения —
+   второй источник истины о том, что на экране: всё, что точечный путь
+   забыл обновить, остаётся вчерашним до ближайшей структурной
+   перерисовки. Дефект задачи 22 (подпись зачёта дня не следовала за
+   тумблером) — ровно этот класс, и он пережил два аудита.
+
+   Сторож общего вида: сделать действие, снять разметку экрана, затем
+   перерисовать экран целиком на ТЕХ ЖЕ данных и сверить. Расходится —
+   значит точечный путь и рендер разошлись в понимании состояния.
+   Сравнивается разметка экрана целиком, а не отдельный узел: тест не
+   должен знать заранее, что именно точечный путь забудет.
+
+   Нормализация — ровно три, все обязательные и ни одна не про состояние:
+     1) .pop — класс-триггер scale-отклика (12.1). Его вешает tapPop
+        поверх живого узла; свежая разметка его не несёт по построению.
+     2) checked у чекбокса: точечный путь ставит СВОЙСТВО (его и видит
+        пользователь), шаблон рендера пишет АТРИБУТ. Приводим атрибут к
+        свойству по обе стороны сравнения — тогда сверяется то, что
+        видно, а не то, из чего оно получилось.
+     3) запись style: точечный путь ставит `el.style.width`, и CSSOM
+        сериализует это как «width: 50%;», шаблон пишет «width:50%».
+        Значение одно и то же, разнится только текст — прогоняем обе
+        стороны через CSSOM, чтобы сравнивать стиль, а не пробелы.
+     4) порядок классов: classList.toggle дописывает класс в конец
+        («c today on»), шаблон печатает свой порядок («c on today»).
+        Ни CSS, ни classList.contains порядка не различают —
+        сортируем набор, чтобы сравнивать классы, а не их очередь.
+   Больше ничего не сглаживается: любое иное расхождение — находка. */
+
+/* Атрибут checked ← свойство checked; класс .pop снят; style приведён
+   к записи CSSOM; классы отсортированы. Обе стороны сравнения проходят
+   одну и ту же нормализацию. */
+function normalizeScreen(scr) {
+  for (const inp of scr.querySelectorAll('input[type="checkbox"]')) {
+    if (inp.checked) inp.setAttribute('checked', '');
+    else inp.removeAttribute('checked');
+  }
+  for (const n of scr.querySelectorAll('.pop')) n.classList.remove('pop');
+  for (const n of scr.querySelectorAll('[style]')) n.style.cssText = n.getAttribute('style');
+  for (const n of scr.querySelectorAll('[class]')) {
+    n.setAttribute('class', n.getAttribute('class').trim().split(/\s+/).sort().join(' '));
+  }
+  return scr.innerHTML;
+}
+
+/* Снять разметку экрана после точечного пути, затем перерисовать его
+   целиком и снять снова. render — имя функции рендера в window.
+   except — селекторы известных расхождений: узлы изымаются по ОБЕ
+   стороны, чтобы сторож продолжал сторожить всё остальное, а не
+   замолкал целиком. Каждое такое изъятие обязано быть закреплено
+   отдельным тестом — иначе оно ничем не отличается от умолчания. */
+function pointVsFull(window, screenId, render, except = []) {
+  const drop = scr => { for (const s of except) for (const n of scr.querySelectorAll(s)) n.remove(); };
+  const scr = window.document.getElementById(screenId);
+  drop(scr);
+  const point = normalizeScreen(scr);
+  window[render]();
+  const after = window.document.getElementById(screenId);
+  drop(after);
+  const full = normalizeScreen(after);
+  return { point, full };
+}
+
+/* Известное расхождение, найденное этим же сторожем и вынесенное в
+   отчёт архитектору (задача 23): первая в жизни отметка пункта делает
+   его вчерашний пропуск «начатым» — по инварианту 7 точка-маркер
+   становится положена, — но рождается она только полной перерисовкой.
+   updateTodayMark её не добавляет, и до смены вкладки или дня точки
+   не видно. Поведение приложения этой задачей не менялось (она не
+   добавляет владельцу возможностей), расхождение закреплено тестом
+   «З23/6: известное расхождение…» ниже: почините точечный путь — тот
+   тест упадёт и потребует убрать это изъятие. */
+const MISS_DOT = '[data-act="miss-note"]';
+
+function assertSame(t, what) {
+  if (t.point === t.full) return;
+  const at = [...t.full].findIndex((c, i) => c !== t.point[i]);
+  assert.fail(`${what}: точечный путь разошёлся с полной перерисовкой на символе ${at}\n` +
+    `  точечно:     ...${t.point.slice(Math.max(0, at - 90), at + 90)}...\n` +
+    `  перерисовка: ...${t.full.slice(Math.max(0, at - 90), at + 90)}...`);
+}
+
+/* Сид, в котором видны все точечные пути сразу: минимум с недельным
+   пунктом (счётчик тренировок), привычка с нормой 4 (полоса недели и
+   «X из N»), порог зачёта 0,8 (подпись в «Пунктах»). */
+function pointSeed() {
+  const mon = curMonday();
+  const t = daysAgo(0);
+  return {
+    schemaVersion: 15,
+    groups: [{ name: 'Утро' }],
+    items: [
+      { id: 'p-a', name: 'Зарядка', value: 10, unit: 'мин', type: 'daily', area: 'min',
+        goal: null, note: '', group: 'Утро', active: true, addedAt: addKey(mon, -70),
+        raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [], formula: null,
+        ladder: null, ladderLog: [] },
+      { id: 'p-b', name: 'Английский', value: 15, unit: 'мин', type: 'daily', area: 'min',
+        goal: null, note: '', group: 'Утро', active: true, addedAt: addKey(mon, -70),
+        raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [], formula: null,
+        ladder: null, ladderLog: [] },
+      { id: 'p-c', name: 'Тренировка', value: null, unit: '', type: 'weekly', area: 'min',
+        goal: 3, note: '', group: '', active: true, addedAt: addKey(mon, -70),
+        raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [], formula: null,
+        ladder: null, ladderLog: [] },
+      { id: 'p-h', name: 'Отбой', value: null, unit: '', type: 'daily', area: 'habit',
+        normPerWeek: 4, goal: null, note: '', group: '', active: true, addedAt: addKey(mon, -70),
+        raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [], formula: null,
+        ladder: null, ladderLog: [] }
+    ],
+    exercises: [{ id: 'p-ex', name: 'Жим', unit: 'кг', value: 60, history: [], active: true, addedAt: addKey(mon, -70) }],
+    days: { [addKey(t, -1)]: { 'p-a': true, 'p-h': true } },
+    weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: mon,
+    settings: { dayBoundary: 4, dayThreshold: 0.8, exportedAt: null, calendarSince: addKey(mon, -70), habitSeeded: true, seed17: true }
+  };
+}
+
+test('З23/6: отметка на «Сегодня» — экран после точечного пути равен перерисованному', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  const boxes = [...document.querySelectorAll('#scr-today input[data-act="mark"]')];
+  assert.ok(boxes.length >= 2, 'есть что отмечать');
+
+  boxes[0].click();                                   // 1 из 2
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday', [MISS_DOT]), 'первая отметка');
+
+  document.querySelectorAll('#scr-today input[data-act="mark"]')[1].click(); // все — «День закрыт»
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday', [MISS_DOT]), 'день закрыт');
+
+  // снятие — обратный путь, отдельная ветка планки
+  document.querySelectorAll('#scr-today input[data-act="mark"]')[1].click();
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday', [MISS_DOT]), 'снятие отметки');
+});
+
+test('З23/6: известное расхождение — точка «вчера — пропуск» после первой в жизни отметки', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  const dots = () => document.querySelectorAll('#scr-today ' + MISS_DOT).length;
+  // «Английский» вчера не отмечен и не отмечался НИКОГДА — точки нет по инварианту 7
+  assert.equal(dots(), 0, 'до первой отметки точки нет вовсе');
+
+  document.querySelectorAll('#scr-today input[data-act="mark"]')[1].click();
+  assert.equal(dots(), 0, 'точечный путь точку не добавляет — это и есть расхождение');
+
+  window.renderToday();
+  assert.equal(dots(), 1, 'полная перерисовка её показывает: пропуск стал «начатым»');
+  // Тест закрепляет находку, а не одобряет её. Починят точечный путь —
+  // упадёт вторая проверка, и вместе с тестом уйдёт изъятие MISS_DOT выше.
+});
+
+test('З23/6: отметка на «Привычках» — планка, полоса недели и счётчик', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const box = document.querySelector('#scr-habits input[data-act="mark"]');
+  assert.ok(box, 'привычка на экране');
+
+  box.click();                                        // «Все отмечены» + полоса + «X из N»
+  assertSame(pointVsFull(window, 'scr-habits', 'renderHabits'), 'отметка привычки');
+
+  document.querySelector('#scr-habits input[data-act="mark"]').click();
+  assertSame(pointVsFull(window, 'scr-habits', 'renderHabits'), 'снятие отметки привычки');
+});
+
+test('З23/6: недельный счётчик — запись тренировки и «отменить последний»', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+
+  // «+» открывает лист; запись возвращает на «Сегодня» полной перерисовкой,
+  // а вот «отменить последний» идёт точечным путём updateWeekCount
+  document.querySelector('#scr-today [data-act="train-inc"]').click();
+  document.getElementById('ex-p-ex').value = '62';
+  document.querySelector('[data-act="train-save"]').click();
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'после записи тренировки');
+
+  document.querySelector('#scr-today [data-act="train-undo"]').click(); // счёт вернулся к нулю
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'после отмены последней');
+});
+
+test('З23/6: тумблеры «Пунктов» — .off и подпись зачёта дня', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+
+  // выключение пункта минимума: строка гаснет, знаменатель подписи падает.
+  // Ровно здесь жил дефект задачи 22 — подпись оставалась прежней
+  document.querySelectorAll('#scr-settings input[data-act="toggle-active"]')[0].click();
+  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings'), 'выключение пункта');
+
+  document.querySelectorAll('#scr-settings input[data-act="toggle-active"]')[0].click();
+  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings'), 'включение обратно');
+
+  // выключение упражнения — свой точечный путь, без подписи
+  const sect = [...document.querySelectorAll('#scr-settings details.sect')]
+    .find(d => /Упражнения/.test(d.querySelector('summary').textContent));
+  sect.querySelector('summary').click();
+  document.querySelector('#scr-settings input[data-act="ex-active"]').click();
+  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings'), 'выключение упражнения');
+});
+
+/* ══ Задача 23, п. 7: дыры покрытия уровня рендера ════════════
+   Остальные одиннадцать живут в tests/regression.test.js и
+   tests/domain.test.js — доменным их проверить дешевле. Эти три
+   нечем проверить, не построив экран: предмет каждой — разметка. */
+
+/* Сид с точным числом применимых пунктов: доля дня считается
+   в лоб, и «ровно порог» получается без округлений. */
+function scoreSeed(nItems, threshold) {
+  const mon = curMonday();
+  const items = [];
+  for (let i = 0; i < nItems; i++) {
+    items.push({
+      id: 's-' + i, name: 'Пункт ' + (i + 1), value: null, unit: '', type: 'daily', area: 'min',
+      goal: null, note: '', group: '', active: true, addedAt: addKey(mon, -70),
+      raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+      formula: null, ladder: null, ladderLog: []
+    });
+  }
+  return {
+    schemaVersion: 15, groups: [], items, exercises: [],
+    days: {}, weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [],
+    sessions: [], notes: [], paramDecided: {}, draftOneChange: '', weekStart: mon,
+    settings: { dayBoundary: 4, dayThreshold: threshold, exportedAt: null,
+      calendarSince: addKey(mon, -70), habitSeeded: true, seed17: true }
+  };
+}
+
+test('З23/7.9: полоса дня на «Прогрессе» — незакрытый день показывает свою долю', async () => {
+  // прежде полоса проверялась только на закрытом дне, где done === total
+  // и подмена одного числа другим ничего не меняла
+  const seed = scoreSeed(4, 0.8);
+  seed.days[daysAgo(0)] = { 's-0': true };            // 1 из 4
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+
+  const note = document.querySelector('#scr-progress .dbar-note');
+  assert.ok(note, 'полоса дня на месте');
+  assert.equal(note.textContent, '1 из 4 сегодня', 'сколько отмечено, а не сколько всего');
+  assert.equal(document.querySelector('#scr-progress .dbar i').getAttribute('style'), 'width:25%');
+
+  // закрытый день — вторая ветка той же полосы
+  const full = scoreSeed(4, 0.8);
+  full.days[daysAgo(0)] = { 's-0': true, 's-1': true, 's-2': true, 's-3': true };
+  const b = await boot({ seed: full });
+  b.document.querySelector('#tabs button[data-tab="progress"]').click();
+  assert.equal(b.document.querySelector('#scr-progress .dbar-note').textContent, 'День закрыт');
+  assert.equal(b.document.querySelector('#scr-progress .dbar i').getAttribute('style'), 'width:100%');
+});
+
+test('З23/7.10: ячейка цепи РОВНО на пороге заливается, а не остаётся контуром', async () => {
+  // 4 из 5 при пороге 0,8 — это ровно порог: день зачтён (инвариант 14
+  // говорит «≥ порога»). Прежде проверялись только явно больший и явно
+  // меньший случаи, и сдвиг сравнения на границе проходил молча
+  const seed = scoreSeed(5, 0.8);
+  const t = daysAgo(0), y = daysAgo(1);
+  seed.days[y] = { 's-0': true, 's-1': true, 's-2': true, 's-3': true };        // 0,8 — ровно порог
+  seed.days[t] = { 's-0': true, 's-1': true, 's-2': true };                     // 0,6 — ниже
+  const { document, window } = await boot({ seed });
+  assert.equal(window.dayScore(y), 0.8, 'доля вчера — ровно порог');
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+
+  const cells = [...document.querySelectorAll('#scr-progress .cdays i')];
+  // последняя нарисованная — сегодня, предпоследняя — вчера
+  const drawn = cells.filter(c => !c.classList.contains('fut') && !c.classList.contains('pre'));
+  const today = drawn[drawn.length - 1], yest = drawn[drawn.length - 2];
+  assert.ok(yest.classList.contains('full'), 'ровно порог — сплошная заливка');
+  assert.ok(!yest.classList.contains('part'));
+  assert.ok(today.classList.contains('part'), 'ниже порога — контур');
+  assert.ok(!today.classList.contains('full'));
+});
+
+/* Дыра №10 из списка аудита. Проверяется обещание, которое видит
+   владелец: начатая заметка и начатая правка пункта переживают уход
+   на чужую вкладку и возврат.
+
+   Честно о границе этого теста: слить noteDraft и formDraft в один слот
+   он НЕ заметит — и заметить не может. renderAll() перерисовывает ровно
+   один вид, скрытый экран сохраняет свой DOM, и snapshotOpenForm при
+   возврате перечитывает черновик прямо из него; слоту нечего мостить.
+   Мутант «общий слот» проверен батареей на всём наборе тестов и на
+   отдельной враждебной последовательности (заметка → правка → лист
+   детали → возврат) — поведение совпадает до символа. Он эквивалентный,
+   а не выживший: разделение слотов защитное, оно страхует от будущей
+   правки, которая начнёт пересобирать скрытые экраны. Подробности —
+   в отчёте задачи 23. */
+test('З23/7.11: черновик заметки и черновик формы «Пунктов» переживают чужую вкладку', async () => {
+  const { document } = await boot();
+  // начатая заметка
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'note').click();
+  document.getElementById('n-text').value = 'начатая мысль';
+
+  // уход в «Пункты» и начатая правка там же
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('[data-act="edit-open"]').click();
+  document.getElementById('e-name').value = 'Начатое имя';
+
+  // возврат: заметка не стёрта чужим черновиком
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  assert.equal(document.getElementById('n-text').value, 'начатая мысль',
+    'черновик заметки живёт в своём слоте');
+
+  // и обратно: правка пункта тоже цела
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  assert.equal(document.getElementById('e-name').value, 'Начатое имя',
+    'черновик формы «Пунктов» не затёрт заметкой');
 });
