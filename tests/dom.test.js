@@ -6828,3 +6828,249 @@ test('З27/5.4: подтверждения гасятся возвратом —
   assert.doesNotMatch(drop.textContent, /Подтвердить/, 'подтверждение погашено возвратом');
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 9, 'практика вернулась');
 });
+
+/* ── Задача 28.A: страховка зеркала ───────────────────────────
+   Две дыры, обе воспроизводились замером до правки: непарсящийся снапшот
+   считался успехом и затирался в ТОЙ ЖЕ сессии; осторожность, взведённая
+   неудачным чтением, жила ровно одну сессию, и следующий старт затирал
+   подлинный снапшот, потому что зеркало при валидном localStorage не
+   читалось вовсе. */
+
+/* IndexedDB, у которого open не отвечает никогда: чтение упирается
+   в таймаут MIRROR_PROBE_MS — исход 'failed'. */
+const hungIdb = { open: () => ({}) };
+
+test('З28A/1: непарсящийся снапшот не затирается, сырая строка отложена и видна', async () => {
+  const idb = new IDBFactory();
+  const brokenJson = '{"items":[{"id":"own1","name":"Умыться"';
+  await idbPut(idb, { json: brokenJson, savedAt: 4242, schemaVersion: 16 });
+
+  const { document, window } = await boot({ idb }); // localStorage пуст
+  // приложение работает: снапшот не прочитан, значит дефолтная программа
+  assert.equal(document.querySelectorAll('#scr-today input[data-act="mark"]').length, 6);
+
+  // и в localStorage дефолт не записан: перезапуску оставлен шанс
+  assert.equal(window.localStorage.getItem(NS), null, 'дефолт в localStorage не пишется');
+
+  // снапшот НЕ затёрт — ни первым save(), ни дебаунсом
+  await wait(T.MIRROR_FLUSH_MS + 40);
+  assert.equal(await window.flushMirror(), false, 'зеркало в этой сессии не пишется');
+  const snap = await idbGet(idb);
+  assert.equal(snap.json, brokenJson, 'снапшот тот же, байт в байт');
+  assert.equal(snap.savedAt, 4242);
+
+  // сырая строка отложена СВОИМ ключом, рабочий ключ нечитаемого не занят
+  const stash = JSON.parse(window.localStorage.getItem('minimum:data:mirror-corrupt'));
+  assert.equal(stash.raw, brokenJson, 'сырая строка сохранена целиком');
+  assert.equal(typeof stash.at, 'number', 'с датой');
+  assert.equal(window.localStorage.getItem('minimum:data:corrupt'), null, 'ключ localStorage не тронут');
+
+  // и она видна в «Данных» тем же способом, что нечитаемый localStorage
+  openData(document);
+  const txt = document.getElementById('scr-settings').textContent;
+  assert.match(txt, /Резервная копия оказалась нечитаемой от /, 'строка с датой');
+  assert.ok(document.querySelector('[data-act="corrupt-save"][data-src="mirror"]'), 'кнопка «Скачать»');
+});
+
+test('З28A/1.3: нечитаемая копия скачивается и убирается вторым тапом вместе со снапшотом', async () => {
+  const idb = new IDBFactory();
+  await idbPut(idb, { json: '{обрыв', savedAt: 1, schemaVersion: 16 });
+  const { document, window } = await boot({ idb });
+  openData(document);
+
+  // «Скачать» отдаёт сырую строку, а не разобранный store
+  let given = null;
+  window.URL.createObjectURL = (blob) => { given = blob; return 'blob:fake'; };
+  document.querySelector('[data-act="corrupt-save"][data-src="mirror"]').click();
+  assert.ok(given, 'скачивание запущено');
+
+  // «Убрать» — вторым тапом
+  const drop = () => document.querySelector('[data-act="corrupt-drop"][data-src="mirror"]');
+  drop().click();
+  assert.match(drop().textContent, /Подтвердить: убрать/, 'первый тап только взводит');
+  assert.ok(window.localStorage.getItem('minimum:data:mirror-corrupt'), 'ключ ещё на месте');
+
+  drop().click();
+  assert.equal(window.localStorage.getItem('minimum:data:mirror-corrupt'), null, 'ключ убран');
+  assert.equal(drop(), null, 'строка исчезла');
+  // и сам нечитаемый снапшот снят: иначе следующий старт упёрся бы в него снова
+  for (let i = 0; i < 100 && await idbGet(idb); i++) await wait(10);
+  assert.equal(await idbGet(idb), null, 'снапшот снят вместе со строкой');
+});
+
+test('З28A/1.1: два нечитаемых источника разом не затирают друг друга', async () => {
+  const idb = new IDBFactory();
+  await idbPut(idb, { json: '{снапшот оборван', savedAt: 1, schemaVersion: 16 });
+  // localStorage тоже нечитаем: load() пишет свой ключ ПЕРВЫМ
+  const { document, window } = await boot({ idb, raw: '{битый json' });
+
+  assert.equal(JSON.parse(window.localStorage.getItem('minimum:data:corrupt')).raw, '{битый json');
+  assert.equal(JSON.parse(window.localStorage.getItem('minimum:data:mirror-corrupt')).raw, '{снапшот оборван');
+
+  openData(document);
+  const txt = document.getElementById('scr-settings').textContent;
+  assert.match(txt, /Найдены нечитаемые данные/, 'строка рабочего ключа');
+  assert.match(txt, /Резервная копия оказалась нечитаемой/, 'строка зеркала');
+  assert.equal(document.querySelectorAll('[data-act="corrupt-drop"]').length, 2, 'две независимые строки');
+});
+
+test('З28A/2: осторожность переживает перезапуск — подлинный снапшот цел, подмены нет', async () => {
+  const real = new IDBFactory();
+  await idbPut(real, { json: JSON.stringify(mirrorStore()), savedAt: 4242, schemaVersion: 4 });
+
+  // сессия 1: зеркало не дочиталось, localStorage остался пустым (прежний guard)
+  const a = await boot({ idb: hungIdb });
+  a.document.querySelector('#tabs button[data-tab="settings"]').click();
+  assert.equal(a.document.getElementById('mirror-note').textContent, 'Резервная копия не проверена');
+  a.document.querySelector('#tabs button[data-tab="today"]').click();
+  a.document.querySelector('#scr-today input[data-act="mark"]').click(); // первая отметка владельца
+  const carried = a.window.localStorage.getItem(NS);
+  assert.ok(carried, 'отметка записана — localStorage больше не пуст');
+  assert.equal(JSON.parse(carried).items.length, 9, 'в нём посевная программа, а не практика');
+
+  // сессия 2: localStorage валиден, IndexedDB снова отвечает
+  const b = await boot({ raw: carried, idb: real });
+  await wait(T.MIRROR_FLUSH_MS + 40);
+  await b.window.flushMirror();
+
+  const snap = await idbGet(real);
+  assert.equal(snap.savedAt, 4242, 'подлинный снапшот НЕ затёрт');
+  assert.equal(JSON.parse(snap.json).items[0].name, 'Восстановленный');
+
+  // автоматической подмены не произошло: на экране рабочая копия
+  assert.equal(b.document.querySelectorAll('#scr-today input[data-act="mark"]').length, 6);
+  assert.equal(JSON.parse(b.window.localStorage.getItem(NS)).items.length, 9);
+
+  // предложение показано, с датой и числами
+  openData(b.document);
+  const txt = b.document.getElementById('scr-settings').textContent;
+  assert.match(txt, /Резервная копия .* отличается от рабочей/);
+  assert.match(txt, /1 пункт, 1 день отметок/);
+  assert.ok(b.document.querySelector('[data-act="mirror-restore"]'), 'кнопка восстановления');
+  assert.ok(b.document.querySelector('[data-act="mirror-keep"]'), 'кнопка «Оставить рабочую»');
+  // второй строки про ту же копию нет: о ней говорит блок
+  assert.equal(b.document.getElementById('mirror-note').hidden, true);
+});
+
+test('З28A/2.2: «Восстановить» — вторым тапом, обменной копией, с откатом', async () => {
+  const real = new IDBFactory();
+  await idbPut(real, { json: JSON.stringify(mirrorStore()), savedAt: 4242, schemaVersion: 4 });
+  const seed = trainSeed();
+  seed.days = { [daysAgo(0)]: { it1: true } };
+  const { document, window } = await boot({ seed, idb: real });
+
+  openData(document);
+  const btn = () => document.querySelector('[data-act="mirror-restore"]');
+  assert.ok(btn(), 'предложение стоит');
+  btn().click();
+  assert.match(btn().textContent, /Подтвердить: восстановить/, 'первый тап только взводит');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].name, seed.items[0].name, 'данные ещё прежние');
+
+  btn().click();
+  const now = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(now.items.length, 1);
+  assert.equal(now.items[0].name, 'Восстановленный', 'состояние подменено на копию');
+  // renderAll рисует одну текущую вкладку; «Сегодня» перерисуется при переходе
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
+
+  // прежнее состояние легло в обменную копию — восстановление обратимо
+  openData(document);
+  assert.match(document.getElementById('scr-settings').textContent, /до восстановления из резервной копии/);
+  document.querySelector('[data-act="wipe-undo"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].name, seed.items[0].name, 'вернулось прежнее');
+
+  // предложение снято: решение принято, второй раз его не задают
+  openData(document);
+  assert.equal(document.querySelector('[data-act="mirror-restore"]'), null);
+});
+
+test('З28A/2.2: «Оставить рабочую» — вторым тапом, после неё зеркало снова пишется', async () => {
+  const real = new IDBFactory();
+  await idbPut(real, { json: JSON.stringify(mirrorStore()), savedAt: 4242, schemaVersion: 4 });
+  const seed = trainSeed();
+  const { document, window } = await boot({ seed, idb: real });
+
+  openData(document);
+  const keep = () => document.querySelector('[data-act="mirror-keep"]');
+  keep().click();
+  assert.match(keep().textContent, /Подтвердить: оставить рабочую/);
+  assert.equal((await idbGet(real)).savedAt, 4242, 'снапшот ещё не тронут');
+
+  keep().click();
+  assert.equal(document.querySelector('[data-act="mirror-keep"]'), null, 'предложение снято');
+  await window.flushMirror();
+  const snap = await idbGet(real);
+  assert.notEqual(snap.savedAt, 4242, 'зеркало снова ведётся');
+  assert.equal(JSON.parse(snap.json).items[0].name, seed.items[0].name, 'в нём рабочая копия');
+});
+
+test('З28A/2.2: «Скачать» отдаёт копию файлом до того, как её заменят', async () => {
+  const real = new IDBFactory();
+  await idbPut(real, { json: JSON.stringify(mirrorStore()), savedAt: 4242, schemaVersion: 4 });
+  const { document, window } = await boot({ seed: trainSeed(), idb: real });
+  openData(document);
+  let given = null;
+  window.URL.createObjectURL = (blob) => { given = blob; return 'blob:fake'; };
+  document.querySelector('[data-act="mirror-save"]').click();
+  assert.ok(given, 'скачивание запущено');
+});
+
+test('З28A/2.1: зеркало сверяется и при валидном localStorage, отказ виден строкой', async () => {
+  const { document } = await boot({ seed: trainSeed(), idb: hungIdb });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const note = document.getElementById('mirror-note');
+  assert.equal(note.hidden, false, 'прежде при валидном localStorage зеркало не читалось вовсе');
+  assert.equal(note.textContent, 'Резервная копия не проверена');
+});
+
+test('З28A/2.1: совпадающее зеркало предложения не рождает и продолжает вестись', async () => {
+  const real = new IDBFactory();
+  const seed = trainSeed();
+  await idbPut(real, { json: JSON.stringify(seed), savedAt: 4242, schemaVersion: SCHEMA_VERSION });
+  const { document, window } = await boot({ seed, idb: real });
+  openData(document);
+  assert.equal(document.querySelector('[data-act="mirror-restore"]'), null, 'предложения нет');
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('#scr-today input[data-act="mark"]').click();
+  await window.flushMirror();
+  const snap = await idbGet(real);
+  assert.notEqual(snap.savedAt, 4242, 'зеркало ведётся как прежде');
+});
+
+test('З28A/3: чистка в непроверенной сессии выполняется и говорит об этом', async () => {
+  const seed = trainSeed();
+  seed.days = { [daysAgo(0)]: { it1: true } };
+  const { document, window } = await boot({ seed, idb: hungIdb });
+
+  openData(document);
+  document.querySelector('[data-act="wipe-open"]').click();
+  const danger = () => document.querySelector('#scr-settings .danger');
+  assert.match(danger().textContent, /Резервная копия сейчас недоступна/,
+    'последствие названо ДО второго тапа');
+
+  document.querySelector('[data-act="wipe-do"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  const after = JSON.parse(window.localStorage.getItem(NS));
+  assert.deepEqual(after.items, [], 'чистка выполнена, а не отклонена');
+  assert.ok(window.localStorage.getItem(NS + ':wiped'), 'копия на месте — возврат возможен');
+});
+
+test('З28A/5.3: три прежних исхода стартового чтения ведут себя как прежде', async () => {
+  // 'empty' — база открылась, ключа нет: дефолт уезжает в зеркало
+  const empty = new IDBFactory();
+  const a = await boot({ idb: empty });
+  await a.window.flushMirror();
+  assert.equal(JSON.parse((await idbGet(empty)).json).items.length, 9);
+
+  // 'read' — снапшот прочитан: тихое восстановление при пустом localStorage
+  const full = new IDBFactory();
+  await idbPut(full, { json: JSON.stringify(mirrorStore()), savedAt: 111, schemaVersion: 4 });
+  const b = await boot({ idb: full });
+  assert.match(b.document.getElementById('scr-today').textContent, /Восстановленный/);
+
+  // 'failed' — не дочитали: не пишем ни в зеркало, ни в localStorage
+  const c = await boot({ idb: hungIdb });
+  assert.equal(c.window.localStorage.getItem(NS), null);
+  assert.equal(await c.window.flushMirror(), false);
+});

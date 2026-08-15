@@ -4691,6 +4691,82 @@ test('З27/9.3: holdScrollTarget — куда встанет скролл, чт�
   assert.equal(app.holdScrollTarget(0, 40, undefined), 40);
 });
 
+/* ── Задача 28.A: страховка зеркала (инвариант 9) ───────────── */
+
+/* Разбор снапшота: непарсящийся — это null, а не пустой store. Ветка
+   существует затем, чтобы исход 'read' перестал считаться успехом. */
+test('З28A/1.1: mirrorParse — снапшот разбирается, мусор даёт null', () => {
+  setNow(2026, 8, 15);
+  const s = freshStore();
+  assert.equal(mirrorParseOf(null), null, 'снапшота нет');
+  assert.equal(mirrorParseOf({}), null, 'нет поля json');
+  assert.equal(mirrorParseOf({ json: 42 }), null, 'json не строка');
+  assert.equal(mirrorParseOf({ json: '{"items":[{"id":"a"' }), null, 'обрыв строки');
+  assert.equal(mirrorParseOf({ json: 'не json вовсе' }), null, 'не json');
+  const ok = mirrorParseOf({ json: JSON.stringify(s) });
+  assert.ok(ok && Array.isArray(ok.items), 'валидный снапшот разобран');
+  assert.equal(ok.schemaVersion, app.SCHEMA_VERSION, 'migrate прогнан при разборе');
+
+  function mirrorParseOf(snap) { return app.mirrorParse(snap); }
+});
+
+/* Снапшот старой схемы разбирается и доводится migrate — прежнее
+   поведение восстановления, вынесенное в отдельную функцию. */
+test('З28A/1.1: mirrorParse доводит снапшот старой схемы', () => {
+  setNow(2026, 8, 15);
+  const old = { schemaVersion: 2, items: [], days: {}, settings: { dayBoundary: 4 } };
+  const got = app.mirrorParse({ json: JSON.stringify(old) });
+  assert.equal(got.schemaVersion, app.SCHEMA_VERSION);
+  assert.ok(Array.isArray(got.reviews), 'поля достроены');
+});
+
+/* Направление сравнения: предложение рождает только то, чего в рабочей
+   копии НЕТ ВОВСЕ. Отставание зеркала на одну операцию даёт снапшоту
+   МЕНЬШЕ, а не больше, — и потому предложения не порождает. */
+test('З28A/2.2: mirrorHasMore — только то, чего в рабочей копии нет вовсе', () => {
+  setNow(2026, 8, 15);
+  const cur = {
+    items: [{ id: 'a' }, { id: 'b' }],
+    days: { '2026-08-14': { a: true }, '2026-08-15': { a: true } }
+  };
+  const same = { items: [{ id: 'a' }, { id: 'b' }], days: { '2026-08-14': {}, '2026-08-15': {} } };
+  assert.equal(app.mirrorHasMore(same, cur), false, 'то же самое — предложения нет');
+
+  // зеркало отстало: в нём МЕНЬШЕ дней и меньше пунктов
+  assert.equal(app.mirrorHasMore({ items: [{ id: 'a' }], days: { '2026-08-14': {} } }, cur), false,
+    'отставание на операцию предложения не порождает');
+
+  // в снапшоте день, которого в рабочей копии нет
+  assert.equal(app.mirrorHasMore({ items: [], days: { '2026-08-10': {} } }, cur), true);
+  // в снапшоте пункт, которого в рабочей копии нет
+  assert.equal(app.mirrorHasMore({ items: [{ id: 'z' }], days: {} }, cur), true);
+  // мусор вместо снапшота предложения не порождает
+  assert.equal(app.mirrorHasMore(null, cur), false);
+  assert.equal(app.mirrorHasMore({ items: 'нет', days: 7 }, cur), false);
+});
+
+/* Тот самый случай дыры 2, посчитанный на числах: подлинная практика
+   против рождённого посевом localStorage. Идентификаторы посева новые,
+   дни чужие — снапшот «впереди» по обоим признакам. */
+test('З28A/2.2: практика в зеркале против посева в localStorage', () => {
+  setNow(2026, 8, 15);
+  const seeded = freshStore();                 // 9 посевных пунктов, дней нет
+  const genuine = {
+    items: [{ id: 'own1', name: 'Умыться' }],
+    days: { '2026-08-13': { own1: true }, '2026-08-14': { own1: true } }
+  };
+  assert.equal(app.mirrorHasMore(genuine, seeded), true, 'подлинный снапшот виден как «есть чего нет»');
+  assert.equal(app.mirrorHasMore(seeded, seeded), false, 'сам себе предложения не делает');
+});
+
+/* Ключ отдельный: один на двоих затирал бы одно другим, когда нечитаемы
+   и рабочий ключ, и снапшот (load() пишет свой первым). */
+test('З28A/1.2: ключ нечитаемой копии зеркала отдельный от рабочего', () => {
+  assert.equal(app.CORRUPT_KEY, 'minimum:data:corrupt');
+  assert.equal(app.MIRROR_CORRUPT_KEY, 'minimum:data:mirror-corrupt');
+  assert.notEqual(app.CORRUPT_KEY, app.MIRROR_CORRUPT_KEY);
+});
+
 /* 9.1. Ключ формы по разметке — формы блока и упражнения его получили. */
 test('З27/9.1: domFormKey — формы блока и упражнения получили ключ', () => {
   const f = (form, id) => ({ dataset: id === undefined ? { form } : { form, id } });

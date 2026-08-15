@@ -740,10 +740,20 @@ const IDB_STORE = 'mirror';
 const IDB_KEY = 'snapshot';
 const MIRROR_PROBE_MS = timing('MIRROR_PROBE_MS', 1500); // сколько ждать зеркало на старте, не задерживая первый рендер
 
+/* Нечитаемый снапшот зеркала откладывается СВОИМ ключом, а не общим с
+   localStorage (задача 28.A, п. 1.2): оба источника могут оказаться
+   нечитаемыми в одну сессию — load() пишет свой ключ первым, и один
+   ключ на двоих затирал бы одно другим. Формат и показ общие. */
+const MIRROR_CORRUPT_KEY = NS + ':mirror-corrupt';
+
 let mirrorTimer = null;
 let mirrorDirty = false; // есть изменения, не доехавшие до зеркала
 let mirrorReady = false; // стартовая проверка init() завершена — писать можно
 let mirrorUnverified = false; // чтение зеркала не завершилось: что там лежит — неизвестно
+/* Снапшот несёт практику, которой нет в рабочей копии, и владелец решения
+   ещё не принял: { store, savedAt, stats }. Пока предложение стоит, зеркало
+   не пишется — иначе следующий save() затёр бы то, что предлагается. */
+let mirrorOffer = null;
 
 function idbOpen() {
   return new Promise(resolve => {
@@ -797,6 +807,22 @@ function mirrorRead() {
   return mirrorProbe(0).then(r => r.snap);
 }
 
+/* Снять снапшот целиком. Единственный вызывающий — «Убрать» у строки
+   нечитаемой копии: пока снапшот лежит, каждый старт упирается в него и
+   зеркало не ведётся вовсе. Решение владельца, не приложения. */
+function mirrorClear() {
+  return idbOpen().then(db => new Promise(resolve => {
+    if (!db) { resolve(false); return; }
+    try {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(IDB_KEY);
+      tx.oncomplete = () => { resolve(true); db.close(); };
+      tx.onerror = () => { resolve(false); db.close(); };
+      tx.onabort = () => { resolve(false); db.close(); };
+    } catch (e) { resolve(false); try { db.close(); } catch (e2) {} }
+  })).catch(() => false);
+}
+
 function mirrorWrite(snapshot) {
   return idbOpen().then(db => new Promise(resolve => {
     if (!db) { resolve(false); return; }
@@ -808,6 +834,91 @@ function mirrorWrite(snapshot) {
       tx.onabort = () => { resolve(false); db.close(); };
     } catch (e) { resolve(false); try { db.close(); } catch (e2) {} }
   })).catch(() => false);
+}
+
+/* Непарсящийся снапшот — ОТКАЗ чтения, а не пустота (задача 28.A, п. 1.1).
+   Прежде исключение разбора глушилось на месте, store оставался null, и
+   исход 'read' продолжал считаться успехом: mirrorReady вставал (статус-то
+   не 'failed'), дефолтный store уезжал в зеркало и затирал снапшот В ТОЙ ЖЕ
+   сессии. Замер: 9 посевных пунктов легли поверх снапшота, из которого не
+   удалось прочитать ни байта.
+
+   Сырая строка откладывается ровно так же, как load() откладывает
+   нечитаемый localStorage, и показывается той же строкой «Данных».
+   Сам снапшот при этом НЕ трогается: отложенная строка лежит в
+   localStorage — в том самом хранилище, от исчезновения которого зеркало
+   и страхует. Перезаписать снапшот вправе только владелец, кнопкой
+   «Убрать» (она же снимает снапшот, иначе следующий старт упёрся бы
+   в него снова).
+
+   Результат не возвращается намеренно: удалась запись или нет, поведение
+   одно и то же — сессия объявляется непроверенной и зеркало не пишется.
+   Отложить не вышло (квота) — владелец всё равно видит «Резервная копия
+   не проверена», а снапшот цел; врать про сохранённую строку нечем. */
+function keepMirrorCorrupt(snap) {
+  let raw;
+  try {
+    raw = (snap && typeof snap.json === 'string') ? snap.json : JSON.stringify(snap);
+  } catch (e) { return; } // снапшот не сериализуется — сохранять нечего
+  if (typeof raw !== 'string') return;
+  try {
+    localStorage.setItem(MIRROR_CORRUPT_KEY, JSON.stringify({ raw, at: Date.now() }));
+  } catch (e) { /* некуда сохранить: снапшот трогать нельзя, он цел */ }
+}
+
+/* Снапшот → store или null. Разбор и migrate — как при восстановлении:
+   зеркало пишет само приложение, посев ему адресован на общих правах. */
+function mirrorParse(snap) {
+  if (!snap || typeof snap.json !== 'string') return null;
+  try { return migrate(JSON.parse(snap.json)); } catch (e) { return null; }
+}
+
+/* Снапшот несёт то, чего в рабочей копии нет ВОВСЕ: дни отметок или пункты.
+   Сравнение по содержимому, а не по возрасту — и это вынужденно: savedAt
+   есть только у снапшота, у localStorage времени записи нет ни в одном поле
+   (разведка 0.5), а завести его значило бы поднять схему. Направление
+   выбрано так, чтобы отставание зеркала на одну операцию (дебаунс 500 мс)
+   предложения не порождало: оно даёт снапшоту МЕНЬШЕ, а не больше. */
+function mirrorHasMore(snapStore, cur) {
+  if (!snapStore || typeof snapStore !== 'object') return false;
+  const days = (snapStore.days && typeof snapStore.days === 'object') ? snapStore.days : {};
+  for (const k of Object.keys(days)) if (!cur.days[k]) return true;
+  const ids = new Set(cur.items.map(i => i.id));
+  return (Array.isArray(snapStore.items) ? snapStore.items : []).some(i => i && !ids.has(i.id));
+}
+
+/* Стартовая сверка с зеркалом. Зовётся ПОСЛЕ первого рендера, поэтому
+   старт не удлиняет (п. 2.4), и зовётся ВСЕГДА — в том числе при валидном
+   localStorage (п. 2.1). Прежде зеркало в этом случае не читалось вовсе, и
+   осторожность, взведённая неудачным чтением, жила ровно одну сессию:
+   первая же отметка делала localStorage источником истины, а следующий
+   старт затирал подлинный снапшот. Замер: практика в 1 пункт и 2 дня
+   становилась 9 посевными пунктами и 1 днём.
+
+   Осторожность не запоминается, а ВЫВОДИТСЯ ЗАНОВО на каждом старте —
+   поэтому переживает перезапуск и не требует поля в settings. */
+function verifyMirror() {
+  return mirrorProbe(MIRROR_PROBE_MS).then(probe => {
+    if (probe.status === 'failed') { mirrorUnverified = true; return; }
+    if (probe.status === 'read') {
+      const kept = mirrorParse(probe.snap);
+      if (!kept) {
+        keepMirrorCorrupt(probe.snap); // сырую строку — на виду, снапшот — не трогать
+        mirrorUnverified = true;
+        return;
+      } else if (mirrorHasMore(kept, store)) {
+        mirrorOffer = { store: kept, savedAt: probe.snap.savedAt, stats: wipeStats(kept) };
+        return; // молча не затираем: решение за владельцем (п. 2.2)
+      }
+    }
+    mirrorReady = true;
+    scheduleMirror(); // догнать всё, что накопилось, пока сверка шла
+  }).then(() => {
+    // строка и блок «Данных» рождаются разметкой: экран перерисовывается,
+    // если владелец на нём (форма при этом сохраняет черновик обычным путём)
+    if (ui.tab === 'settings') renderSettings();
+    else updateMirrorNote();
+  });
 }
 
 /* Дебаунс ~500 мс: частые отметки не молотят IndexedDB */
@@ -2199,11 +2310,30 @@ function keepPrev(prev, kind) {
   }
 }
 
+/* Два источника нечитаемого — рабочий ключ и снапшот зеркала (задача 28.A,
+   п. 1.3). Формат, показ и обе кнопки у них общие, различаются только ключ
+   и слова: второй такой же механизм заводить незачем. */
+const CORRUPT_SRC = {
+  data: {
+    key: CORRUPT_KEY,
+    title: 'Найдены нечитаемые данные',
+    why: 'Приложение не смогло их прочитать и отложило, ничего не стирая.',
+    file: 'minimum-нечитаемое-'
+  },
+  mirror: {
+    key: MIRROR_CORRUPT_KEY,
+    title: 'Резервная копия оказалась нечитаемой',
+    why: 'Приложение не смогло её прочитать и отложило содержимое сюда, ничего не стирая. Пока она лежит, новая копия не ведётся: «Убрать» освободит место под неё.',
+    file: 'minimum-копия-нечитаемая-'
+  }
+};
+
 /* Нечитаемые данные, отложенные load(): {raw, at}. Прежний формат — голая
    строка без даты — читается тоже, дата тогда неизвестна (задача 25, п. 6). */
-function corruptCopy() {
+function corruptCopy(src) {
+  const key = (CORRUPT_SRC[src] || CORRUPT_SRC.data).key;
   let raw = null;
-  try { raw = localStorage.getItem(CORRUPT_KEY); } catch (e) { return null; }
+  try { raw = localStorage.getItem(key); } catch (e) { return null; }
   if (!raw) return null;
   try {
     const c = JSON.parse(raw);
@@ -2212,8 +2342,9 @@ function corruptCopy() {
   return { raw, at: null };
 }
 
-function dropCorrupt() {
-  try { localStorage.removeItem(CORRUPT_KEY); } catch (e) { /* нечего убирать */ }
+function dropCorrupt(src) {
+  const key = (CORRUPT_SRC[src] || CORRUPT_SRC.data).key;
+  try { localStorage.removeItem(key); } catch (e) { /* нечего убирать */ }
 }
 
 /* Пустое хранилище: ни одного стартового пункта. Граница дня и порог
@@ -2304,6 +2435,39 @@ function restoreWiped() {
   }
   flushMirror();
   return true;
+}
+
+/* Восстановление из зеркала (задача 28.A, п. 2.2) — четвёртый повод
+   замещения и точно такой же, как три прежних: прежнее состояние ложится
+   в ТУ ЖЕ обменную копию ДО подмены, копию некуда положить — восстановление
+   не выполняется вовсе, запись отказала — откат целиком. Иначе предложение
+   исправить одну потерю данных само стало бы второй.
+   migrate уже прогнан при разборе снапшота (mirrorParse). */
+function restoreMirror() {
+  if (!mirrorOffer) return false;
+  const prev = store;
+  const wasCopy = wipedRaw();
+  if (hasData(prev) && !keepPrev(prev, 'mirror')) return false;
+  store = mirrorOffer.store;
+  if (!save()) {
+    store = prev;
+    setWipedRaw(wasCopy);
+    return false;
+  }
+  // рабочая копия и зеркало снова сходятся — предложению нет предмета
+  mirrorOffer = null;
+  mirrorReady = true;
+  scheduleMirror(); // снапшот и рабочий ключ приводятся к одному состоянию
+  return true;
+}
+
+/* «Оставить рабочую»: предложение снято, зеркало ведётся дальше и на
+   ближайшем flush примет рабочее состояние. Снапшот с этого момента
+   заменяем — потому и второй тап, и «Скачать» рядом. */
+function keepWorking() {
+  mirrorOffer = null;
+  mirrorReady = true;
+  scheduleMirror();
 }
 
 /* ── Экспорт / импорт ──────────────────────────────────────── */
@@ -2535,7 +2699,12 @@ const ui = {
   restoreFailed: false, // то же у возврата — молчать о нём нельзя (задача 27, Д7)
   wipeConfirm: false,   // «Стереть» ждёт подтверждения вторым тапом
   wipeDropConfirm: false, // «Убрать копию» — тоже вторым тапом
-  corruptDropConfirm: false, // «Убрать» нечитаемые данные — вторым тапом (задача 25)
+  // «Убрать» нечитаемые данные — вторым тапом (задача 25). Источников два
+  // (рабочий ключ и снапшот зеркала), поэтому здесь имя источника, а не флаг
+  corruptDropConfirm: null,
+  mirrorRestoreConfirm: false, // «Восстановить из копии» — вторым тапом (28.A)
+  mirrorKeepConfirm: false,    // «Оставить рабочую» — тоже: снапшот станет заменяемым
+  mirrorFailed: false,         // восстановление не выполнено — молчать нельзя
   // свёрнутые секции «Настроек»: по умолчанию раскрыты только «Пункты»
   settingsOpen: { groups: false, items: true, exercises: false, data: false, system: false }
 };
@@ -4133,7 +4302,7 @@ function sect(key, title, body) {
    было сделано: копия обменная, и «Стёрто» после второго тапа по «Вернуть»
    называло бы стёртым то, что как раз вернули. Тон нейтральный: ни
    тревоги, ни оценки. */
-const PREV_WHENCE = { import: 'до импорта', restore: 'до возврата' };
+const PREV_WHENCE = { import: 'до импорта', restore: 'до возврата', mirror: 'до восстановления из резервной копии' };
 
 function restoreLine() {
   const c = wipedCopy();
@@ -4171,18 +4340,51 @@ function restoreLine() {
    ни скачать, ни убрать. Тон — как у «Резервная копия не проверена»:
    это «неизвестно», а не тревога, поэтому muted и без акцента. */
 function corruptLine() {
-  const c = corruptCopy();
+  return Object.keys(CORRUPT_SRC).map(corruptBlock).join('');
+}
+
+function corruptBlock(src) {
+  const c = corruptCopy(src);
   if (!c) return '';
+  const w = CORRUPT_SRC[src];
   const when = (typeof c.at === 'number' && isFinite(c.at))
     ? ' от ' + esc(fmtDay(dateKeyShift(new Date(c.at), store.settings.dayBoundary)))
     : '';
   return `
     <div class="restore corrupt">
-      <p class="muted">Найдены нечитаемые данные${when}</p>
-      <p class="muted">Приложение не смогло их прочитать и отложило, ничего не стирая.</p>
+      <p class="muted">${w.title}${when}</p>
+      <p class="muted">${w.why}</p>
       <div class="btns">
-        <button class="btn" data-act="corrupt-save">Скачать</button>
-        <button class="btn quiet" data-act="corrupt-drop">${ui.corruptDropConfirm ? 'Подтвердить: убрать' : 'Убрать'}</button>
+        <button class="btn" data-act="corrupt-save" data-src="${src}">Скачать</button>
+        <button class="btn quiet" data-act="corrupt-drop" data-src="${src}">${ui.corruptDropConfirm === src ? 'Подтвердить: убрать' : 'Убрать'}</button>
+      </div>
+    </div>`;
+}
+
+/* Предложение восстановления (задача 28.A, п. 2.2). Появляется, когда в
+   снапшоте есть практика, которой нет в рабочей копии. Автоматической
+   подмены нет: приложение не знает, какое из двух состояний владелец
+   считает своим, — оно знает лишь, что одно не является продолжением
+   другого. Пока строка стоит, зеркало не перезаписывается.
+   Три пути наружу, и ни один ничего не теряет: восстановить (обменной
+   копией, как импорт и возврат), скачать файлом, оставить рабочую. */
+function mirrorOfferLine() {
+  if (!mirrorOffer) return '';
+  const st = mirrorOffer.stats || {};
+  const when = (typeof mirrorOffer.savedAt === 'number' && isFinite(mirrorOffer.savedAt))
+    ? ' от ' + esc(fmtStamp(mirrorOffer.savedAt))
+    : '';
+  const n = Number(st.items) || 0;
+  const d = Number(st.days) || 0;
+  return `
+    <div class="restore corrupt">
+      <p class="muted">Резервная копия${when} отличается от рабочей: ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ${d} ${plural(d, 'день', 'дня', 'дней')} отметок</p>
+      <p class="muted">В ней есть записи, которых в рабочей копии нет. Пока решение не принято, копия не перезаписывается.</p>
+      ${ui.mirrorFailed ? `<p class="muted" role="status">Восстановление не выполнено — данные не изменены</p>` : ''}
+      <div class="btns">
+        <button class="btn" data-act="mirror-restore">${ui.mirrorRestoreConfirm ? 'Подтвердить: восстановить' : 'Восстановить из копии'}</button>
+        <button class="btn quiet" data-act="mirror-save">Скачать</button>
+        <button class="btn quiet" data-act="mirror-keep">${ui.mirrorKeepConfirm ? 'Подтвердить: оставить рабочую' : 'Оставить рабочую'}</button>
       </div>
     </div>`;
 }
@@ -4210,6 +4412,9 @@ function wipeBlock() {
       <p class="lead">Начать с чистого листа</p>
       ${ui.wipeFailed ? `<p class="muted" role="status">Чистка не выполнена — данные не изменены</p>` : ''}
       <p class="muted">Будут стёрты: ${line}.</p>
+      ${mirrorReady ? '' : (mirrorOffer
+        ? `<p class="muted">Резервная копия ждёт решения выше — чистка её не сбросит и не тронет.</p>`
+        : `<p class="muted">Резервная копия сейчас недоступна, и стереть её нечем. Она останется от прежнего состояния, и приложение предложит её при следующем запуске — подменить данные само оно не станет.</p>`)}
       <p class="muted">Копия останется в приложении — вернуть можно, пока она не убрана.${wipedCopy() && hasData(store) ? ' Прежняя копия будет заменена новой: хранится одна, последняя.' : ''}</p>
       <div class="btns">
         <button class="btn" data-act="export">Сначала скачать копию</button>
@@ -4306,7 +4511,7 @@ function renderSettings() {
     // логический день — как в имени файла экспорта (инвариант 1)
     ? `Экспорт запускался: ${esc(fmtShort(dateKeyShift(new Date(store.settings.exportedAt), store.settings.dayBoundary)))}`
     : 'Экспорта ещё не было';
-  h += sect('data', 'Данные', restoreLine() + `
+  h += sect('data', 'Данные', mirrorOfferLine() + restoreLine() + `
     <div class="btns">
       <button class="btn" data-act="export">Экспорт JSON</button>
       <button class="btn" data-act="import">Импорт JSON</button>
@@ -4339,6 +4544,9 @@ function renderSettings() {
 function updateMirrorNote() {
   const p = el('mirror-note');
   if (!p) return;
+  // о зеркале уже говорит блок предложения, и говорит подробнее — второй
+  // строки про ту же копию не нужно
+  if (mirrorOffer) { p.hidden = true; return; }
   if (mirrorUnverified) {
     p.textContent = 'Резервная копия не проверена';
     p.hidden = false;
@@ -4620,7 +4828,9 @@ function closeTrain() {
 function resetConfirms() {
   ui.wipeConfirm = false;
   ui.wipeDropConfirm = false;
-  ui.corruptDropConfirm = false;
+  ui.corruptDropConfirm = null;
+  ui.mirrorRestoreConfirm = false;
+  ui.mirrorKeepConfirm = false;
   ui.groupDelete = null;
   ui.noteDelete = null;
   ui.ladderConfirm = false;
@@ -5491,17 +5701,51 @@ function onClick(e) {
       renderSettings();
       break;
 
-    // ── нечитаемые данные (задача 25, п. 6) ───────────────────
+    // ── нечитаемые данные (задача 25, п. 6; источников два — 28.A) ──
     case 'corrupt-save': {
-      const c = corruptCopy();
-      if (c) download('minimum-нечитаемое-' + todayKey() + '.json', c.raw);
+      const src = b.dataset.src || 'data';
+      const c = corruptCopy(src);
+      if (c) download(CORRUPT_SRC[src].file + todayKey() + '.json', c.raw);
       break;
     }
 
-    case 'corrupt-drop':
-      if (!ui.corruptDropConfirm) { ui.corruptDropConfirm = true; renderSettings(); break; }
-      dropCorrupt();
-      ui.corruptDropConfirm = false;
+    case 'corrupt-drop': {
+      const src = b.dataset.src || 'data';
+      if (ui.corruptDropConfirm !== src) { ui.corruptDropConfirm = src; renderSettings(); break; }
+      dropCorrupt(src);
+      // у зеркала «Убрать» снимает и сам нечитаемый снапшот: иначе каждый
+      // следующий старт упирался бы в него и копия не велась бы никогда
+      if (src === 'mirror') mirrorClear();
+      ui.corruptDropConfirm = null;
+      renderSettings();
+      break;
+    }
+
+    // ── предложение восстановления из зеркала (задача 28.A, п. 2.2) ──
+    case 'mirror-restore':
+      if (!ui.mirrorRestoreConfirm) { ui.mirrorRestoreConfirm = true; renderSettings(); break; }
+      ui.mirrorRestoreConfirm = false;
+      if (!restoreMirror()) { ui.mirrorFailed = true; renderSettings(); break; }
+      ui.mirrorFailed = false;
+      // дальше — тот же хвост, что у «Вернуть» (задача 27, Д7; 27.1, п. 5.5):
+      // состояние подменено целиком, взведённое и открытое к нему не относится,
+      // а копия могла нести другую границу дня
+      ui.wipeOpen = false;
+      resetConfirms();
+      closeDetail();
+      ui.renderedDayKey = todayKey();
+      armDayTimer();
+      renderAll();
+      break;
+
+    case 'mirror-save':
+      if (mirrorOffer) download('minimum-копия-' + todayKey() + '.json', JSON.stringify(mirrorOffer.store, null, 1));
+      break;
+
+    case 'mirror-keep':
+      if (!ui.mirrorKeepConfirm) { ui.mirrorKeepConfirm = true; renderSettings(); break; }
+      ui.mirrorKeepConfirm = false;
+      keepWorking();
       renderSettings();
       break;
 
@@ -5594,28 +5838,36 @@ function onInput(e) {
 async function init() {
   // Стартовая проверка (инвариант 9): зеркало не пишется, пока она не завершена
   store = load();
-  if (store) {
-    mirrorReady = true; // localStorage валиден — источник истины
-    save();             // рендер сразу, зеркало обновится асинхронно через дебаунс
+  const fromLocal = !!store;
+  if (fromLocal) {
+    // localStorage валиден, но безоговорочным источником истины он больше
+    // не признаётся (задача 28.A, п. 2.1): зеркало сверяется тоже — после
+    // первого рендера, чтобы старт не удлинялся. До конца сверки
+    // mirrorReady остаётся false, и save() зеркала не трогает.
+    save(); // результат migrate на диск; в зеркало — после verifyMirror()
   } else {
     // localStorage пуст или бит (corrupt-ключ уже записан) — пробуем зеркало;
     // зависший IndexedDB (WebKit) не должен блокировать первый рендер
     const probe = await mirrorProbe(MIRROR_PROBE_MS);
-    if (probe.snap && typeof probe.snap.json === 'string') {
-      try { store = migrate(JSON.parse(probe.snap.json)); } catch (e) { store = null; }
+    // непарсящийся снапшот — такой же отказ, как недочитанный (п. 1.1):
+    // сырая строка откладывается на виду, а сам снапшот не трогается
+    let readable = probe.status !== 'failed';
+    if (probe.status === 'read') {
+      store = mirrorParse(probe.snap);
+      if (!store) { keepMirrorCorrupt(probe.snap); readable = false; }
     }
     // 'failed' — под недочитанным зеркалом может лежать живой снапшот.
     // Писать туда в этой сессии нельзя вовсе: дефолтный store затёр бы
     // его безвозвратно (A.1.2). Приложение при этом работает как обычно.
-    mirrorReady = probe.status !== 'failed';
-    mirrorUnverified = probe.status === 'failed';
+    mirrorReady = readable;
+    mirrorUnverified = !readable;
     if (!store) store = defaultStore();
     // и в localStorage дефолт тоже не пишется: непустой localStorage на
     // следующем старте стал бы источником истины, зеркало перестали бы
     // читать — и всё равно затёрли бы. Пустой localStorage оставляет
     // перезапуску шанс дочитать зеркало и восстановить данные (A.1.5).
     // Первое же действие владельца сохранится обычным save().
-    if (probe.status !== 'failed') save();
+    if (readable) save();
   }
   navigator.storage?.persist?.()?.catch?.(() => {}); // fire-and-forget: просим не вычищать localStorage
   document.addEventListener('click', onClick);
@@ -5647,6 +5899,11 @@ async function init() {
   renderAll();
   armDayTimer();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // Сверка с зеркалом — последней строкой и только при валидном localStorage
+  // (в пустой ветке зеркало уже прочитано выше). Await стоит ПОСЛЕ рендера:
+  // кадр отдан браузеру, старт не удлиняется (п. 2.4), а тесты получают
+  // детерминированный момент, когда сверка завершена.
+  if (fromLocal) await verifyMirror();
 }
 
 /* Тестовый хук для Node; в браузере — обычный запуск. */
@@ -5671,6 +5928,11 @@ if (typeof module !== 'undefined' && module.exports) {
     WIPE_KEY, emptyStore, wipeStats, wipedCopy, wipeAll, restoreWiped, dropWiped,
     // копия перед замещением, нечитаемые данные и счёт потерь (задача 25)
     CORRUPT_KEY, hasData, keepPrev, corruptCopy, dropCorrupt, dataCounts, droppedLine,
+    // страховка зеркала (задача 28.A). keepMirrorCorrupt и verifyMirror
+    // в хук не идут: localStorage и IndexedDB в Node нет, доменного теста
+    // им не написать, а непокрытых имён в хуке и без того долг (28, п. 8Г).
+    // Оба закреплены интерфейсным уровнем через init()
+    MIRROR_CORRUPT_KEY, mirrorParse, mirrorHasMore,
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, canMoveItem, reorderItem, reorderGroup, reorderExercise,
