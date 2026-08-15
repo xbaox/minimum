@@ -1746,7 +1746,10 @@ test('строка дня: тап по названию отмечает пун�
   assert.equal(d.querySelectorAll('.ladder li').length, 3);
   assert.equal(d.querySelectorAll('.ladder li.cur').length, 1);
   assert.match(d.querySelector('.ladder li.cur').textContent, /\+10 минут без экрана/);
-  assert.match(d.textContent, /Две полные недели нормы ещё не набраны/);
+  // строка состояния лестницы говорит счёт по норме этого пункта (задача 24,
+  // п. 3): area min → 6 из 7. Отметок: сегодняшняя (тап выше) и две в
+  // разбираемой неделе — прежний текст «Две полные недели…» ничего не считал
+  assert.match(d.textContent, /Эта неделя 1 из 6, прошлая 2 из 6/);
   assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true);
   assert.equal(d.querySelector('[data-act="ladder-back"]').disabled, false);
   // вкладка возврата остаётся подсвеченной
@@ -2490,7 +2493,8 @@ test('«Настройки»: секции по порядку, раскрыты
 
 test('разбор: три решения сверху, неделя — под свёрткой, итог одной строкой', async () => {
   const seed = dueSeed();
-  // параметр недели: он живёт внутри свёртки и даёт действие, перерисовывающее разбор
+  // параметр недели: решение по нему живёт в видимой части, в «Решении 1»
+  // (задача 24, п. 2), и перерисовывает разбор
   seed.items.push({
     id: 'pp', name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
     pkind: 'time', pvalue: 1380, pstep: -15, goal: null, note: '', group: '',
@@ -2515,15 +2519,24 @@ test('разбор: три решения сверху, неделя — под 
   // сетка недели уехала под закрытую свёртку, но осталась в разметке
   const fold = scr.querySelector('details.sect.week');
   assert.ok(fold, 'свёртка «Показать неделю»');
-  assert.equal(fold.hasAttribute('open'), false, 'по умолчанию закрыта');
+  assert.equal(fold.hasAttribute('open'), false, 'решать есть что — свёртка закрыта');
   assert.match(fold.querySelector('summary').textContent, /Показать неделю/);
   assert.ok(fold.querySelector('.grid'), 'сетка галочек внутри свёртки');
   assert.equal(scr.querySelector(':scope > .grid'), null, 'снаружи сетки нет');
-  // параметры и готовность к привычке остались внутри свёртки
-  assert.ok(fold.querySelector('[data-act="param-step"]'), 'карточка параметра внутри');
+
+  // карточка параметра переехала в видимую часть, в «Решение 1» (задача 24)
+  const card = scr.querySelector('.card.param');
+  assert.ok(card, 'карточка параметра есть');
+  assert.equal(card.closest('details'), null, 'она вне свёртки');
+  const kids = [...scr.children];
+  const h1i = kids.findIndex(x => x.textContent === 'Решение 1 · Планка');
+  const h2i = kids.findIndex(x => x.textContent === 'Решение 2 · Ступень');
+  const ci = kids.indexOf(card);
+  assert.ok(h1i < ci && ci < h2i, 'карточка стоит внутри «Решения 1»');
 
   // решения без предложений — тихие строки, а не пустота
-  assert.match(scr.textContent, /Планка держится, менять нечего/);
+  assert.doesNotMatch(scr.textContent, /Планка держится, менять нечего/,
+    'нерешённый параметр — это и есть решение по планке');
   assert.match(scr.textContent, /Лестницы сейчас нет/);
   assert.ok(scr.querySelector('input[data-bind="one-change"]'));
 
@@ -2531,7 +2544,12 @@ test('разбор: три решения сверху, неделя — под 
   fold.querySelector('summary').click();
   document.querySelector('[data-act="param-keep"]').click();
   await settle();
-  assert.equal(document.querySelector('details.sect.week').hasAttribute('open'), true);
+  const after = document.getElementById('scr-review');
+  assert.equal(after.querySelector('details.sect.week').hasAttribute('open'), true);
+  // решённый параметр ушёл из видимой части, итог — read-only строка внутри
+  assert.equal(after.querySelector('.card.param'), null, 'карточки больше нет');
+  assert.match(after.querySelector('details.sect.week').textContent, /Отбой: 23:00, без шага/);
+  assert.match(after.textContent, /Планка держится, менять нечего/, 'решать стало нечего');
 });
 
 test('разбор: карточка «Сделать легче» — шаг применяется, «Оставить» гасит предложение', async () => {
@@ -4384,7 +4402,7 @@ test('З21/7.7: лист детали — закрытие вторым тапо
   assert.doesNotMatch(scr().textContent, /Привычка закрыта/);
 });
 
-test('З21/7.8: разбор — решение «Ступень» превращается в закрытие и исчезает при done', async () => {
+test('З21/7.8: разбор — решение «Ступень» превращается в закрытие; заголовок остаётся', async () => {
   const a = await boot({ seed: settledSeed(false) });
   openReview(a.document);
   const scrA = a.document.getElementById('scr-review');
@@ -4399,23 +4417,31 @@ test('З21/7.8: разбор — решение «Ступень» превра�
   scrA.querySelector('[data-act="ladder-done"]').click();
   a.document.querySelector('[data-act="ladder-done"]').click();
   assert.equal(JSON.parse(a.window.localStorage.getItem(NS)).items[0].ladder.done, true);
-  const h2After = [...a.document.getElementById('scr-review').querySelectorAll('h2')].map(x => x.textContent);
-  assert.equal(h2After.includes('Решение 2 · Ступень'), false, 'решение исчезло');
+  // заголовок остаётся: нумерация «1, 3» читалась как потеря (задача 24, п. 4)
+  const scrAfter = a.document.getElementById('scr-review');
+  const h2After = [...scrAfter.querySelectorAll('h2')].map(x => x.textContent);
+  assert.ok(h2After.includes('Решение 2 · Ступень'), 'заголовок на месте');
+  assert.equal(scrAfter.querySelector('[data-act="ladder-done"]'), null, 'предложения нет');
+  assert.match(scrAfter.textContent, /Лестница пройдена — слот свободен/);
 
-  // и при загрузке с уже закрытой — тоже нет
+  // и при загрузке с уже закрытой — то же самое
   const b = await boot({ seed: settledSeed(true) });
   openReview(b.document);
-  const h2B = [...b.document.getElementById('scr-review').querySelectorAll('h2')].map(x => x.textContent);
-  assert.equal(h2B.includes('Решение 2 · Ступень'), false);
-  // прочие решения на месте
-  assert.ok(h2B.includes('Решение 1 · Планка') && h2B.includes('Решение 3 · Одно изменение'));
+  const scrB = b.document.getElementById('scr-review');
+  const h2B = [...scrB.querySelectorAll('h2')].map(x => x.textContent);
+  assert.deepEqual(h2B.filter(x => /^Решение/.test(x)),
+    ['Решение 1 · Планка', 'Решение 2 · Ступень', 'Решение 3 · Одно изменение'], 'нумерация цела');
+  // и сказано, где заводят следующую (п. 4.4)
+  assert.match(scrB.textContent, /Настройки → Пункты → правка/);
 
   // а без лестницы вовсе — прежняя строка
   const noLadder = settledSeed(false);
   noLadder.items[0].ladder = null;
   const c = await boot({ seed: noLadder });
   openReview(c.document);
-  assert.match(c.document.getElementById('scr-review').textContent, /Лестницы сейчас нет/);
+  const scrC = c.document.getElementById('scr-review');
+  assert.match(scrC.textContent, /Лестницы сейчас нет/);
+  assert.doesNotMatch(scrC.textContent, /слот свободен/);
 });
 
 test('З21/4.3: форма лестницы — слот, освобождённый закрытием, даёт обычную форму', async () => {
@@ -4810,16 +4836,11 @@ function pointVsFull(window, screenId, render, except = []) {
   return { point, full };
 }
 
-/* Известное расхождение, найденное этим же сторожем и вынесенное в
-   отчёт архитектору (задача 23): первая в жизни отметка пункта делает
-   его вчерашний пропуск «начатым» — по инварианту 7 точка-маркер
-   становится положена, — но рождается она только полной перерисовкой.
-   updateTodayMark её не добавляет, и до смены вкладки или дня точки
-   не видно. Поведение приложения этой задачей не менялось (она не
-   добавляет владельцу возможностей), расхождение закреплено тестом
-   «З23/6: известное расхождение…» ниже: почините точечный путь — тот
-   тест упадёт и потребует убрать это изъятие. */
-const MISS_DOT = '[data-act="miss-note"]';
+/* Изъятий у сторожа больше нет (задача 24, п. 7.4): единственное
+   известное расхождение — точка «вчера — пропуск», рождавшаяся полной
+   перерисовкой в момент первой в жизни отметки, — устранено правкой
+   missedYesterday в пользу поведения точечного пути. except остаётся
+   в pointVsFull как механизм, но ни один вызов им не пользуется. */
 
 function assertSame(t, what) {
   if (t.point === t.full) return;
@@ -4869,30 +4890,36 @@ test('З23/6: отметка на «Сегодня» — экран после �
   const boxes = [...document.querySelectorAll('#scr-today input[data-act="mark"]')];
   assert.ok(boxes.length >= 2, 'есть что отмечать');
 
+  // изъятий больше нет: сторож сравнивает разметку целиком (задача 24, п. 7.4)
   boxes[0].click();                                   // 1 из 2
-  assertSame(pointVsFull(window, 'scr-today', 'renderToday', [MISS_DOT]), 'первая отметка');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'первая отметка');
 
   document.querySelectorAll('#scr-today input[data-act="mark"]')[1].click(); // все — «День закрыт»
-  assertSame(pointVsFull(window, 'scr-today', 'renderToday', [MISS_DOT]), 'день закрыт');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт');
 
   // снятие — обратный путь, отдельная ветка планки
   document.querySelectorAll('#scr-today input[data-act="mark"]')[1].click();
-  assertSame(pointVsFull(window, 'scr-today', 'renderToday', [MISS_DOT]), 'снятие отметки');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'снятие отметки');
 });
 
-test('З23/6: известное расхождение — точка «вчера — пропуск» после первой в жизни отметки', async () => {
+test('З24/7: точка «вчера — пропуск» не рождается в момент первой в жизни отметки', async () => {
   const { document, window } = await boot({ seed: pointSeed() });
-  const dots = () => document.querySelectorAll('#scr-today ' + MISS_DOT).length;
+  const dots = () => document.querySelectorAll('#scr-today [data-act="miss-note"]').length;
   // «Английский» вчера не отмечен и не отмечался НИКОГДА — точки нет по инварианту 7
   assert.equal(dots(), 0, 'до первой отметки точки нет вовсе');
 
   document.querySelectorAll('#scr-today input[data-act="mark"]')[1].click();
-  assert.equal(dots(), 0, 'точечный путь точку не добавляет — это и есть расхождение');
-
+  assert.equal(dots(), 0, 'точечный путь точку не добавляет');
   window.renderToday();
-  assert.equal(dots(), 1, 'полная перерисовка её показывает: пропуск стал «начатым»');
-  // Тест закрепляет находку, а не одобряет её. Починят точечный путь —
-  // упадёт вторая проверка, и вместе с тестом уйдёт изъятие MISS_DOT выше.
+  assert.equal(dots(), 0, 'и полная перерисовка тоже: расхождения больше нет');
+
+  // первый настоящий пропуск после начала точку даёт обычным путём:
+  // «Английский» отмечен сегодня, пропущен назавтра — через день точка есть
+  shiftWindowDate(window, 50 * 3600000);
+  window.renderToday();
+  const dot = [...document.querySelectorAll('#scr-today [data-act="miss-note"]')]
+    .find(d => d.dataset.id === 'p-b');
+  assert.ok(dot, 'точка «Английского» появилась обычным путём');
 });
 
 test('З23/6: отметка на «Привычках» — планка, полоса недели и счётчик', async () => {
@@ -5048,4 +5075,236 @@ test('З23/7.11: черновик заметки и черновик формы 
   document.querySelector('#tabs button[data-tab="settings"]').click();
   assert.equal(document.getElementById('e-name').value, 'Начатое имя',
     'черновик формы «Пунктов» не затёрт заметкой');
+});
+
+/* ── Задача 24. Разбор: решения в видимой части ─────────────── */
+
+/* Разбор с несколькими готовыми к повышению пунктами и параметром.
+   Три идеальные закрытые недели: критерий повышения выполнен у всех
+   числовых пунктов — прежде разбор показывал три карточки сразу. */
+function reviewSeed({ params = true, ladder = null, filled = 3 } = {}) {
+  const prev = prevMonday();
+  const since = addKey(prev, -70);
+  const mk = (id, name, value) => ({
+    id, name, value, unit: 'мин', type: 'daily', area: 'min', goal: null, note: '',
+    group: '', active: true, addedAt: since, raiseAfter: 0, raiseAfterWeek: null,
+    lowerAfterWeek: null, history: [{ date: since, value }], formula: null,
+    ladder: null, ladderLog: []
+  });
+  const items = [mk('it1', 'Первый', 10), mk('it2', 'Второй', 20), mk('it3', 'Третий', 30)];
+  if (params) {
+    items.push({
+      id: 'pp', name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
+      pkind: 'time', pvalue: 1380, pstep: -15, goal: null, note: '', group: '',
+      active: true, addedAt: since, raiseAfter: 0, history: [{ date: since, value: 1380 }]
+    });
+  }
+  if (ladder) items.find(i => i.id === ladder.on).ladder = ladder.value;
+  const days = {};
+  for (let w = 0; w < filled; w++) {
+    for (const it of items) if (it.type === 'daily') fillWeek(days, it.id, addKey(prev, -7 * w), 7);
+  }
+  return {
+    schemaVersion: 16, groups: [], items, days,
+    weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [],
+    exercises: [], sessions: [], notes: [], paramDecided: {},
+    draftOneChange: '', weekStart: prev,
+    settings: { dayBoundary: 4, dayThreshold: 0.8, exportedAt: null,
+      calendarSince: since, habitSeeded: true, seed17: true }
+  };
+}
+
+const reviewScr = document => document.getElementById('scr-review');
+const LIVE = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
+const DONE = { steps: ['раз', 'два'], step: 1, steppedWeek: null, startedAt: null, done: true };
+const copy = o => JSON.parse(JSON.stringify(o));
+
+test('З24/6: карточка повышения одна, остальным — тихая строка без имён', async () => {
+  const { document } = await boot({ seed: reviewSeed({ params: false }) });
+  openReview(document);
+  const scr = reviewScr(document);
+
+  const cards = [...scr.querySelectorAll('.card.raise')];
+  assert.equal(cards.length, 1, 'предложение одно за разбор');
+  assert.match(cards[0].textContent, /Первый/, 'первому по порядку items[]');
+
+  const rest = [...scr.querySelectorAll('p.muted')].find(p => /готов/.test(p.textContent));
+  assert.ok(rest, 'строка про остальных готовых');
+  assert.match(rest.textContent, /Ещё 2 пункта готовы к повышению — предложение вернётся на следующей неделе/);
+  assert.equal(rest.className, 'muted', 'без счётчика-акцента');
+  assert.doesNotMatch(rest.textContent, /Второй|Третий/, 'без списка имён');
+
+  // «Не сейчас» — решение по планке вверх принято, второй карточки нет
+  scr.querySelector('[data-act="raise-later"]').click();
+  await settle();
+  const after = reviewScr(document);
+  assert.equal(after.querySelectorAll('.card.raise').length, 0, 'второе предложение не подставляется');
+  assert.match(after.textContent, /Ещё 2 пункта готовы/, 'но они не потеряны');
+});
+
+test('З24/5: закрытая лестница повышение не блокирует, живая блокирует', async () => {
+  const a = await boot({ seed: reviewSeed({ params: false, ladder: { on: 'it1', value: copy(LIVE) } }) });
+  openReview(a.document);
+  assert.match(reviewScr(a.document).querySelector('.card.raise').textContent, /Второй/,
+    'пункт с живой лестницей пропущен');
+
+  const b = await boot({ seed: reviewSeed({ params: false, ladder: { on: 'it1', value: copy(DONE) } }) });
+  openReview(b.document);
+  assert.match(reviewScr(b.document).querySelector('.card.raise').textContent, /Первый/,
+    'закрытая лестница право не отнимает');
+});
+
+test('З24/4: три заголовка решений на месте при любой лестнице', async () => {
+  const heads = d => [...reviewScr(d).querySelectorAll('h2')].map(x => x.textContent).filter(t => /^Решение/.test(t));
+  const ALL = ['Решение 1 · Планка', 'Решение 2 · Ступень', 'Решение 3 · Одно изменение'];
+
+  const none = await boot({ seed: reviewSeed({}) });
+  openReview(none.document);
+  assert.deepEqual(heads(none.document), ALL, 'лестницы нет вовсе');
+  assert.match(reviewScr(none.document).textContent, /Лестницы сейчас нет/);
+
+  const l = await boot({ seed: reviewSeed({ ladder: { on: 'it1', value: copy(LIVE) } }) });
+  openReview(l.document);
+  assert.deepEqual(heads(l.document), ALL, 'живая лестница');
+
+  const c = await boot({ seed: reviewSeed({ ladder: { on: 'it1', value: copy(DONE) } }) });
+  openReview(c.document);
+  assert.deepEqual(heads(c.document), ALL, 'закрытая лестница — нумерация не рвётся');
+  const line = reviewScr(c.document).textContent;
+  assert.match(line, /Лестница пройдена — слот свободен/);
+  assert.match(line, /Настройки → Пункты → правка/, 'сказано, где заводят следующую');
+
+  // живая рядом с закрытой: решает живая, о свободном слоте речи нет
+  const both = reviewSeed({ ladder: { on: 'it1', value: copy(DONE) } });
+  both.items[1].ladder = copy(LIVE);
+  const bt = await boot({ seed: both });
+  openReview(bt.document);
+  assert.deepEqual(heads(bt.document), ALL);
+  assert.doesNotMatch(reviewScr(bt.document).textContent, /слот свободен/);
+});
+
+test('З24/3: «Решение 2» говорит счёт недель по норме этого пункта', async () => {
+  // шаг недоступен: в прошлой неделе 4 из 7 — карточки нет, вместо неё счёт
+  const seed = reviewSeed({ params: false, filled: 0 });
+  seed.items[0].ladder = copy(LIVE);
+  fillWeek(seed.days, 'it1', prevMonday(), 4);
+  fillWeek(seed.days, 'it1', curMonday(), 2);
+  const m = await boot({ seed });
+  openReview(m.document);
+  assert.equal(reviewScr(m.document).querySelector('.card.step'), null, 'шага нет');
+  assert.match(reviewScr(m.document).textContent, /Первый · Эта неделя 2 из 6, прошлая 4 из 6/);
+
+  // привычка считается по своей норме
+  const hseed = reviewSeed({ params: false, filled: 0 });
+  hseed.items[0].area = 'habit';
+  hseed.items[0].normPerWeek = 4;
+  hseed.items[0].value = null;
+  hseed.items[0].history = [];
+  hseed.items[0].ladder = copy(LIVE);
+  fillWeek(hseed.days, 'it1', prevMonday(), 3);
+  fillWeek(hseed.days, 'it1', curMonday(), 1);
+  const h = await boot({ seed: hseed });
+  openReview(h.document);
+  assert.match(reviewScr(h.document).textContent, /Первый · Эта неделя 1 из 4, прошлая 3 из 4/);
+
+  // шаг доступен — прежняя карточка, счёта не нужно
+  const o = await boot({ seed: reviewSeed({ params: false, ladder: { on: 'it1', value: copy(LIVE) } }) });
+  openReview(o.document);
+  assert.ok(reviewScr(o.document).querySelector('[data-act="ladder-fwd"]'), 'карточка «Шагнуть»');
+  assert.doesNotMatch(reviewScr(o.document).textContent, /Эта неделя/);
+
+  // лестницы нет вовсе — прежняя строка, счёта нет
+  const n = await boot({ seed: reviewSeed({ params: false, filled: 0 }) });
+  openReview(n.document);
+  assert.match(reviewScr(n.document).textContent, /Лестницы сейчас нет/);
+  assert.doesNotMatch(reviewScr(n.document).textContent, /Эта неделя/);
+});
+
+test('З24/2: параметр — карточка в «Решении 1», шаг пишет историю и уходит в срез', async () => {
+  const { document, window } = await boot({ seed: reviewSeed({}) });
+  openReview(document);
+  const scr = reviewScr(document);
+
+  // порядок внутри «Решения 1»: повышение, понижение, параметры
+  const kids = [...scr.children];
+  const at = sel => kids.indexOf(scr.querySelector(sel));
+  assert.ok(at('.card.raise') < at('.card.param'), 'параметр после планки');
+  assert.ok(kids.findIndex(x => x.textContent === 'Решение 2 · Ступень') > at('.card.param'),
+    'и до «Решения 2»');
+  assert.equal(scr.querySelector('.card.param').closest('details'), null, 'вне свёртки');
+
+  scr.querySelector('[data-act="param-step"]').click();
+  await settle();
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  const p = saved.items.find(i => i.id === 'pp');
+  assert.equal(p.pvalue, 1365, 'шаг применён немедленно');
+  assert.equal(p.history.length, 2, 'история порога дополнена');
+  assert.equal(saved.paramDecided.pp.to, 1365);
+
+  // карточки в видимой части больше нет, лишней строки не появилось
+  const after = reviewScr(document);
+  assert.equal(after.querySelector('.card.param'), null);
+  assert.equal([...after.children].filter(x => x.tagName !== 'DETAILS' && /Отбой/.test(x.textContent)).length, 0,
+    'решённый параметр из видимой части ушёл целиком');
+  assert.match(after.querySelector('details.week').textContent, /Отбой: 23:00 → 22:45/,
+    'итог решения — read-only строка под свёрткой');
+
+  // и уходит в срез недели
+  after.querySelector('[data-act="close-week"]').click();
+  const closed = JSON.parse(window.localStorage.getItem(NS));
+  assert.deepEqual(closed.reviews[0].params, [{ id: 'pp', from: 1380, to: 1365 }]);
+});
+
+test('З24/2.5: параметров нет — в видимой части их нет и лишней строки не появляется', async () => {
+  const { document } = await boot({ seed: reviewSeed({ params: false, filled: 0 }) });
+  openReview(document);
+  const scr = reviewScr(document);
+  assert.equal(scr.querySelector('.card.param'), null);
+  assert.match(scr.textContent, /Планка держится, менять нечего/);
+});
+
+test('З24/9: свёртка недели открыта, когда решать нечего, и не помнит чужой разбор', async () => {
+  // нечего: ни повышений, ни понижений, ни лестницы, ни параметров
+  const empty = reviewSeed({ params: false, filled: 0 });
+  for (const mon of [prevMonday(), addKey(prevMonday(), -7)]) {
+    for (const it of empty.items) fillWeek(empty.days, it.id, mon, 5); // ни ≥6, ни ≤3
+  }
+  const a = await boot({ seed: empty });
+  openReview(a.document);
+  assert.equal(reviewScr(a.document).querySelector('details.week').hasAttribute('open'), true,
+    'решать нечего — картина недели открыта');
+
+  // есть что: карточка повышения
+  const b = await boot({ seed: reviewSeed({ params: false }) });
+  openReview(b.document);
+  assert.equal(reviewScr(b.document).querySelector('details.week').hasAttribute('open'), false,
+    'решения важнее таблиц');
+
+  // владелец закрыл свёртку сам — уважаем, пока разбор открыт
+  reviewScr(a.document).querySelector('details.week summary').click();
+  a.window.renderReview();
+  assert.equal(reviewScr(a.document).querySelector('details.week').hasAttribute('open'), false,
+    'явный выбор владельца держится');
+
+  // «Готово» закрывает разбор — память о свёртке уходит с ним
+  reviewScr(a.document).querySelector('[data-act="review-done"]').click();
+  openReview(a.document);
+  assert.equal(reviewScr(a.document).querySelector('details.week').hasAttribute('open'), true,
+    'следующий разбор — состояние по умолчанию');
+});
+
+test('З24/10: у поля «Одно изменение» есть пример, значение им не подменяется', async () => {
+  const { document, window } = await boot({ seed: reviewSeed({ params: false, filled: 0 }) });
+  openReview(document);
+  const inp = reviewScr(document).querySelector('input[data-bind="one-change"]');
+  assert.equal(inp.placeholder, 'например: перенести зарядку на утро');
+  assert.equal(inp.value, '', 'пустое поле остаётся пустым');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).draftOneChange, '',
+    'подсказка в данные не попадает');
+
+  inp.value = 'своё';
+  inp.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).draftOneChange, 'своё');
+  window.renderReview();
+  assert.equal(reviewScr(document).querySelector('input[data-bind="one-change"]').value, 'своё');
 });

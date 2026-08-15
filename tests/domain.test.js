@@ -1329,7 +1329,10 @@ test('З14: шаг вперёд — критерий двух недель, од
   // недобор нормы хотя бы в одной из двух недель закрывает шаг
   app.toggleMark(prev, h.id); // W−1 стала 6 из 7 при норме 7
   assert.equal(app.canStepForward(h), false);
-  assert.equal(app.ladderStatus(h), 'Две полные недели нормы ещё не набраны');
+  // вместо оценки «две недели ещё не набраны» — счёт по норме этого пункта
+  // (задача 24, п. 3): текущая неделя и последняя завершённая
+  assert.equal(app.ladderStatus(h),
+    `Эта неделя ${app.itemWeekCount(h, app.weekStartOf(app.todayKey()))} из 7, прошлая 6 из 7`);
   app.toggleMark(prev, h.id);
   app.toggleMark(app.addDays(prev, -7), h.id); // теперь недобор в W−2
   assert.equal(app.canStepForward(h), false);
@@ -1908,12 +1911,19 @@ test('И7: точка-маркер — пункт существовал вче�
   app.toggleMark(app.addDays(t, -1), it.id);
   assert.equal(app.missedYesterday(it, t), false);
 
-  // единственная отметка — сегодняшняя: пункт начат, вчера пропущено
+  // единственная отметка — сегодняшняя: пункт начат ТОЛЬКО СЕГОДНЯ, и
+  // вчерашний пропуск задним числом «начатым» не становится (задача 24,
+  // п. 7): точка появится назавтра обычным путём. Прежде тут стояло
+  // true — расхождение с точечным путём, решённое в пользу последнего.
   const fresh = s.items[1];
   fresh.addedAt = app.addDays(t, -30);
   assert.equal(app.missedYesterday(fresh, t), false, 'ни одной отметки — точки нет');
   app.toggleMark(t, fresh.id);
-  assert.equal(app.missedYesterday(fresh, t), true, 'начат сегодня — вчера уже пропуск');
+  assert.equal(app.missedYesterday(fresh, t), false, 'первая отметка сегодня — вчера ещё не «пропуск»');
+  // назавтра «вчера» — это сегодняшний отмеченный день, пропуска нет;
+  // а первый настоящий пропуск (день t+1) точку даёт обычным путём
+  assert.equal(app.missedYesterday(fresh, app.addDays(t, 1)), false, 'вчера был отмечен');
+  assert.equal(app.missedYesterday(fresh, app.addDays(t, 2)), true, 'первый пропуск после начала — точка');
 });
 
 /* ── Задача 16, фаза B. Прогресс (инвариант 14) ────────────── */
@@ -4023,4 +4033,150 @@ test('З23/1.4: значения по умолчанию — рантайм пр
   // fallback ухода карточки обязан быть СВЕРХ перехода, иначе узел
   // удалялся бы посреди движения
   assert.ok(app.TIMING_DEFAULTS.MOTION_TAIL_MS > 0);
+});
+
+/* ── Задача 24. Разбор ─────────────────────────────────────── */
+
+/* Три идеальные закрытые недели у всех числовых пунктов минимума:
+   к повышению готовы все четверо (замер разведки 0.5) */
+function threePerfectWeeks() {
+  const s = freshStore();
+  calendarPast(s);
+  const prev = app.previousWeekStart();
+  for (const it of s.items.filter(i => i.type === 'daily')) {
+    for (let w = 0; w < 3; w++) markWeek(it.id, app.addDays(prev, -7 * w), 7);
+  }
+  return s;
+}
+
+test('З24/5: закрытая лестница повышение не блокирует, живая блокирует', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = threePerfectWeeks();
+  const it = s.items.find(i => i.type === 'daily' && i.area === 'min' && typeof i.value === 'number');
+  assert.equal(app.raiseEligible(it), true, 'без лестницы право есть');
+
+  it.ladder = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
+  assert.equal(app.raiseEligible(it), false, 'живая лестница — два шага за неделю');
+
+  it.ladder.done = true;
+  assert.equal(app.raiseEligible(it), true, 'закрытая лестница не шагает и права не отнимает');
+});
+
+test('З24/6: одно предложение повышения за разбор — первое по порядку items[]', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = threePerfectWeeks();
+  const ready = app.raiseReady();
+  assert.equal(ready.length, 4, 'на трёх идеальных неделях готовы все числовые пункты посева');
+
+  const offer = app.raiseOffer();
+  assert.equal(offer.id, ready[0].id, 'предложение получает первый по порядку items[]');
+  assert.equal(offer.id, s.items.find(i => app.raiseEligible(i)).id);
+
+  // «Не сейчас» — решение по планке вверх принято, второго за разбор нет
+  app.resetRaiseCount(offer);
+  assert.equal(app.raiseOffer(), null, 'после решения предложений в этом разборе нет');
+  assert.equal(app.raiseReady().length, 3, 'остальные по-прежнему готовы — просто ждут');
+
+  // и «Принять» ставит тот же якорь: механика одна
+  const s2 = threePerfectWeeks();
+  const first = app.raiseOffer();
+  app.acceptRaise(first, app.raiseSuggest(first.value));
+  assert.equal(app.raiseOffer(), null);
+  assert.equal(s2.items.filter(i => i.raiseAfterWeek === app.currentWeekStart()).length, 1);
+});
+
+test('З24/6.5: отложенные возвращаются на следующей неделе прежним путём — якоря не тронуты', () => {
+  setNow(2026, 7, 17, 12, 0); // пятница
+  const s = threePerfectWeeks();
+  const [first, second] = app.raiseReady();
+  app.resetRaiseCount(first);              // якорь — понедельник текущей недели
+  assert.equal(app.raiseOffer(), null, 'в этом разборе второго предложения нет');
+
+  // следующая неделя: у отложенных якоря не ставились — предложение их
+  const nextWeek = () => {
+    advanceDays(7);
+    for (const it of s.items.filter(i => i.type === 'daily')) markWeek(it.id, app.previousWeekStart(), 7);
+  };
+  nextWeek();
+  assert.equal(app.raiseOffer().id, second.id, 'предложение перешло следующему готовому');
+
+  // а решённый возвращается прежним путём — когда ВСЕ три недели строго
+  // позже якоря (инвариант 4), то есть на четвёртой неделе после решения;
+  // задача 24 этот срок не трогала
+  assert.equal(app.raiseEligible(first), false);
+  nextWeek();
+  assert.equal(app.raiseEligible(first), false, 'две недели после якоря — рано');
+  nextWeek(); nextWeek();
+  assert.equal(app.raiseEligible(first), true, 'все три недели позже якоря — право вернулось');
+});
+
+test('З24/6.4: повышение и понижение одному пункту в один разбор несовместимы', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const it = s.items.find(i => i.type === 'daily' && i.area === 'min' && typeof i.value === 'number');
+  const prev = app.previousWeekStart();
+  // критерии взаимоисключающи по построению: ≥6 из 7 три недели против
+  // ≤3 из 7 две недели, и вторые две недели — подмножество первых трёх
+  for (let n = 0; n <= 7; n++) {
+    s.days = {};
+    for (let w = 0; w < 3; w++) markWeek(it.id, app.addDays(prev, -7 * w), n);
+    assert.equal(app.raiseEligible(it) && app.lowerEligible(it), false, `${n} из 7`);
+  }
+});
+
+test('З24/3: строка состояния лестницы говорит счёт по норме этого пункта', () => {
+  setNow(2026, 7, 17, 12, 0); // пятница; текущая неделя началась 2026-07-13
+  const s = freshStore();
+  calendarPast(s);
+  const cur = app.currentWeekStart();
+  const prev = app.previousWeekStart();
+
+  // привычка: норма своя (normPerWeek)
+  const h = s.items.find(i => i.type === 'daily' && i.area === 'habit');
+  h.normPerWeek = 5;
+  h.ladder = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
+  markWeek(h.id, cur, 2);
+  markWeek(h.id, prev, 4);
+  assert.equal(app.ladderStatus(h), 'Эта неделя 2 из 5, прошлая 4 из 5');
+
+  // минимум: норма 6 из 7 независимо от normPerWeek
+  h.ladder = null;
+  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
+  m.ladder = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
+  markWeek(m.id, cur, 3);
+  markWeek(m.id, prev, 1);
+  assert.equal(app.ladderStatus(m), 'Эта неделя 3 из 6, прошлая 1 из 6');
+
+  // эпоха короче недели: последней завершённой нет — остаётся одна половина
+  s.settings.calendarSince = cur;
+  assert.equal(app.ladderWeekCounts(m), 'Эта неделя 3 из 6');
+});
+
+test('З24/9.2: reviewActionable — решения есть или их нет', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const prev = app.previousWeekStart();
+  // параметр посева не решён — это уже решение
+  assert.equal(app.pendingParams().length, 1);
+  assert.equal(app.reviewActionable(), true, 'нерешённый параметр');
+
+  app.keepParam(app.pendingParams()[0].id);
+  assert.equal(app.pendingParams().length, 0);
+  assert.equal(app.reviewActionable(), false, 'решать больше нечего');
+
+  // повышение возвращает действенность
+  const s2 = threePerfectWeeks();
+  app.keepParam(app.pendingParams()[0].id);
+  assert.equal(app.reviewActionable(), true, 'есть предложение повышения');
+  app.resetRaiseCount(app.raiseOffer());
+  assert.equal(app.reviewActionable(), false, 'решение принято — карточек нет');
+
+  // шаг лестницы — тоже решение
+  const m = s2.items.find(i => i.type === 'daily' && i.area === 'min');
+  m.ladder = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
+  assert.equal(app.canStepForward(m), true);
+  assert.equal(app.reviewActionable(), true, 'доступен шаг ступени');
+  assert.equal(prev < app.currentWeekStart(), true);
 });

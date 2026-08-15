@@ -897,11 +897,19 @@ function everMarked(item, upto) {
 /* «Не пропускай дважды»: пункт существовал вчера и не был отмечен.
    Пропустить можно только начатое (задача 22, п. 2): до первой отметки
    точки нет вовсе — иначе владелец в первый же день видел бы у всей
-   программы «вчера — пропуск» за день, в который её ещё не было. */
+   программы «вчера — пропуск» за день, в который её ещё не было.
+
+   Начатость считается НЕ ПОЗЖЕ ВЧЕРА (задача 24, п. 7): сегодняшняя
+   первая в жизни отметка не делает вчерашний пропуск «начатым» задним
+   числом — точка появится назавтра обычным путём. Иначе она рождалась
+   в момент тапа, но только полной перерисовкой, и точечный путь с ней
+   расходился (находка сторожа задачи 23; решение архитектора — прав
+   точечный путь: отметить пункт и тут же получить укор за вчера
+   владелец не должен). */
 function missedYesterday(item, tKey) {
   const y = addDays(tKey, -1);
   if (!(item.addedAt <= y) || isMarked(y, item.id)) return false;
-  return everMarked(item);
+  return everMarked(item, y);
 }
 
 /* Единственная допустимая правка прошлого (инвариант 7): установить отметку
@@ -1127,9 +1135,11 @@ function currentOneChange() {
 function raiseEligible(item) {
   if (item.type !== 'daily' || !item.active || item.area !== 'min') return false; // повышение — только минимум
   if (!(typeof item.value === 'number' && isFinite(item.value) && item.value > 0)) return false;
-  // пункт с лестницей повышения не получает: шаг ступени и шаг планки в одну
-  // неделю — два изменения за раз (инвариант 4, задача 16C)
-  if (item.ladder) return false;
+  // пункт с ЖИВОЙ лестницей повышения не получает: шаг ступени и шаг планки
+  // в одну неделю — два изменения за раз (инвариант 4, задача 16C).
+  // Закрытая лестница не шагает и права на повышение не отнимает: аргумент
+  // «два шага вперёд» к пройденному пути не относится (задача 24, п. 5)
+  if (item.ladder && !item.ladder.done) return false;
   const W = closedWeeks(3);
   if (W.length < 3) return false;
   if (!W.every(w => itemWeekCount(item, w) >= 6)) return false;
@@ -1156,6 +1166,27 @@ function lowerEligible(item) {
   if (!everMarked(item, addDays(W[W.length - 1], 6))) return false;
   if (!W.every(w => itemWeekCount(item, w) <= 3)) return false;
   return item.lowerAfterWeek === null || W[0] > item.lowerAfterWeek;
+}
+
+/* Все пункты, готовые к повышению, — по порядку items[] */
+const raiseReady = () => store.items.filter(raiseEligible);
+
+/* Пункт, которому в ЭТОМ разборе предлагается повышение: первый готовый
+   по порядку items[], и только если решения по планке вверх на текущей
+   неделе ещё не было. «Принять» и «Не сейчас» ставят один и тот же якорь
+   raiseAfterWeek = currentWeekStart() (инвариант 4) — он и служит признаком
+   принятого решения, ровно как steppedWeek у лестницы. Отдельного поля
+   и схемы это не требует.
+
+   Так правило «одно изменение за раз» становится механикой (задача 24,
+   п. 6): на трёх идеальных неделях посева готовы были все четыре числовых
+   пункта минимума, и разбор предлагал повысить программу целиком.
+   Остальные не запрещаются — их предложение просто откладывается
+   на следующую неделю прежним путём, якорей это не трогает. */
+function raiseOffer() {
+  const cur = currentWeekStart();
+  if (cur && store.items.some(i => i.raiseAfterWeek === cur)) return null;
+  return store.items.find(raiseEligible) || null;
 }
 
 function raiseSuggest(v) {
@@ -1241,6 +1272,12 @@ function paramDecision(itemId) {
   const d = store.paramDecided[itemId];
   return (d && d.week === previousWeekStart()) ? d : null;
 }
+
+/* Параметры, ждущие решения в этом разборе: их карточки живут в видимой
+   части, в «Решении 1» (задача 24, п. 2) — порог параметра меняется тем
+   же recordBar и той же историей, что планка пункта. Решённые остаются
+   под свёрткой тихой строкой итога: это уже read-only справка. */
+const pendingParams = () => store.items.filter(i => i.type === 'param' && i.active && !paramDecision(i.id));
 
 /* Одно решение на параметр за разбор (инвариант 10); шаг применяется немедленно */
 function applyParamStep(itemId) {
@@ -1383,6 +1420,23 @@ function canStepBack(item) {
   return !!(item && item.ladder && item.ladder.step > 0);
 }
 
+/* Счёт двух недель по норме ЭТОГО пункта: текущей и последней завершённой.
+   Пришёл на место оценки «Две полные недели нормы ещё не набраны» (задача
+   24, п. 3): та сообщала владельцу только то, что шага нет, — сколько
+   осталось набрать, приходилось искать глазами по сетке под свёрткой.
+   Это счёт, а не оценка, и того же рода, что счётчик недели на «Привычках»
+   (решение владельца от 19.07.2026): текущая неделя, не серия и не история.
+   Норма берётся ladderNorm — 6 из 7 у минимума, normPerWeek у привычки.
+   Неделя считается календарной (weekStartOf), а не currentWeekStart:
+   в пустой эпохе последний null, но отметок в текущей неделе это не
+   отменяет — тогда строка сводится к одной половине. */
+function ladderWeekCounts(item) {
+  const norm = ladderNorm(item);
+  const prev = closedWeeks(1)[0] || null;
+  const s = `Эта неделя ${itemWeekCount(item, weekStartOf(todayKey()))} из ${norm}`;
+  return prev ? `${s}, прошлая ${itemWeekCount(item, prev)} из ${norm}` : s;
+}
+
 /* Состояние лестницы одной строкой — ровно один из четырёх текстов */
 function ladderStatus(item) {
   const L = item && item.ladder;
@@ -1396,7 +1450,7 @@ function ladderStatus(item) {
   }
   if (L.steppedWeek && L.steppedWeek === currentWeekStart()) return 'Шаг уже сделан на этой неделе';
   if (ladderWeeksReady(item)) return 'Ступень держится две недели — можно шагнуть';
-  return 'Две полные недели нормы ещё не набраны';
+  return ladderWeekCounts(item);
 }
 
 /* Запись в журнал: повторное изменение в тот же логический день заменяет
@@ -2163,7 +2217,9 @@ const ui = {
   groupAdd: false,      // открыто поле «Добавить блок»
   groupPick: null,      // выбор в поле «Блок» открытой формы (null — как у пункта)
   groupNew: false,      // в поле «Блок» выбран «+ Новый блок…»: раскрыто имя
-  weekOpen: false,      // свёртка «Показать неделю» в разборе (задача 16C)
+  // свёртка «Показать неделю» в разборе (задача 16C): null — владелец её
+  // в этом разборе не трогал, состояние берётся по умолчанию (задача 24)
+  weekOpen: null,
   ladderStay: false,    // «Остаться»: решение по ступени принято, карточка уступает строке состояния
   reviewOpen: false,    // разбор открыт поверх вкладки (с таб-бара он ушёл, задача 16B)
   reviewFrom: null,     // вкладка, на которую вернёт «Готово»
@@ -3097,6 +3153,32 @@ function ladderForm(it) {
    «Прогресса», возвращает на прежнюю вкладку (задача 16B) */
 const REVIEW_DONE = `<button class="btn wide" data-act="review-done">Готово</button>`;
 
+/* Есть ли в разборе хоть одно ДЕЙСТВЕННОЕ решение: карточка повышения или
+   понижения, нерешённый параметр, доступный шаг лестницы или предложение
+   закрыть вставшую привычку. Чистой доменной функцией не считается —
+   читает ui.ladderStay: «Остаться» гасит карточку ступени, и после него
+   решать по ней действительно нечего.
+
+   Нужна свёртке недели (задача 24, п. 9.2): когда решений нет, картина
+   недели остаётся единственным содержательным на экране, и прятать её
+   не за чем. Когда есть — свёртка закрыта: решения важнее таблиц. */
+function reviewActionable() {
+  if (!reviewDue()) return false;
+  if (raiseOffer()) return true;
+  const keys = windowKeys();
+  const inWeek = it => it.active || keys.some(k => isMarked(k, it.id));
+  if (store.items.some(it => it.type === 'daily' && it.area === 'min' && inWeek(it) && lowerEligible(it))) return true;
+  if (pendingParams().length) return true;
+  const L = activeLadderItem();
+  return !!(L && (ladderSettled(L) || (canStepForward(L) && !ui.ladderStay)));
+}
+
+/* Свёртка недели: ui.weekOpen === null — владелец её в этом разборе не
+   трогал, тогда действует состояние по умолчанию. Тап пишет явное
+   true/false, закрытие разбора возвращает null (задача 24, п. 9.1):
+   чужая память о прошлом разборе следующему не принадлежит. */
+const weekFoldOpen = () => (ui.weekOpen === null ? !reviewActionable() : ui.weekOpen);
+
 function renderReview() {
   let h = `<header class="page"><p class="overline">Раз в неделю</p><h1>Разбор недели</h1></header>`;
 
@@ -3159,12 +3241,16 @@ function renderReview() {
     return c + `</div>`;
   };
 
-  // ── Решение 1: планка. Повышение и понижение — карточки, больше
-  // ничего; если предложений нет, решение сводится к одной строке.
+  // ── Решение 1: планка. Повышение, понижение и порог параметра — одна
+  // и та же механика: recordBar, история пункта, одно решение за разбор
+  // (инварианты 5 и 10). Поэтому карточка параметра стоит здесь, а не
+  // под свёрткой с read-only сетками (задача 24, п. 2). Порядок внутри
+  // решения — вверх, вниз, параметры. Предложений нет — одна строка.
   h += `<h2>Решение 1 · Планка</h2>`;
   let bar = '';
-  for (const it of minItems) {
-    if (!raiseEligible(it)) continue;
+  const offer = raiseOffer(); // одно предложение повышения за разбор (п. 6)
+  if (offer) {
+    const it = offer;
     const sug = raiseSuggest(it.value);
     const editing = ui.raiseEdit[it.id];
     bar += `
@@ -3183,6 +3269,12 @@ function renderReview() {
         </div>
       </div>`;
   }
+  // остальным готовым — тихая строка без имён и без счётчика-акцента:
+  // владелец знает, что предложение не потеряно, и не выбирает из четырёх
+  const restReady = raiseReady().length - (offer ? 1 : 0);
+  if (restReady > 0) {
+    bar += `<p class="muted">Ещё ${restReady} ${plural(restReady, 'пункт готов', 'пункта готовы', 'пунктов готовы')} к повышению — предложение вернётся на следующей неделе</p>`;
+  }
   const lowW = closedWeeks(2);
   for (const it of minItems) {
     if (!lowerEligible(it)) continue;
@@ -3198,17 +3290,33 @@ function renderReview() {
         </div>
       </div>`;
   }
+  // порог параметра — решение того же рода; одно на параметр за разбор
+  for (const p of pendingParams()) {
+    bar += `
+      <div class="card param">
+        <p>«${esc(p.name)} · ${esc(fmtParam(p))}» — как прошла неделя?</p>
+        <div class="btns">
+          <button class="btn" data-act="param-step" data-id="${esc(p.id)}">Шаг: → ${esc(fmtParam(p, paramStepTarget(p)))}</button>
+          <button class="btn quiet" data-act="param-keep" data-id="${esc(p.id)}">Оставить</button>
+        </div>
+      </div>`;
+  }
   h += bar || `<p class="muted">Планка держится, менять нечего</p>`;
 
   // ── Решение 2: ступень. Кнопки — только когда шаг доступен; иначе
   // та же строка состояния, что в листе детали.
+  // Заголовок стоит ВСЕГДА (задача 24, п. 4): прежде закрытая лестница
+  // убирала решение целиком, и нумерация шла «1, 3» — владелец видел
+  // пропуск и не знал, что потерял.
   const L = activeLadderItem();
-  // Закрытая привычка решения не требует: решение «Ступень» не показывается
-  // вовсе (задача 21, 5.2). Живой лестницы при этом нет — иначе она и решает.
-  if (L || !closedLadderItem()) {
   h += `<h2>Решение 2 · Ступень</h2>`;
   if (!L) {
-    h += `<p class="muted">Лестницы сейчас нет</p>`;
+    h += closedLadderItem()
+      // слот освободился закрытием: сказать об этом и о том, где заводят
+      // следующую (п. 4.4). Muted, без празднования — работа кончилась,
+      // а не удалась.
+      ? `<p class="muted">Лестница пройдена — слот свободен. Новую заводят в «Формуле и лестнице» пункта: Настройки → Пункты → правка.</p>`
+      : `<p class="muted">Лестницы сейчас нет</p>`;
   } else if (ladderSettled(L)) {
     // встала — вместо «Шагнуть/Остаться» одно действие: закрыть (5.1)
     h += `
@@ -3233,20 +3341,24 @@ function renderReview() {
   } else {
     h += `<p class="muted">${esc(L.name)} · ${esc(ladderStatus(L))}</p>`;
   }
-  }
 
-  // ── Решение 3: одно изменение на следующую неделю
+  // ── Решение 3: одно изменение на следующую неделю.
+  // Placeholder с примером — подсказка в ФОРМЕ, а не в списке пунктов
+  // (анти-требование задачи 14 разрешает подсказки формам). В первых двух
+  // разборах это единственное живое поле, и «необязательно» не объясняло,
+  // чего от владельца ждут. Пример операционный и мелкий: не лозунг.
   h += `<h2>Решение 3 · Одно изменение</h2>`;
   const oc = currentOneChange();
   if (oc) h += `<p class="muted">Изменение этой недели: „${esc(oc)}“</p>`;
   h += `
     <label class="field">
       <span>Одно изменение на следующую неделю</span>
-      <input type="text" data-bind="one-change" value="${esc(store.draftOneChange)}" placeholder="необязательно">
+      <input type="text" data-bind="one-change" value="${esc(store.draftOneChange)}" placeholder="например: перенести зарядку на утро">
     </label>`;
 
-  // ── Неделя целиком: сетки, счётчики, параметры и готовность — под
-  // свёрткой. Решения выше не требуют её открывать.
+  // ── Неделя целиком: сетки, счётчики и готовность — под свёрткой.
+  // Здесь остаётся только read-only (задача 24, п. 2.3): решения уехали
+  // в видимую часть, а картина недели — справка, а не действие.
   let wk = `<h2>Минимум</h2>`;
   wk += weekGrid(minItems);
   for (const w of store.items.filter(i => i.type === 'weekly' && i.active)) {
@@ -3274,22 +3386,15 @@ function renderReview() {
     wk += `<p class="muted">Привычек пока нет — добавить можно в Настройках → Пункты.</p>`;
   }
 
+  // итог принятого решения по параметру — read-only строка; нерешённые
+  // стоят карточками выше, в «Решении 1» (решение чужой недели карточку
+  // не гасит: paramDecision привязан к разбираемой неделе)
   for (const p of store.items.filter(i => i.type === 'param' && i.active)) {
-    const decided = paramDecision(p.id); // решение чужой недели карточку не гасит
-    if (decided) {
-      wk += `<p class="muted">${esc(p.name)}: ${decided.to === null
-        ? `${esc(fmtParam(p, decided.from))}, без шага`
-        : `${esc(fmtParam(p, decided.from))} → ${esc(fmtParam(p, decided.to))}`}</p>`;
-    } else {
-      wk += `
-      <div class="card param">
-        <p>«${esc(p.name)} · ${esc(fmtParam(p))}» — как прошла неделя?</p>
-        <div class="btns">
-          <button class="btn" data-act="param-step" data-id="${esc(p.id)}">Шаг: → ${esc(fmtParam(p, paramStepTarget(p)))}</button>
-          <button class="btn quiet" data-act="param-keep" data-id="${esc(p.id)}">Оставить</button>
-        </div>
-      </div>`;
-    }
+    const decided = paramDecision(p.id);
+    if (!decided) continue;
+    wk += `<p class="muted">${esc(p.name)}: ${decided.to === null
+      ? `${esc(fmtParam(p, decided.from))}, без шага`
+      : `${esc(fmtParam(p, decided.from))} → ${esc(fmtParam(p, decided.to))}`}</p>`;
   }
 
   if (habitsSteady()) {
@@ -3297,7 +3402,7 @@ function renderReview() {
   }
 
   h += `
-    <details class="sect week"${ui.weekOpen ? ' open' : ''}>
+    <details class="sect week"${weekFoldOpen() ? ' open' : ''}>
       <summary data-act="week-fold">Показать неделю<span class="chev" aria-hidden="true">&rsaquo;</span></summary>
       <div class="sect-b">${wk}</div>
     </details>`;
@@ -3896,6 +4001,9 @@ function closeDetail() {
 function closeReview() {
   ui.reviewOpen = false;
   ui.reviewFrom = null;
+  // свёртка недели принадлежит открытому разбору: следующий открывается
+  // в состоянии по умолчанию, а не с чужой памятью (задача 24, п. 9.1)
+  ui.weekOpen = null;
 }
 
 function closeTrain() {
@@ -4378,7 +4486,7 @@ function onClick(e) {
       break;
 
     case 'week-fold': // раскрытие свёртки делает сам details, здесь — только память
-      ui.weekOpen = !ui.weekOpen;
+      ui.weekOpen = !weekFoldOpen(); // от состояния по умолчанию, а не от null
       break;
 
     case 'raise-ok': {
@@ -4827,6 +4935,8 @@ if (typeof module !== 'undefined' && module.exports) {
     toggleMark, isMarked, incTrain, undoTrain, trainCount,
     reviewDue, windowKeys, currentOneChange, raiseEligible, raiseSuggest, resetRaiseCount,
     acceptRaise, closeWeek, missedYesterday, markYesterday, plural, parseNum,
+    // разбор: одно предложение повышения, действенность решений (задача 24)
+    raiseReady, raiseOffer, pendingParams, reviewActionable, ladderWeekCounts,
     // планка вниз (задача 16C)
     lowerEligible, lowerSuggest, acceptLower, keepBar,
     // упражнения и тренировки (задача 16D)
