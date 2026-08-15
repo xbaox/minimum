@@ -118,7 +118,9 @@ const MUTANTS = [
     id: '24.9-weekOpen-не-сбрасывается',
     file: 'app.js',
     note: 'свёртка недели переносит память между разборами',
-    edits: [['  ui.weekOpen = null;\n}', '}']]
+    // якорь обновлён в задаче 25: после ui.weekOpen в closeReview встал
+    // сброс ui.ladderStay, и прежний текст «…= null;\n}» исчез
+    edits: [['  ui.weekOpen = null;\n', '']]
   },
   {
     id: '24.9-свёртка-не-открывается',
@@ -132,6 +134,69 @@ const MUTANTS = [
     file: 'app.js',
     note: 'поле «Одно изменение» снова не объясняет, чего от владельца ждут',
     edits: [['placeholder="например: перенести зарядку на утро"', 'placeholder="необязательно"']]
+  },
+  {
+    id: '25.2-импорт-без-копии',
+    file: 'app.js',
+    note: 'импорт снова замещает данные необратимо — копии перед подменой нет',
+    edits: [[
+      `    const prev = store;
+    if (!keepPrev(prev, 'import')) {
+      alert('Импорт не выполнен: копию прежних данных некуда сохранить. Текущие данные не изменены.');
+      return;
+    }
+`, '']]
+  },
+  {
+    id: '25.2-подтверждение-переживает-импорт',
+    file: 'app.js',
+    note: 'взведённое «Подтвердить: стереть» переживает импорт — один тап подменяет только что записанную копию',
+    edits: [['    ui.wipeOpen = false;\n    resetConfirms();', '    ui.wipeDropConfirm = false;']]
+  },
+  {
+    id: '25.3-счёт-было-после-migrate',
+    file: 'app.js',
+    note: 'потери считаются по уже мигрированному объекту — расхождение всегда нулевое',
+    edits: [['    const lost = droppedLine(was, dataCounts(incoming));',
+      '    const lost = droppedLine(dataCounts(incoming), dataCounts(incoming));']]
+  },
+  {
+    id: '25.4-день-выбрасывается-целиком',
+    file: 'app.js',
+    note: 'один посторонний флаг снова уносит весь день с валидными отметками',
+    edits: [[
+      `    if (!isDayKey(k) || !day || typeof day !== 'object' || Array.isArray(day)) { delete s.days[k]; continue; }
+    for (const id of Object.keys(day)) if (typeof day[id] !== 'boolean') delete day[id];
+    if (!Object.keys(day).length) delete s.days[k];`,
+      `    const ok = isDayKey(k) && day && typeof day === 'object' && !Array.isArray(day) &&
+      Object.keys(day).length > 0 &&
+      Object.values(day).every(v => typeof v === 'boolean');
+    if (!ok) delete s.days[k];`]]
+  },
+  {
+    id: '25.5-схема-новее-молчит',
+    file: 'app.js',
+    note: 'файл, снятый более новой версией, импортируется без предупреждения',
+    edits: [['    if (fileVersion > SCHEMA_VERSION) {', '    if (false) {']]
+  },
+  {
+    id: '25.6-нечитаемые-данные-невидимы',
+    file: 'app.js',
+    note: 'повреждённая копия снова лежит в ключе молча — ни скачать, ни убрать',
+    edits: [['    ${corruptLine()}\n', '']]
+  },
+  {
+    id: '25.7-пустая-чистка-переписывает-копию',
+    file: 'app.js',
+    note: 'вторая чистка подряд снова кладёт в копию пустоту вместо практики',
+    edits: [['function keepPrev(prev, kind) {\n  if (!hasData(prev)) return true;',
+      'function keepPrev(prev, kind) {']]
+  },
+  {
+    id: '25.1-ladderStay-не-сбрасывается',
+    file: 'app.js',
+    note: '«Остаться» снова гасит карточку ступени до перезагрузки страницы',
+    edits: [['  ui.ladderStay = false;\n}', '}']]
   },
   {
     id: '24.4-слот-свободен-не-говорится',

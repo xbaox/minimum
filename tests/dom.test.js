@@ -341,7 +341,9 @@ test('назревший разбор: баннер на «Сегодня», с�
 
 test('битый localStorage: сырая строка сохраняется в minimum:data:corrupt', async () => {
   const { document, window } = await boot({ raw: '{битый json' });
-  assert.equal(window.localStorage.getItem('minimum:data:corrupt'), '{битый json');
+  // задача 25, п. 6: сырая строка лежит в обёртке с датой (см. одноимённый
+  // тест домена); сама строка сохраняется дословно
+  assert.equal(JSON.parse(window.localStorage.getItem('minimum:data:corrupt')).raw, '{битый json');
   assert.ok(JSON.parse(window.localStorage.getItem(NS))); // основной ключ перезаписан валидным дефолтом
   assert.equal(document.querySelectorAll('input[data-act="mark"]').length, 6);
 });
@@ -1599,7 +1601,7 @@ test('битый localStorage + валидное зеркало → corrupt-кл
   const idb = new IDBFactory();
   await idbPut(idb, { json: JSON.stringify(mirrorStore()), savedAt: Date.now(), schemaVersion: 4 });
   const { document, window } = await boot({ idb, raw: '{битый json' });
-  assert.equal(window.localStorage.getItem('minimum:data:corrupt'), '{битый json');
+  assert.equal(JSON.parse(window.localStorage.getItem('minimum:data:corrupt')).raw, '{битый json');
   assert.match(document.getElementById('scr-today').textContent, /Восстановленный/);
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 1); // не дефолтные 7
 });
@@ -1686,7 +1688,11 @@ test('exportedAt ставится при экспорте, строки «Дан
 
   const saved = JSON.parse(window.localStorage.getItem(NS));
   assert.equal(typeof saved.settings.exportedAt, 'number');
-  assert.match(document.getElementById('scr-settings').textContent, /Последний экспорт:/);
+  // задача 25, п. 9: приложение знает лишь то, что скачивание ЗАПУЩЕНО —
+  // сохранил ли владелец файл, в вебе узнать нечем. Строка не утверждает
+  // больше: «Последний экспорт» обещал состоявшийся файл, «запускался» — нет
+  assert.match(document.getElementById('scr-settings').textContent, /Экспорт запускался:/);
+  assert.doesNotMatch(document.getElementById('scr-settings').textContent, /Последний экспорт/);
 });
 
 test('строка «Резервная копия» подставляется асинхронно из savedAt зеркала', async () => {
@@ -5307,4 +5313,385 @@ test('З24/10: у поля «Одно изменение» есть пример
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).draftOneChange, 'своё');
   window.renderReview();
   assert.equal(reviewScr(document).querySelector('input[data-bind="one-change"]').value, 'своё');
+});
+
+/* ── Задача 25. Данные без потерь ───────────────────────────── */
+
+/* Импорт файла через настоящий путь интерфейса: change на скрытом input */
+async function importThroughUi(document, window, payload, { confirm = true } = {}) {
+  let text = '';
+  window.confirm = m => { text = m; return confirm; };
+  window.alert = m => { throw new Error('alert при импорте: ' + m); };
+  openData(document);
+  const inp = document.getElementById('import-file');
+  const file = new window.File([JSON.stringify(payload)], 'm.json', { type: 'application/json' });
+  Object.defineProperty(inp, 'files', { value: [file], configurable: true });
+  inp.dispatchEvent(new window.Event('change', { bubbles: true }));
+  for (let i = 0; i < 200 && !text; i++) await new Promise(r => setTimeout(r, 5));
+  assert.ok(text, 'импорт дошёл до подтверждения');
+  return text;
+}
+
+/* Перехват скачивания: содержимое Blob и имя файла. Проверять сам факт
+   вызова createObjectURL мало — на любом непустом Blob такой тест зелен,
+   а подменённое содержимое проходит молча (задача 25, разбор покрытия). */
+async function grabDownload(window, act) {
+  let blob = null, name = null;
+  const realCreate = window.URL.createObjectURL;
+  const realClick = window.HTMLAnchorElement.prototype.click;
+  window.URL.createObjectURL = b => { blob = b; return 'blob:fake'; };
+  window.HTMLAnchorElement.prototype.click = function () { name = this.download; };
+  try { act(); } finally {
+    window.URL.createObjectURL = realCreate;
+    window.HTMLAnchorElement.prototype.click = realClick;
+  }
+  assert.ok(blob, 'скачивание запущено');
+  // Blob.text() в jsdom не реализован — читаем тем же FileReader, каким
+  // приложение читает файл импорта
+  const text = await new Promise((res, rej) => {
+    const r = new window.FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = () => rej(r.error);
+    r.readAsText(blob);
+  });
+  return { name, text };
+}
+
+/* Файл с одним пунктом и одной отметкой — узнаваемо чужой */
+function otherFile(extra) {
+  return Object.assign({
+    schemaVersion: SCHEMA_VERSION,
+    items: [{
+      id: 'x1', name: 'Чужой пункт', value: null, unit: '', type: 'daily', area: 'min',
+      goal: null, note: '', group: '', active: true, addedAt: daysAgo(3), raiseAfter: 0,
+      raiseAfterWeek: null, lowerAfterWeek: null, history: [], formula: null, ladder: null, ladderLog: []
+    }],
+    days: { [daysAgo(1)]: { x1: true } },
+    groups: [], weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [],
+    exercises: [], sessions: [], notes: [], paramDecided: {},
+    draftOneChange: '', weekStart: daysAgo(1),
+    settings: { dayBoundary: 4, exportedAt: null, habitSeeded: true, seed17: true, calendarSince: mondayOf(daysAgo(20)) }
+  }, extra);
+}
+
+test('З25/2: импорт кладёт копию прежних данных до подмены, «Вернуть» возвращает всё', async () => {
+  const { document, window } = await boot();
+  const before = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), null, 'копии ещё нет');
+
+  await importThroughUi(document, window, otherFile());
+  const copyRaw = window.localStorage.getItem(NS + ':wiped');
+  assert.ok(copyRaw, 'копия легла');
+  const c = JSON.parse(copyRaw);
+  assert.equal(c.kind, 'import');
+  assert.deepEqual(c.store, before, 'в копии — состояние ДО подмены, целиком');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 1, 'данные заменены');
+
+  // строка возврата говорит, что произошло замещение, и когда
+  openData(document);
+  const row = document.querySelector('#scr-settings .restore');
+  assert.ok(row, 'строка возврата на месте');
+  assert.match(row.textContent, /Заменено импортом/);
+  assert.doesNotMatch(row.textContent, /Стёрто/);
+  assert.match(row.textContent, /9 пунктов/);
+
+  // «Вернуть» — тот же путь, что после чистки
+  row.querySelector('[data-act="wipe-undo"]').click();
+  assert.deepEqual(JSON.parse(window.localStorage.getItem(NS)), before, 'вернулось побайтово');
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), null, 'ключ убран');
+  assert.equal(document.querySelector('#scr-settings .restore'), null, 'строки больше нет');
+});
+
+test('З25/2.5: зеркало не добивает прежние данные раньше, чем ляжет копия', async () => {
+  const idb = new IDBFactory();
+  const { document, window } = await boot({ idb });
+  for (let i = 0; i < 100 && !(await idbGet(idb)); i++) await new Promise(r => setTimeout(r, 5));
+  assert.equal(JSON.parse((await idbGet(idb)).json).items.length, 9, 'в зеркале прежние данные');
+
+  await importThroughUi(document, window, otherFile());
+  // копия — синхронная запись localStorage ПЕРЕД подменой store; зеркало
+  // асинхронно и с дебаунсом, обогнать её оно не может ни при каком порядке
+  assert.ok(window.localStorage.getItem(NS + ':wiped'), 'копия уже есть');
+  await new Promise(r => setTimeout(r, T.MIRROR_FLUSH_MS + 60));
+  assert.equal(JSON.parse((await idbGet(idb)).json).items.length, 1, 'зеркало догнало импорт');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS + ':wiped')).store.items.length, 9,
+    'а копия прежних данных цела');
+});
+
+test('З25/2.4: копия одна, последняя, и в экспорт не входит', async () => {
+  const { document, window } = await boot();
+  await importThroughUi(document, window, otherFile());
+  const first = JSON.parse(window.localStorage.getItem(NS + ':wiped'));
+  assert.equal(first.store.items.length, 9);
+
+  // второй импорт замещает копию состоянием перед собой, а не копит их
+  await importThroughUi(document, window, otherFile({ items: [] }));
+  const second = JSON.parse(window.localStorage.getItem(NS + ':wiped'));
+  assert.equal(second.store.items.length, 1, 'в копии — то, что было перед вторым импортом');
+
+  // экспорт отдаёт текущий store; копия ему чужая. Смотреть надо в САМ
+  // отданный файл: чтение localStorage мимо download() пропускало бы
+  // подмешивание копии в выгрузку
+  openData(document);
+  const file = await grabDownload(window, () => document.querySelector('[data-act="export"]').click());
+  const exported = JSON.parse(file.text);
+  assert.equal('wiped' in exported, false, 'копии в файле нет');
+  assert.equal(exported.items.length, 0);
+  assert.match(file.name, /^minimum-\d{4}-\d{2}-\d{2}\.json$/);
+  assert.ok(window.localStorage.getItem(NS + ':wiped'), 'копия на месте после экспорта');
+});
+
+test('З25/3: подтверждение импорта называет отброшенное числом', async () => {
+  const { document, window } = await boot();
+  // день с одним посторонним значением уцелеет целиком (п. 4), а вот
+  // день без валидных отметок, мусорный пункт и пустая заметка — нет
+  const payload = otherFile({
+    items: [null, 'мусор', otherFile().items[0]],
+    days: { [daysAgo(1)]: { x1: true, шум: 1 }, [daysAgo(2)]: { x1: 'да' } },
+    notes: [{ id: 'n1', date: daysAgo(1), text: '  ', kind: 'note', source: '', updatedAt: 0 }]
+  });
+  const text = await importThroughUi(document, window, payload);
+
+  assert.match(text, /В файле: пунктов: 1, дней с отметками: 1/, 'сводка уцелевшего осталась');
+  const lost = /Не будет прочитано: ([^\n]+)\./.exec(text);
+  assert.ok(lost, 'строка отброшенного есть');
+  assert.equal(lost[1], '2 пункта, 1 день, 1 заметка');
+  // отметка в уцелевшем дне не потеряна: посторонний ключ ушёл поимённо (п. 4)
+  assert.doesNotMatch(lost[1], /отметк/);
+});
+
+test('З25/3.3: файл без потерь лишней строки не показывает', async () => {
+  const { document, window } = await boot();
+  const text = await importThroughUi(document, window, otherFile());
+  assert.match(text, /В файле: пунктов: 1/);
+  assert.doesNotMatch(text, /Не будет прочитано/);
+  assert.doesNotMatch(text, /более новой версией/);
+});
+
+test('З25/5: файл более новой схемы предупреждает, но не блокирует', async () => {
+  const { document, window } = await boot();
+  const text = await importThroughUi(document, window, otherFile({ schemaVersion: SCHEMA_VERSION + 1 }));
+  assert.match(text, /Файл снят более новой версией приложения: часть данных может не сохраниться\./);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 1, 'импорт состоялся');
+
+  // отказ владельца — решение за ним: данные не тронуты
+  const b = await boot();
+  const was = b.window.localStorage.getItem(NS);
+  await importThroughUi(b.document, b.window, otherFile({ schemaVersion: SCHEMA_VERSION + 1 }), { confirm: false });
+  assert.equal(b.window.localStorage.getItem(NS), was, 'отказ ничего не меняет');
+  assert.equal(b.window.localStorage.getItem(NS + ':wiped'), null, 'и копии не пишет');
+});
+
+test('З25/5.3: файл прежней схемы предупреждения не получает', async () => {
+  const { document, window } = await boot();
+  const text = await importThroughUi(document, window, otherFile({ schemaVersion: SCHEMA_VERSION - 1 }));
+  assert.doesNotMatch(text, /более новой версией/);
+});
+
+test('З25/6: строка нечитаемых данных появляется, скачивается и убирается вторым тапом', async () => {
+  const { document, window } = await boot({ raw: '{битый json' });
+  const row = () => document.querySelector('#scr-settings .restore.corrupt');
+  openData(document);
+  assert.ok(row(), 'строка есть');
+  assert.match(row().textContent, /Найдены нечитаемые данные от /);
+  assert.match(row().textContent, /ничего не стирая/);
+
+  // «Скачать» отдаёт именно сырую строку, а не текущий store, и ключа не трогает
+  const file = await grabDownload(window, () => row().querySelector('[data-act="corrupt-save"]').click());
+  assert.equal(file.text, '{битый json', 'в файле — отложенная строка дословно');
+  assert.match(file.name, /^minimum-нечитаемое-\d{4}-\d{2}-\d{2}\.json$/);
+  assert.ok(window.localStorage.getItem('minimum:data:corrupt'), 'скачивание ключа не убирает');
+
+  // «Убрать» — вторым тапом
+  row().querySelector('[data-act="corrupt-drop"]').click();
+  assert.match(row().textContent, /Подтвердить: убрать/);
+  assert.ok(window.localStorage.getItem('minimum:data:corrupt'), 'первый тап ничего не убрал');
+  row().querySelector('[data-act="corrupt-drop"]').click();
+  assert.equal(window.localStorage.getItem('minimum:data:corrupt'), null);
+  assert.equal(row(), null, 'строки нет, когда нечитаемых данных нет');
+});
+
+test('З25/6.3-6.4: без нечитаемых данных строки нет, чистка их не трогает', async () => {
+  const { document } = await boot();
+  openData(document);
+  assert.equal(document.querySelector('#scr-settings .restore.corrupt'), null);
+
+  const b = await boot({ raw: '{битый json' });
+  wipeThroughUi(b.document);
+  openData(b.document);
+  assert.ok(b.window.localStorage.getItem('minimum:data:corrupt'), 'переживает стирание');
+  assert.ok(b.document.querySelector('#scr-settings .restore.corrupt'), 'и строка на месте');
+});
+
+test('З25/7: чистка пустого store не подменяет копию пустотой', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  wipeThroughUi(document);
+  const first = JSON.parse(window.localStorage.getItem(NS + ':wiped'));
+  assert.ok(first.store.items.length > 0, 'в копии практика');
+
+  // предупреждение второй чистки не обещает замены — заменять нечем
+  openData(document);
+  document.querySelector('[data-act="wipe-open"]').click();
+  assert.doesNotMatch(document.querySelector('#scr-settings .danger').textContent,
+    /Прежняя копия будет заменена/);
+
+  document.querySelector('[data-act="wipe-do"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  assert.deepEqual(JSON.parse(window.localStorage.getItem(NS + ':wiped')), first,
+    'копия та же — практика не подменена пустотой');
+
+  // «Вернуть» после второй чистки возвращает именно практику
+  openData(document);
+  document.querySelector('[data-act="wipe-undo"]').click();
+  assert.ok(JSON.parse(window.localStorage.getItem(NS)).items.length > 0);
+});
+
+test('З25/1: ladderStay сбрасывается при закрытии разбора', async () => {
+  const seed = dueSeed();
+  const old = addKey(prevMonday(), -14);
+  seed.items[0].ladder = { steps: ['первая', 'вторая', 'третья'], step: 0, steppedWeek: null, startedAt: old };
+  seed.items[0].ladderLog = [{ date: old, step: 0, text: 'первая', start: true }];
+  seed.days = {};
+  for (const mon of [prevMonday(), addKey(prevMonday(), -7)]) {
+    for (let i = 0; i < 6; i++) seed.days[addKey(mon, i)] = { it1: true };
+  }
+  const { document } = await boot({ seed });
+  openReview(document);
+  assert.ok(reviewScr(document).querySelector('.card.step'), 'карточка ступени');
+  reviewScr(document).querySelector('[data-act="ladder-stay"]').click();
+  assert.equal(reviewScr(document).querySelector('.card.step'), null, '«Остаться» гасит карточку');
+
+  // «Готово» закрывает разбор — решение по ступени принадлежало ему одному
+  document.querySelector('[data-act="review-done"]').click();
+  openReview(document);
+  assert.ok(reviewScr(document).querySelector('.card.step'),
+    'следующий разбор снова предлагает шаг');
+});
+
+test('З25/2: взведённое подтверждение не переживает импорт — копия не подменяется одним тапом', async () => {
+  const { document, window } = await boot();
+  const before = JSON.parse(window.localStorage.getItem(NS));
+
+  // «Стереть» взведено ДО импорта: подтверждение относилось к прежним данным
+  openData(document);
+  document.querySelector('[data-act="wipe-open"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  assert.match(document.querySelector('[data-act="wipe-do"]').textContent, /Подтвердить: стереть/);
+
+  // импорт, не уходя со вкладки: таб-бар зовёт resetConfirms() и замаскировал бы всё
+  await importThroughUi(document, window, otherFile());
+  openData(document);
+  assert.equal(document.querySelector('[data-act="wipe-do"]'), null,
+    'предупреждение чистки закрыто вместе с прежними данными');
+
+  // копия прежних данных цела: подменить её одним тапом нечем
+  assert.equal(JSON.parse(window.localStorage.getItem(NS + ':wiped')).store.items.length,
+    before.items.length);
+  document.querySelector('[data-act="wipe-open"]').click();
+  assert.match(document.querySelector('[data-act="wipe-do"]').textContent, /^Стереть$/,
+    'счёт тапов начинается заново');
+
+  // то же для «Убрать» нечитаемых данных: взведённое подтверждение гаснет
+  const b = await boot({ raw: '{битый json' });
+  openData(b.document);
+  b.document.querySelector('[data-act="corrupt-drop"]').click();
+  assert.match(b.document.querySelector('[data-act="corrupt-drop"]').textContent, /Подтвердить/);
+  await importThroughUi(b.document, b.window, otherFile());
+  openData(b.document);
+  assert.match(b.document.querySelector('[data-act="corrupt-drop"]').textContent, /^Убрать$/);
+  assert.ok(b.window.localStorage.getItem('minimum:data:corrupt'), 'данные на месте');
+});
+
+test('З25/6: взведённое «Убрать» не переживает уход с экрана', async () => {
+  const { document } = await boot({ raw: '{битый json' });
+  openData(document);
+  document.querySelector('[data-act="corrupt-drop"]').click();
+  assert.match(document.querySelector('[data-act="corrupt-drop"]').textContent, /Подтвердить/);
+  document.querySelector('#tabs button[data-tab="today"]').click(); // resetConfirms()
+  openData(document);
+  assert.match(document.querySelector('[data-act="corrupt-drop"]').textContent, /^Убрать$/);
+});
+
+test('З25/6: нечитаемые данные без даты — строка есть, дата не выдумывается', async () => {
+  // копия старого формата: голая строка, снятая версией до задачи 25
+  const { document, window } = await boot();
+  window.localStorage.setItem('minimum:data:corrupt', '{совсем старый');
+  openData(document);
+  const row = document.querySelector('#scr-settings .restore.corrupt');
+  assert.ok(row, 'строка есть и без даты');
+  assert.match(row.querySelector('p').textContent, /^Найдены нечитаемые данные$/);
+  assert.doesNotMatch(row.textContent, / от /);
+
+  // и «Скачать» отдаёт ту же строку
+  const file = await grabDownload(window, () => row.querySelector('[data-act="corrupt-save"]').click());
+  assert.equal(file.text, '{совсем старый');
+});
+
+test('З25/2.2: копия без kind читается как чистка — строка не врёт про импорт', async () => {
+  // ключ, записанный версией до задачи 25: поля kind в нём нет
+  const { document, window } = await boot();
+  const store = JSON.parse(window.localStorage.getItem(NS));
+  window.localStorage.setItem(NS + ':wiped', JSON.stringify({
+    store, wipedAt: Date.now(), stats: { items: 4, days: 2 }
+  }));
+  openData(document);
+  const row = document.querySelector('#scr-settings .restore:not(.corrupt)');
+  assert.match(row.textContent, /Стёрто /);
+  assert.doesNotMatch(row.textContent, /Заменено импортом/);
+  assert.match(row.textContent, /4 пункта, 2 дня отметок/);
+  // и «Вернуть» на ней работает так же
+  row.querySelector('[data-act="wipe-undo"]').click();
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), null);
+});
+
+test('З25/7: при содержательном store предупреждение чистки обещает замену копии', async () => {
+  const { document } = await boot({ seed: trainSeed() });
+  wipeThroughUi(document);          // копия появилась
+  openData(document);
+  document.querySelector('[data-act="wipe-undo"]').click(); // и store снова содержателен
+  openData(document);
+  // копия ушла вместе с возвратом — наведём её заново другим путём
+  document.querySelector('[data-act="wipe-open"]').click();
+  assert.doesNotMatch(document.querySelector('#scr-settings .danger').textContent,
+    /Прежняя копия будет заменена/, 'копии нет — обещать нечего');
+
+  document.querySelector('[data-act="wipe-do"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  openData(document);
+  document.querySelector('[data-act="wipe-undo"]').click();
+  // копия есть И store содержателен — только тогда обещание правдиво
+  const { document: d2, window: w2 } = await boot({ seed: trainSeed() });
+  w2.localStorage.setItem(NS + ':wiped', JSON.stringify({
+    store: JSON.parse(w2.localStorage.getItem(NS)), wipedAt: Date.now(), stats: {}, kind: 'wipe'
+  }));
+  openData(d2);
+  d2.querySelector('[data-act="wipe-open"]').click();
+  assert.match(d2.querySelector('#scr-settings .danger').textContent,
+    /Прежняя копия будет заменена новой: хранится одна, последняя\./);
+});
+
+test('З25/2: копию некуда положить — импорт не выполняется, данные не тронуты', async () => {
+  const { document, window } = await boot();
+  const before = window.localStorage.getItem(NS);
+  const proto = Object.getPrototypeOf(window.localStorage);
+  const desc = Object.getOwnPropertyDescriptor(proto, 'setItem');
+  const real = desc.value;
+  let said = '';
+  Object.defineProperty(proto, 'setItem', {
+    value: function (k, v) { if (k === NS + ':wiped') throw new Error('quota'); return real.call(this, k, v); },
+    configurable: true, writable: true
+  });
+  window.confirm = () => true;
+  window.alert = m => { said = m; };
+  openData(document);
+  const inp = document.getElementById('import-file');
+  const file = new window.File([JSON.stringify(otherFile())], 'm.json', { type: 'application/json' });
+  Object.defineProperty(inp, 'files', { value: [file], configurable: true });
+  inp.dispatchEvent(new window.Event('change', { bubbles: true }));
+  for (let i = 0; i < 200 && !said; i++) await new Promise(r => setTimeout(r, 5));
+  Object.defineProperty(proto, 'setItem', desc);
+
+  assert.match(said, /Импорт не выполнен: копию прежних данных некуда сохранить\./);
+  assert.equal(window.localStorage.getItem(NS), before, 'данные не тронуты');
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), null, 'и копии не появилось');
 });

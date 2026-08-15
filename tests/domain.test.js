@@ -701,14 +701,19 @@ test('З2: load — битая строка уходит в minimum:data:corrupt
   try {
     mem['minimum:data'] = '{битый json';
     assert.equal(app.load(), null); // не дефолт: дальше init смотрит зеркало (инвариант 9)
-    assert.equal(mem['minimum:data:corrupt'], '{битый json');
+    // задача 25, п. 6: к сырой строке добавлена дата — без неё строка
+    // «Данных» не может сказать владельцу, что именно там лежит.
+    // Сама строка при этом сохраняется дословно, ни байта не теряя.
+    const kept = JSON.parse(mem['minimum:data:corrupt']);
+    assert.equal(kept.raw, '{битый json');
+    assert.equal(typeof kept.at, 'number');
     // пустой localStorage — тоже null
     delete mem['minimum:data'];
     assert.equal(app.load(), null);
     // валидная строка — store; резервный ключ не тронут
     mem['minimum:data'] = JSON.stringify(app.defaultStore());
     assert.equal(app.load().items.length, 9);
-    assert.equal(mem['minimum:data:corrupt'], '{битый json');
+    assert.deepEqual(JSON.parse(mem['minimum:data:corrupt']), kept);
   } finally {
     delete global.localStorage;
   }
@@ -4179,4 +4184,198 @@ test('З24/9.2: reviewActionable — решения есть или их нет'
   assert.equal(app.canStepForward(m), true);
   assert.equal(app.reviewActionable(), true, 'доступен шаг ступени');
   assert.equal(prev < app.currentWeekStart(), true);
+});
+
+/* ── Задача 25. Данные без потерь ───────────────────────────── */
+
+test('З25/4: посторонний флаг не убивает валидные отметки того же дня', () => {
+  setNow(2026, 8, 14, 12, 0);
+  // день с четырьмя валидными отметками и одним посторонним значением:
+  // прежнее правило «весь день целиком» уносило все четыре
+  const s = app.migrate({
+    schemaVersion: 16, items: [], settings: {},
+    days: {
+      '2026-08-10': { a: true, b: true, c: true, d: true, e: 1 },
+      '2026-08-11': { a: true, b: false },
+      '2026-08-12': { a: 'да', b: null },   // валидных не остаётся — дня нет
+      '2026-08-13': {},                      // пустой день не существует и раньше
+      'мусор': { a: true },                  // ключ не день — прежнее правило
+      '2026-08-09': 'не объект'
+    }
+  }, { external: true });
+
+  assert.deepEqual(s.days['2026-08-10'], { a: true, b: true, c: true, d: true },
+    'валидные отметки уцелели, посторонняя отброшена поимённо');
+  assert.deepEqual(s.days['2026-08-11'], { a: true, b: false }, 'false — валидное значение');
+  assert.equal('2026-08-12' in s.days, false, 'день без валидных отметок удаляется');
+  assert.equal('2026-08-13' in s.days, false);
+  assert.equal('мусор' in s.days, false);
+  assert.equal('2026-08-09' in s.days, false);
+  assert.deepEqual(Object.keys(s.days).sort(), ['2026-08-10', '2026-08-11']);
+});
+
+test('З25/4.3: двойной прогон migrate по дням даёт побайтово тот же результат', () => {
+  setNow(2026, 8, 14, 12, 0);
+  const file = () => ({
+    schemaVersion: 16, items: [], settings: {},
+    days: {
+      '2026-08-10': { a: true, e: 1, f: 'x' },
+      '2026-08-11': { a: false },
+      '2026-08-12': { z: {} },
+      'мусор': { a: true }
+    }
+  });
+  const once = JSON.stringify(app.migrate(file(), { external: true }));
+  const twice = JSON.stringify(app.migrate(app.migrate(file(), { external: true }), { external: true }));
+  assert.equal(once, twice, 'миграция идемпотентна');
+});
+
+test('З25/3: dataCounts считает по сырому файлу, droppedLine называет расхождение', () => {
+  setNow(2026, 8, 14, 12, 0);
+  const raw = {
+    schemaVersion: 16,
+    items: [null, 'мусор', { id: 'a', name: 'Пункт' }],
+    days: { '2026-08-10': { a: true, e: 1 }, 'мусор': { a: true } },
+    notes: [{ text: 'мысль' }, { text: '   ' }],
+    reviews: [null, {}],
+    // ненулевые упражнения и тренировки: без них две категории из семи
+    // считались бы «проверенными» на одних нулях
+    exercises: [null, { id: 'e1', name: 'Жим' }],
+    sessions: [{ id: 's1', date: '2026-08-10', entries: [] }, { id: 's2', date: 'мусор', entries: [] }]
+  };
+  const was = app.dataCounts(raw);
+  assert.deepEqual(was, { items: 3, days: 2, marks: 2, notes: 2, reviews: 2, exercises: 2, sessions: 2 });
+
+  // считать обязательно ДО migrate: он мутирует переданный объект
+  const got = app.dataCounts(app.migrate(raw, { external: true }));
+  assert.deepEqual(got, { items: 1, days: 1, marks: 1, notes: 1, reviews: 1, exercises: 1, sessions: 1 });
+
+  assert.equal(app.droppedLine(was, got),
+    '2 пункта, 1 день, 1 отметка, 1 заметка, 1 разбор, 1 упражнение, 1 тренировка');
+  assert.equal(app.droppedLine(got, got), '', 'числа сошлись — строки нет');
+});
+
+test('З25/3.1: счёт «было», снятый после migrate, потерь уже не видит', () => {
+  setNow(2026, 8, 14, 12, 0);
+  const raw = { schemaVersion: 16, items: [null, 'мусор', { id: 'a' }], days: {}, settings: {} };
+  // порядок в importJSON: счёт снимается ПЕРЕД migrate и живёт своей жизнью
+  const было = app.dataCounts(raw);
+  const out = app.migrate(raw, { external: true });
+  assert.equal(out, raw, 'migrate вернул тот же объект — прежнего содержимого не осталось');
+  const стало = app.dataCounts(out);
+
+  // правильный порядок: потеря названа
+  assert.equal(app.droppedLine(было, стало), '2 пункта');
+  // неправильный: «было» снято уже с мигрированного объекта — потери не видно
+  assert.equal(app.droppedLine(app.dataCounts(raw), стало), '',
+    'счёт после migrate даёт ноль — ради этого он и снимается заранее');
+});
+
+test('З25/7: пустой store копию не подменяет — «последняя содержательная»', () => {
+  const mem = fakeLocalStorage();
+  const before = filledStore();
+  const snapshot = JSON.parse(JSON.stringify(before));
+
+  assert.equal(app.hasData(before), true);
+  assert.equal(app.wipeAll(), true);
+  assert.deepEqual(app.wipedCopy().store, snapshot);
+
+  // store после чистки пуст по всем числам wipeStats — терять нечего
+  assert.equal(app.hasData(app.store), false);
+  assert.equal(app.wipeAll(), true, 'вторая чистка не отказывает');
+  assert.deepEqual(app.wipedCopy().store, snapshot, 'практика в копии, а не пустота');
+
+  // содержательный store копию по-прежнему заменяет
+  app.addNote('одна заметка — уже содержание');
+  assert.equal(app.hasData(app.store), true);
+  const second = JSON.parse(JSON.stringify(app.store));
+  app.wipeAll();
+  assert.deepEqual(app.wipedCopy().store, second);
+  assert.ok(mem[app.WIPE_KEY]);
+  clearLocalStorage();
+});
+
+test('З25/2: keepPrev — общая механика копии, kind различает повод', () => {
+  fakeLocalStorage();
+  const before = filledStore();
+  const snapshot = JSON.parse(JSON.stringify(before));
+
+  assert.equal(app.keepPrev(app.store, 'import'), true);
+  const c = app.wipedCopy();
+  assert.equal(c.kind, 'import');
+  assert.deepEqual(c.store, snapshot);
+  assert.deepEqual(c.stats, app.wipeStats(snapshot));
+
+  // «Вернуть» одинаков для обоих поводов: migrate с внешним флагом, ключ убран
+  assert.equal(app.restoreWiped(), true);
+  assert.deepEqual(app.store, snapshot);
+  assert.equal(app.wipedCopy(), null);
+
+  // чистка ставит свой kind
+  app.wipeAll();
+  assert.equal(app.wipedCopy().kind, 'wipe');
+  clearLocalStorage();
+});
+
+test('З25/2: копию некуда положить — keepPrev отказывает, чистка не выполняется', () => {
+  fakeLocalStorage();
+  const before = filledStore();
+  const snapshot = JSON.parse(JSON.stringify(before));
+  const real = global.localStorage.setItem;
+  global.localStorage.setItem = (k) => { if (k === app.WIPE_KEY) throw new Error('quota'); };
+
+  assert.equal(app.keepPrev(app.store, 'import'), false);
+  assert.equal(app.wipeAll(), false);
+  assert.deepEqual(app.store, snapshot, 'store не тронут');
+
+  // пустому store копия не нужна вовсе — отказа нет даже при полном хранилище
+  app.store = app.emptyStore(4, 0.8);
+  assert.equal(app.keepPrev(app.store, 'import'), true);
+
+  global.localStorage.setItem = real;
+  clearLocalStorage();
+});
+
+test('З25/6: нечитаемые данные читаются с датой и в старом формате, убираются', () => {
+  const mem = fakeLocalStorage();
+  setNow(2026, 8, 14, 12, 0);
+  assert.equal(app.corruptCopy(), null, 'нечего показывать');
+
+  const t0 = Date.now();
+  mem['minimum:data'] = '{битый json';
+  app.load();
+  const c = app.corruptCopy();
+  assert.equal(c.raw, '{битый json');
+  assert.equal(c.at, t0, 'дата — момент, когда строку отложили, а не что попало');
+
+  // копия, снятая версией до задачи 25, — голая строка без даты
+  mem[app.CORRUPT_KEY] = '{совсем старый';
+  const old = app.corruptCopy();
+  assert.equal(old.raw, '{совсем старый');
+  assert.equal(old.at, null, 'дата неизвестна — не выдумывается');
+
+  // валидный JSON, но не обёртка: считается сырой строкой целиком —
+  // иначе чужая структура молча выдала бы себя за отложенные данные
+  mem[app.CORRUPT_KEY] = '{"items":[],"days":{}}';
+  const alien = app.corruptCopy();
+  assert.equal(alien.raw, '{"items":[],"days":{}}');
+  assert.equal(alien.at, null);
+  mem[app.CORRUPT_KEY] = JSON.stringify({ raw: 42, at: 1 }); // raw не строка — не обёртка
+  assert.equal(app.corruptCopy().raw, '{"raw":42,"at":1}');
+
+  app.dropCorrupt();
+  assert.equal(app.corruptCopy(), null);
+  app.dropCorrupt(); // повтор не падает
+  clearLocalStorage();
+});
+
+test('З25/6.4: чистка нечитаемые данные не трогает', () => {
+  const mem = fakeLocalStorage();
+  filledStore();
+  mem[app.CORRUPT_KEY] = JSON.stringify({ raw: '{битый json', at: 1 });
+  assert.equal(app.wipeAll(), true);
+  assert.equal(app.corruptCopy().raw, '{битый json', 'переживает стирание');
+  assert.equal(app.restoreWiped(), true);
+  assert.equal(app.corruptCopy().raw, '{битый json', 'и возврат');
+  clearLocalStorage();
 });

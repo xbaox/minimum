@@ -463,14 +463,18 @@ function migrate(s, opts) {
   }
 
   // отметки: ключ — валидный день, значение — непустой объект с булевыми
-  // полями (как их оставляет toggleMark); иначе запись отбрасывается
+  // полями (как их оставляет toggleMark). Посторонние значения отбрасываются
+  // ПОИМЁННО, а не вместе с днём (задача 25, п. 4): прежнее правило «весь
+  // день целиком» уносило валидные отметки — один не-булев флаг в дне из
+  // четырёх отметок стоил всех четырёх, а посторонний ключ в каждом дне
+  // (правка файла руками) обнулял days{} без единого слова. День, в котором
+  // после фильтрации не осталось ничего, по-прежнему не существует.
   if (!s.days || typeof s.days !== 'object' || Array.isArray(s.days)) s.days = {};
   for (const k of Object.keys(s.days)) {
     const day = s.days[k];
-    const ok = isDayKey(k) && day && typeof day === 'object' && !Array.isArray(day) &&
-      Object.keys(day).length > 0 &&
-      Object.values(day).every(v => typeof v === 'boolean');
-    if (!ok) delete s.days[k];
+    if (!isDayKey(k) || !day || typeof day !== 'object' || Array.isArray(day)) { delete s.days[k]; continue; }
+    for (const id of Object.keys(day)) if (typeof day[id] !== 'boolean') delete day[id];
+    if (!Object.keys(day).length) delete s.days[k];
   }
 
   // блоки (инвариант 13): имена уникальны и непусты, дубликаты схлопываются
@@ -668,8 +672,10 @@ function load() {
   try {
     return migrate(JSON.parse(raw));
   } catch (e) {
-    // нечитаемые данные не уничтожаются: сырая строка уходит в резервный ключ
-    try { localStorage.setItem(NS + ':corrupt', raw); } catch (e2) { /* некуда сохранить */ }
+    // нечитаемые данные не уничтожаются: сырая строка уходит в резервный
+    // ключ вместе с датой — без неё владелец не понимает, что там лежит
+    // (задача 25, п. 6). Формат-обёртка; прежняя голая строка читается тоже.
+    try { localStorage.setItem(CORRUPT_KEY, JSON.stringify({ raw, at: Date.now() })); } catch (e2) { /* некуда сохранить */ }
     return null;
   }
 }
@@ -2024,6 +2030,7 @@ function closeWeek() {
    Копия — не часть store: ни в экспорт, ни в импорт она не входит. */
 
 const WIPE_KEY = NS + ':wiped';
+const CORRUPT_KEY = NS + ':corrupt';
 
 /* Числа для строки предупреждения и для строки возврата */
 function wipeStats(s) {
@@ -2050,6 +2057,49 @@ function wipedCopy() {
 
 function dropWiped() {
   try { localStorage.removeItem(WIPE_KEY); } catch (e) { /* нечего убирать */ }
+}
+
+/* Есть ли в store хоть что-нибудь владельца. Признак берётся из того же
+   wipeStats, что показывает предупреждение чистки: заводить отдельное
+   поле незачем — ни одного ненулевого числа значит терять нечего. */
+function hasData(s) {
+  return Object.values(wipeStats(s)).some(n => n > 0);
+}
+
+/* Копия прежнего состояния — одна механика на оба повода замещения:
+   чистку и импорт (инвариант 18). Возвращает false, только если копию
+   некуда положить, — тогда замещающая операция не выполняется вовсе.
+
+   Пустой store копию НЕ подменяет: «одна, последняя» значит «последняя
+   СОДЕРЖАТЕЛЬНАЯ». Вторая чистка подряд прежде клала в копию пустоту и
+   уносила практику, которую первая чистка туда положила (задача 25, п. 7). */
+function keepPrev(prev, kind) {
+  if (!hasData(prev)) return true;
+  try {
+    localStorage.setItem(WIPE_KEY, JSON.stringify({
+      store: prev, wipedAt: Date.now(), stats: wipeStats(prev), kind
+    }));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* Нечитаемые данные, отложенные load(): {raw, at}. Прежний формат — голая
+   строка без даты — читается тоже, дата тогда неизвестна (задача 25, п. 6). */
+function corruptCopy() {
+  let raw = null;
+  try { raw = localStorage.getItem(CORRUPT_KEY); } catch (e) { return null; }
+  if (!raw) return null;
+  try {
+    const c = JSON.parse(raw);
+    if (c && typeof c === 'object' && typeof c.raw === 'string' && typeof c.at === 'number') return c;
+  } catch (e) { /* голая строка старого формата — ниже */ }
+  return { raw, at: null };
+}
+
+function dropCorrupt() {
+  try { localStorage.removeItem(CORRUPT_KEY); } catch (e) { /* нечего убирать */ }
 }
 
 /* Пустое хранилище: ни одного стартового пункта. Граница дня и порог
@@ -2082,13 +2132,7 @@ function emptyStore(boundary, threshold) {
    восстановил бы стёртое из старого снапшота. */
 function wipeAll() {
   const prev = store;
-  try {
-    localStorage.setItem(WIPE_KEY, JSON.stringify({
-      store: prev, wipedAt: Date.now(), stats: wipeStats(prev)
-    }));
-  } catch (e) {
-    return false;
-  }
+  if (!keepPrev(prev, 'wipe')) return false;
   store = emptyStore(
     prev.settings && prev.settings.dayBoundary,
     prev.settings && prev.settings.dayThreshold);
@@ -2114,17 +2158,67 @@ function restoreWiped() {
 
 /* ── Экспорт / импорт ──────────────────────────────────────── */
 
-function exportJSON() {
-  store.settings.exportedAt = Date.now(); // дата попадает и в сам файл
-  save();
-  const blob = new Blob([JSON.stringify(store, null, 1)], { type: 'application/json' });
+/* Отдать текст файлом. Приложение знает только то, что скачивание
+   ЗАПУЩЕНО: сохранил ли владелец файл, в вебе узнать нечем (задача 25,
+   п. 9) — отсюда осторожность формулировок вокруг exportedAt. */
+function download(name, text) {
+  const blob = new Blob([text], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'minimum-' + todayKey() + '.json';
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+function exportJSON() {
+  store.settings.exportedAt = Date.now(); // дата попадает и в сам файл
+  save();
+  download('minimum-' + todayKey() + '.json', JSON.stringify(store, null, 1));
+}
+
+/* Единицы владельца в store — считаются одинаково по сырому файлу и по
+   прошедшему migrate. Расхождение и есть то, что не доехало (задача 25,
+   п. 3): сводка импорта прежде говорила только про уцелевшее, и потери
+   были бесшумны. Считает по-хорошему defensive: сырой файл валидность
+   не гарантирует ничем. */
+function dataCounts(s) {
+  const len = v => (Array.isArray(v) ? v.length : 0);
+  const days = (s && s.days && typeof s.days === 'object' && !Array.isArray(s.days)) ? s.days : {};
+  let marks = 0;
+  for (const k of Object.keys(days)) {
+    const d = days[k];
+    if (d && typeof d === 'object' && !Array.isArray(d)) {
+      for (const id of Object.keys(d)) if (d[id] === true) marks++;
+    }
+  }
+  return {
+    items: len(s && s.items), days: Object.keys(days).length, marks,
+    notes: len(s && s.notes), reviews: len(s && s.reviews),
+    exercises: len(s && s.exercises), sessions: len(s && s.sessions)
+  };
+}
+
+const COUNT_WORDS = [
+  ['items', 'пункт', 'пункта', 'пунктов'],
+  ['days', 'день', 'дня', 'дней'],
+  ['marks', 'отметка', 'отметки', 'отметок'],
+  ['notes', 'заметка', 'заметки', 'заметок'],
+  ['reviews', 'разбор', 'разбора', 'разборов'],
+  ['exercises', 'упражнение', 'упражнения', 'упражнений'],
+  ['sessions', 'тренировка', 'тренировки', 'тренировок']
+];
+
+/* «2 дня, 8 отметок» — перечисление того, чего в файле больше, чем доедет.
+   Пустая строка, когда числа сошлись: лишней строки в подтверждении нет. */
+function droppedLine(was, got) {
+  const parts = [];
+  for (const [key, one, few, many] of COUNT_WORDS) {
+    const n = was[key] - got[key];
+    if (n > 0) parts.push(`${n} ${plural(n, one, few, many)}`);
+  }
+  return parts.join(', ');
 }
 
 function importJSON(file) {
@@ -2136,6 +2230,10 @@ function importJSON(file) {
       alert('Файл не похож на экспорт «Минимума».');
       return;
     }
+    // «было» — по СЫРОМУ файлу и обязательно ДО migrate: migrate мутирует
+    // переданный объект и возвращает его же, после него считать уже нечего
+    const was = dataCounts(data);
+    const fileVersion = numOr(data.schemaVersion, 0);
     let incoming;
     try {
       incoming = migrate(data, { external: true }); // файл извне — без посева (A.2.1)
@@ -2152,7 +2250,25 @@ function importJSON(file) {
       `закрытых недель: ${incoming.reviews.length}`
     ];
     if (range.length) parts.push(`отметки: ${fmtShort(range[0])} — ${fmtShort(range[range.length - 1])}`);
-    if (!confirm(`Заменить текущие данные данными из файла?\n\nВ файле: ${parts.join(', ')}.`)) return;
+    let msg = `Заменить текущие данные данными из файла?\n\nВ файле: ${parts.join(', ')}.`;
+    // сводка уцелевшего остаётся, к ней добавляется отброшенное: владелец
+    // видит и что придёт, и что потеряется (задача 25, п. 3)
+    const lost = droppedLine(was, dataCounts(incoming));
+    if (lost) msg += `\n\nНе будет прочитано: ${lost}.`;
+    // файл новее приложения: шаги миграции для его полей ещё не написаны,
+    // и незнакомое отсеется валидацией. Не блокирует — спрашивает (п. 5)
+    if (fileVersion > SCHEMA_VERSION) {
+      msg += `\n\nФайл снят более новой версией приложения: часть данных может не сохраниться.`;
+    }
+    if (!confirm(msg)) return;
+    // прежние данные ложатся в копию ДО подмены и той же механикой, что при
+    // чистке (инвариант 18). Копию некуда положить — импорт не выполняется:
+    // необратимых операций в интерфейсе нет, импорт был последней
+    const prev = store;
+    if (!keepPrev(prev, 'import')) {
+      alert('Импорт не выполнен: копию прежних данных некуда сохранить. Текущие данные не изменены.');
+      return;
+    }
     store = incoming;
     save();
     // импорт заменил состояние целиком: черновики форм и дневное ui-состояние
@@ -2164,17 +2280,24 @@ function importJSON(file) {
     ui.missOpen = {};
     ui.raiseEdit = {};
     ui.groupRename = null;
-    ui.groupDelete = null;
     ui.groupAdd = false;
     ui.groupPick = null;
     ui.groupNew = false;
-    // заметки принадлежали прежним данным — форма, подтверждение и черновик
+    // заметки принадлежали прежним данным — форма и черновик
     ui.noteAdd = false;
     ui.noteEditingId = null;
-    ui.noteDelete = null;
     ui.noteDraft = null;
     ui.exEditingId = null;
     ui.exAddOpen = false;
+    // Взведённые подтверждения относились к ПРЕЖНИМ данным и после подмены
+    // указывают уже на чужие. Опаснее всех «Подтвердить: стереть»: оно
+    // переживало импорт, и один тап по нему стирал импортированное, подменяя
+    // ТОЛЬКО ЧТО записанную копию прежних данных — та самая обратимость,
+    // ради которой копия и заводится, уничтожалась одним касанием (задача 25).
+    // Список подтверждений один — в resetConfirms(); дублировать его здесь
+    // значит забыть очередное, что и случилось.
+    ui.wipeOpen = false;
+    resetConfirms();
     closeDetail(); // лист детали принадлежал прежним данным (и чистит свой черновик)
     ui.renderedDayKey = todayKey();
     armDayTimer();
@@ -2240,6 +2363,7 @@ const ui = {
   wipeFailed: false,    // копию некуда положить — чистка не выполнена (19, C.6.4)
   wipeConfirm: false,   // «Стереть» ждёт подтверждения вторым тапом
   wipeDropConfirm: false, // «Убрать копию» — тоже вторым тапом
+  corruptDropConfirm: false, // «Убрать» нечитаемые данные — вторым тапом (задача 25)
   // свёрнутые секции «Настроек»: по умолчанию раскрыты только «Пункты»
   settingsOpen: { groups: false, items: true, exercises: false, data: false, system: false }
 };
@@ -3614,7 +3738,10 @@ function sect(key, title, body) {
     </details>`;
 }
 
-/* Строка возврата — первой в «Данных», пока копия существует */
+/* Строка возврата — первой в «Данных», пока копия существует. Поводов
+   к её жизни два: чистка и импорт (задача 25, п. 2.2) — оба замещают
+   прежнее состояние, и оба обратимы одной кнопкой. Копия без kind —
+   снятая до задачи 25, то есть чисткой. */
 function restoreLine() {
   const c = wipedCopy();
   if (!c) return '';
@@ -3622,14 +3749,36 @@ function restoreLine() {
   const when = (typeof c.wipedAt === 'number' && isFinite(c.wipedAt))
     ? fmtDay(dateKeyShift(new Date(c.wipedAt), store.settings.dayBoundary))
     : '';
+  const what = c.kind === 'import' ? 'Заменено импортом' : 'Стёрто';
   const n = Number(st.items) || 0;
   const d = Number(st.days) || 0;
   return `
     <div class="restore">
-      <p class="muted">Стёрто${when ? ' ' + esc(when) : ''} · ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ${d} ${plural(d, 'день', 'дня', 'дней')} отметок</p>
+      <p class="muted">${what}${when ? ' ' + esc(when) : ''} · ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ${d} ${plural(d, 'день', 'дня', 'дней')} отметок</p>
       <div class="btns">
         <button class="btn" data-act="wipe-undo">Вернуть</button>
         <button class="btn quiet" data-act="wipe-drop">${ui.wipeDropConfirm ? 'Подтвердить: убрать копию' : 'Убрать копию'}</button>
+      </div>
+    </div>`;
+}
+
+/* Нечитаемые данные, отложенные load(), становятся видимыми (задача 25,
+   п. 6): прежде они молча лежали в ключе, о котором владелец не знал, —
+   ни скачать, ни убрать. Тон — как у «Резервная копия не проверена»:
+   это «неизвестно», а не тревога, поэтому muted и без акцента. */
+function corruptLine() {
+  const c = corruptCopy();
+  if (!c) return '';
+  const when = (typeof c.at === 'number' && isFinite(c.at))
+    ? ' от ' + esc(fmtDay(dateKeyShift(new Date(c.at), store.settings.dayBoundary)))
+    : '';
+  return `
+    <div class="restore corrupt">
+      <p class="muted">Найдены нечитаемые данные${when}</p>
+      <p class="muted">Приложение не смогло их прочитать и отложило, ничего не стирая.</p>
+      <div class="btns">
+        <button class="btn" data-act="corrupt-save">Скачать</button>
+        <button class="btn quiet" data-act="corrupt-drop">${ui.corruptDropConfirm ? 'Подтвердить: убрать' : 'Убрать'}</button>
       </div>
     </div>`;
 }
@@ -3657,7 +3806,7 @@ function wipeBlock() {
       <p class="lead">Начать с чистого листа</p>
       ${ui.wipeFailed ? `<p class="muted" role="status">Не удалось сохранить копию — чистка отменена</p>` : ''}
       <p class="muted">Будут стёрты: ${line}.</p>
-      <p class="muted">Копия останется в приложении — вернуть можно, пока она не убрана.${wipedCopy() ? ' Прежняя копия будет заменена новой: хранится одна, последняя.' : ''}</p>
+      <p class="muted">Копия останется в приложении — вернуть можно, пока она не убрана.${wipedCopy() && hasData(store) ? ' Прежняя копия будет заменена новой: хранится одна, последняя.' : ''}</p>
       <div class="btns">
         <button class="btn" data-act="export">Сначала скачать копию</button>
         <button class="btn quiet" data-act="wipe-do">${ui.wipeConfirm ? 'Подтвердить: стереть' : 'Стереть'}</button>
@@ -3747,9 +3896,12 @@ function renderSettings() {
   h += sect('items', 'Пункты', body);
   h += sect('exercises', 'Упражнения', exerciseEditor());
 
+  // «запускался», а не «был»: приложение знает лишь то, что отдало файл
+  // браузеру. Сохранил ли его владелец — в вебе узнать нечем, и строка
+  // не должна утверждать больше, чем приложение знает (задача 25, п. 9)
   const exp = (typeof store.settings.exportedAt === 'number' && isFinite(store.settings.exportedAt))
     // логический день — как в имени файла экспорта (инвариант 1)
-    ? `Последний экспорт: ${esc(fmtShort(dateKeyShift(new Date(store.settings.exportedAt), store.settings.dayBoundary)))}`
+    ? `Экспорт запускался: ${esc(fmtShort(dateKeyShift(new Date(store.settings.exportedAt), store.settings.dayBoundary)))}`
     : 'Экспорта ещё не было';
   h += sect('data', 'Данные', restoreLine() + `
     <div class="btns">
@@ -3759,6 +3911,7 @@ function renderSettings() {
     ${ui.importNote ? `<p class="muted" role="status">${esc(ui.importNote)}</p>` : ''}
     <p class="muted">${exp}</p>
     <p class="muted" id="mirror-note" hidden></p>
+    ${corruptLine()}
     <input type="file" id="import-file" accept="application/json,.json" hidden>
     <p class="muted">Все данные — на этом устройстве: рабочая копия и автоматическая резервная. Экспорт — способ сохранить их вне приложения.</p>
     <h2>Начало отсчёта</h2>
@@ -4004,6 +4157,10 @@ function closeReview() {
   // свёртка недели принадлежит открытому разбору: следующий открывается
   // в состоянии по умолчанию, а не с чужой памятью (задача 24, п. 9.1)
   ui.weekOpen = null;
+  // «Остаться» — решение по ступени ЭТОГО разбора, той же природы: без
+  // сброса оно гасило карточку шага до перезагрузки страницы, в том числе
+  // после смены недели и для другой лестницы (задача 25, п. 1)
+  ui.ladderStay = false;
 }
 
 function closeTrain() {
@@ -4021,6 +4178,7 @@ function closeTrain() {
 function resetConfirms() {
   ui.wipeConfirm = false;
   ui.wipeDropConfirm = false;
+  ui.corruptDropConfirm = false;
   ui.groupDelete = null;
   ui.noteDelete = null;
   ui.ladderConfirm = false;
@@ -4786,6 +4944,21 @@ function onClick(e) {
       ui.wipeDropConfirm = false;
       renderSettings();
       break;
+
+    // ── нечитаемые данные (задача 25, п. 6) ───────────────────
+    case 'corrupt-save': {
+      const c = corruptCopy();
+      if (c) download('minimum-нечитаемое-' + todayKey() + '.json', c.raw);
+      break;
+    }
+
+    case 'corrupt-drop':
+      if (!ui.corruptDropConfirm) { ui.corruptDropConfirm = true; renderSettings(); break; }
+      dropCorrupt();
+      ui.corruptDropConfirm = false;
+      renderSettings();
+      break;
+
     case 'import':
       if (hadImportNote) renderSettings(); // до открытия диалога: file-input должен остаться в живом DOM
       el('import-file').click();
@@ -4945,6 +5118,8 @@ if (typeof module !== 'undefined' && module.exports) {
     addNote, updateNote, deleteNote, notesByDate, quotes, quoteOfDay,
     // чистка и её отмена (задача 16.1)
     WIPE_KEY, emptyStore, wipeStats, wipedCopy, wipeAll, restoreWiped, dropWiped,
+    // копия перед замещением, нечитаемые данные и счёт потерь (задача 25)
+    CORRUPT_KEY, hasData, keepPrev, corruptCopy, dropCorrupt, dataCounts, droppedLine,
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, canMoveItem, reorderItem, reorderGroup, reorderExercise,
