@@ -250,7 +250,11 @@ const BOUND = [
   { re: /^\.switch span$/, prop: 'background', what: 'трек тумблера' },
   { re: /(^|,\s*)\.field input\b/, prop: 'border', what: 'рамка поля формы' },
   { re: /(^|,\s*)\.raise-line \.num\b/, prop: 'border', what: 'рамка инпута карточки повышения' },
-  { re: /^\.cdays i$/, prop: 'border-color', what: 'обводка пустой ячейки цепи' }
+  { re: /^\.cdays i$/, prop: 'border-color', what: 'обводка пустой ячейки цепи' },
+  // задача 26, п. 5.4: обводка кнопки — единственный её контур, и брала она
+  // --line-strong (1,45:1) из корзины без порога, тогда как поле в той же
+  // карточке обведено --control-border (3,55:1)
+  { re: /^\.btn$/, prop: 'border', what: 'рамка кнопки' }
 ];
 
 test('контраст: правила берут цвет из переменных, а не из значений', () => {
@@ -260,6 +264,10 @@ test('контраст: правила берут цвет из переменн
     assert.ok(name in NONTEXT || name in TEXT,
       `${b.what} взял --${name} из корзины без порога — это несущий элемент`);
   }
+  // кнопка и поле обведены одним токеном: расхождение и было дефектом (п. 5.4)
+  assert.equal(varOf(ruleBySelector(/^\.btn$/, 'кнопка').border, 'кнопка'),
+    varOf(ruleBySelector(/(^|,\s*)\.field input\b/, 'поле').border, 'поле'),
+    'кнопка и поле формы обведены одним токеном');
   // select в .field — под тем же правилом рамки, что и input
   const fieldRule = TOP.find(r => /(^|,\s*)\.field input\b/.test(r.selector) && /border:/.test(r.body));
   assert.match(fieldRule.selector, /\.field select/, 'рамка .field select задаётся тем же правилом');

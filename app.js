@@ -23,19 +23,26 @@ const SYSTEM_TEXTS = [
     items: [
       'Минимум выполняется даже в худший день.',
       'Не пропускай дважды: пропуск — событие, два подряд — начало новой привычки.',
-      'Одно изменение за раз.',
+      // Правило держится механикой в двух местах из трёх: лестница в
+      // приложении одна, и повышение планки разбор предлагает одному
+      // пункту за раз. Третье — «одно изменение» на неделю — свободное
+      // поле, и держит его сам владелец. Текст не обещает большего (задача 26, п. 7.2).
+      'Одно изменение за раз: лестница одна и повышение планки одно за разбор; «одно изменение» недели держит сам владелец.',
       'Самооценка раз в неделю, не ежедневно.',
       'Планка повышается только вручную и только после устойчивых трёх недель.'
     ]
   },
   {
+    // Прежний текст перечислял Тело · Движение · Сон · Развитие — набор,
+    // которого у владельца нет: посев заводит Утро · Подряд · Движение
+    // (задача 26, п. 7.3). Названо стартовым, чтобы не разойтись снова:
+    // блоки переименовываются и удаляются.
     kind: 'leads',
     title: 'Блоки',
     items: [
-      { lead: 'Тело:', text: 'гигиена, короткая силовая связка.' },
-      { lead: 'Движение:', text: 'минимальная дистанция пешком.' },
-      { lead: 'Сон:', text: 'телефон вне кровати до отбоя.' },
-      { lead: 'Развитие:', text: 'десять минут в день.' }
+      { lead: 'Блок — связка пунктов.', text: 'На дневном экране они соединены линией и идут подряд. Линия показывает принадлежность, а не очередь: порядок не принудителен.' },
+      { lead: 'Стартовая программа:', text: 'Утро — умыться, душ. Подряд — подтягивания с отжиманиями, английский, развитие. Движение — пешком. Тренировка, телефон вне кровати и отбой идут без блока.' },
+      { lead: 'Всё правится.', text: 'Блоки заводятся, переименовываются и удаляются в Настройках; удаление блока пункты не трогает.' }
     ]
   },
   {
@@ -2066,9 +2073,9 @@ function hasData(s) {
   return Object.values(wipeStats(s)).some(n => n > 0);
 }
 
-/* Копия прежнего состояния — одна механика на оба повода замещения:
-   чистку и импорт (инвариант 18). Возвращает false, только если копию
-   некуда положить, — тогда замещающая операция не выполняется вовсе.
+/* Копия прежнего состояния — одна механика на все поводы замещения:
+   чистку, импорт и сам возврат (инвариант 18). Возвращает false, только
+   если копию некуда положить, — тогда замещающая операция не выполняется.
 
    Пустой store копию НЕ подменяет: «одна, последняя» значит «последняя
    СОДЕРЖАТЕЛЬНАЯ». Вторая чистка подряд прежде клала в копию пустоту и
@@ -2142,17 +2149,34 @@ function wipeAll() {
 }
 
 /* Возврат: копия проходит migrate (как и импорт, инвариант 6 — она
-   могла быть снята прежней версией), ключ убирается. */
+   могла быть снята прежней версией).
+
+   Возврат — такое же замещение, как чистка и импорт, и обратим он тем же
+   путём (задача 26, п. 1.1): нынешнее состояние ложится в ТУ ЖЕ копию до
+   подмены. Копия становится обменной, «Вернуть» — переключателем между
+   двумя состояниями, и наработанное после чистки или импорта не теряется.
+   Прежде возврат был единственной необратимой операцией в интерфейсе:
+   неделя отметок, набранная после чистки, уходила одним тапом.
+
+   Пустое нынешнее состояние менять не на что — копия просто убирается,
+   как и прежде: keepPrev пустой store в копию не кладёт (иначе «Вернуть»
+   подменяло бы практику пустотой), а оставить прежнюю копию нельзя — её
+   содержимое только что стало живым, и строка врала бы про стёртое. */
 function restoreWiped() {
   const c = wipedCopy();
   if (!c) return false;
   let restored;
   // external: копия — данные извне, посев ей не адресован (A.2.1)
   try { restored = migrate(c.store, { external: true }); } catch (e) { return false; }
+  const prev = store;
+  if (hasData(prev)) {
+    if (!keepPrev(prev, 'restore')) return false; // копию некуда положить — возврат не выполняется
+  } else {
+    dropWiped();
+  }
   store = restored;
   save();
   flushMirror();
-  dropWiped();
   return true;
 }
 
@@ -2323,7 +2347,10 @@ const ui = {
   addArea: 'min',       // область формы добавления: 'min' | 'habit'
   addPkind: 'time',     // вид параметра в форме добавления; после создания вид не меняется
   editNorm: null,       // черновик нормы недели в открытой форме привычки (null — как у пункта)
-  savedFlash: false,    // разовое тихое подтверждение сохранения формы (движение, задача 12)
+  // разовое тихое подтверждение сохранения формы (движение, задача 12).
+  // С задачи 26 это не флаг, а якорь: { key, text } — ключ той строки, у
+  // которой узел должен родиться, чтобы стоять у пальца, а не в шапке (п. 2.1)
+  savedAt: null,
   importNote: null,     // строка «Импортировано: …», исчезает при следующем действии
   renderedDayKey: null, // логический день, для которого отрисован интерфейс (инвариант 8)
   renderedTab: null,    // последний отрисованный вид (вкладка или лист) — скролл сбрасывается только при его смене
@@ -2351,7 +2378,14 @@ const ui = {
   trainId: null,        // недельный пункт, чей счётчик растёт записью
   trainFrom: null,      // вкладка возврата и её скролл
   trainScroll: 0,
-  trainNote: '',        // черновик заметки листа — переживает перерисовку
+  // черновик листа «Тренировка» — нагрузки и заметка (задача 26, п. 3).
+  // Четвёртый слот того же механизма, что у «Пунктов», листа детали и
+  // заметок: снимается в начале renderTrain, возвращается в конце.
+  // Прежде здесь лежала строка ui.trainNote с комментарием «переживает
+  // перерисовку» — ввод в неё не попадал вовсе, и обещание было ложным.
+  trainDraft: null,
+  // кнопка, открывшая лист: закрытие любым путём вернёт ей фокус (п. 4.2)
+  sheetSrc: null,       // { act, id } | null
   exEditingId: null,    // упражнение с раскрытой правкой
   exAddOpen: false,     // открыта форма «Добавить упражнение»
   noteAdd: false,       // открыта форма новой заметки (задача 16E)
@@ -2439,9 +2473,59 @@ const FLASH_MS = timing('FLASH_MS', 1200);
 
 function armFlash() {
   if (!prefersReducedMotion()) return;
-  const n = document.querySelector('.flash');
+  // строку отказа (.flash.keep) не трогаем: она обязана дождаться правки
+  const n = document.querySelector('.flash:not(.keep)');
   if (!n) return;
   setTimeout(() => { if (n.isConnected) n.remove(); }, FLASH_MS);
+}
+
+/* ── Тихое подтверждение и тихий отказ (задача 26, п. 2) ───────
+   Один и тот же узел .flash и один и тот же тон. Разводит их жизненный
+   путь, и он же диктует механику.
+
+   ПОДТВЕРЖДЕНИЕ: форма закрылась, экран перерисован — узел рождается
+   разметкой у ЯКОРЯ той строки, которой форма принадлежала. Прежде оно
+   печаталось в шапке экрана: у правки упражнения — на 1939 px выше
+   нажатой кнопки (замер, 375×812). Ключ отдаётся ровно один раз.
+
+   ОТКАЗ: форма ОСТАЛАСЬ открытой, и перерисовывать её нельзя — она
+   вернула бы в поля сохранённые значения, а введённое владельцем
+   пропало бы (п. 2.4). Поэтому строка вставляется точечно рядом с
+   нажатой кнопкой; тем же путём это делал лист тренировки до задачи 26. */
+const flashOk = (key, text) => { ui.savedAt = { key, text: text || 'Сохранено' }; };
+
+function flashAt(key) {
+  if (!ui.savedAt || ui.savedAt.key !== key) return '';
+  const text = ui.savedAt.text;
+  ui.savedAt = null; // разовое: отдав узел, якорь гаснет
+  return `<p class="flash" role="status">${esc(text)}</p>`;
+}
+
+/* Подтверждение обязано появиться ТАМ, ГДЕ ПАЛЕЦ, а форма при сохранении
+   закрывается и разметка схлопывается на её высоту. У высокой формы
+   (правка параметра — 530 px на 375×812) строка-якорь уезжала выше края
+   экрана, и узел рождался за пределами видимого — замер дал −73 px.
+   Держим точку нажатия на месте: запоминаем, на какой высоте ЭКРАНА стояла
+   кнопка, и после перерисовки подгоняем скролл так, чтобы узел встал туда
+   же. Скролл мгновенный — это не движение, а та же бухгалтерия положения,
+   что у листов (п. 4.1). */
+function keepInPlace(btn, render) {
+  const y = btn ? btn.getBoundingClientRect().top : null;
+  render();
+  if (y === null) return;
+  const n = document.querySelector('.flash:not(.keep)');
+  if (!n) return;
+  const dy = n.getBoundingClientRect().top - y;
+  if (dy) window.scrollTo(0, Math.max(0, (window.scrollY || 0) + dy));
+}
+
+function refuse(btn, text) {
+  if (!btn) return;
+  const box = btn.closest('.btns') || btn;
+  const prev = box.previousElementSibling;
+  // повторный отказ заменяет прежний, а не копится строками
+  if (prev && prev.classList && prev.classList.contains('flash')) prev.remove();
+  box.insertAdjacentHTML('beforebegin', `<p class="flash keep" role="status">${esc(text)}</p>`);
 }
 
 function motionLeave(node, done) {
@@ -2459,10 +2543,12 @@ function motionLeave(node, done) {
   setTimeout(fin, MOTION_MS + MOTION_TAIL_MS);
 }
 
-/* Пять вкладок плюс два листа поверх них: лист детали пункта и разбор
-   недели. Разбор с таб-бара ушёл (задача 16B) — открывается баннером
+/* Пять вкладок плюс три листа поверх них: деталь пункта, разбор недели и
+   тренировка. Разбор с таб-бара ушёл (задача 16B) — открывается баннером
    «Сегодня» и строкой «Прогресса», закрывается «Готово» на ту вкладку,
-   с которой открыт. Лист детали главнее: он открывается и из разбора. */
+   с которой открыт. Лист детали главнее двух других: если открыт он,
+   рисуется он. Открывается лист детали только с дневных экранов и из
+   формы правки «Пунктов» — в разборе входа в него нет. */
 function renderAll() {
   const map = {
     today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
@@ -2582,7 +2668,10 @@ function groupSections(items, t, habit) {
    переключает отметку. Лист детали открывает хвостовая кнопка — она
    есть только у пунктов с лестницей или формулой, поэтому строка
    обычного пункта совпадает с версией до задачи 14 попиксельно.
-   Имя чекбоксу даёт содержимое label — aria-label его только затёр бы. */
+   Имя чекбоксу даёт содержимое label — aria-label его только затёр бы.
+   Подпись «вчера — пропуск» стоит в разметке всегда, когда есть точка,
+   и прячется атрибутом hidden: aria-controls обязан указывать на
+   существующий узел, иначе disclosure для AT неполон (задача 26, п. 8.1). */
 function dailyRow(it, t, habit, chain) {
   const on = isMarked(t, it.id);
   const miss = missedYesterday(it, t);
@@ -2613,8 +2702,8 @@ function dailyRow(it, t, habit, chain) {
           </span>
         </label>
         ${detailTail(it)}
-        ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-label="вчера — пропуск"><i></i></button>` : ''}
-        ${miss && ui.missOpen[it.id] ? `<p class="miss-note">вчера — пропуск<button type="button" class="undo" data-act="mark-yesterday" data-id="${esc(it.id)}" aria-label="отметить вчера: «${esc(it.name)}»">отметить</button></p>` : ''}
+        ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-controls="miss-${esc(it.id)}" aria-label="вчера — пропуск"><i></i></button>` : ''}
+        ${miss ? `<p class="miss-note" id="miss-${esc(it.id)}"${ui.missOpen[it.id] ? '' : ' hidden'}>вчера — пропуск<button type="button" class="undo" data-act="mark-yesterday" data-id="${esc(it.id)}" aria-label="отметить вчера: «${esc(it.name)}»">отметить</button></p>` : ''}
         ${habit ? habitWeekRow(it, t) : ''}
       </div>`;
 }
@@ -2804,7 +2893,8 @@ function pcard(title, body) {
 }
 
 /* Полоса сегодняшнего дня под числом серии: заполнение — доля дня.
-   Единственный градиент в приложении (задача 17, п. 4.4). */
+   Форма общая с планкой дня «Сегодня» и «Привычек» — та же высота,
+   радиус и тот же единственный в приложении градиент (задача 26, п. 5.1). */
 function dayBar() {
   const t = todayKey();
   const m = minDayMarks(t);
@@ -2889,15 +2979,19 @@ function renderProgress() {
    инкремента: сначала записывается, что сделано, потом растёт счёт.
    «Отмена» не пишет ничего. */
 function renderTrain() {
+  snapshotOpenForm(); // черновик листа — тот же механизм, что у форм (задача 26, п. 3)
   const w = store.items.find(i => i.id === ui.trainId);
   // имя недельного пункта — заголовок, надстрочник — день записи: прежде
   // оба говорили «Тренировка» (задача 22, п. 7.3)
   let h = `
     <header class="page">
       <p class="overline">${esc(fmtDay(todayKey()))}</p>
-      <h1>${esc(w ? w.name : 'Тренировка')}</h1>
+      <h1 tabindex="-1">${esc(w ? w.name : 'Тренировка')}</h1>
     </header>`;
 
+  // Поля листа — те же черновиковые поля, что в формах: обёртка несёт
+  // data-form, и snapshotOpenForm находит их по общему правилу.
+  h += `<div data-form="train" data-id="${esc(ui.trainId || '')}">`;
   const list = activeExercises();
   if (!list.length) {
     h += `<p class="muted">Упражнений пока нет — добавить можно в Настройках → Упражнения.</p>`;
@@ -2921,13 +3015,14 @@ function renderTrain() {
   h += `
     <label class="field">
       <span>Заметка</span>
-      <input type="text" id="tr-note" value="${esc(ui.trainNote)}" placeholder="необязательно">
+      <input type="text" id="tr-note" value="" placeholder="необязательно">
     </label>
-    <p class="muted" id="tr-empty" role="status" hidden>Нечего записать: ни одно упражнение не заполнено.</p>
+    </div>
     <button class="btn primary wide" data-act="train-save">Записать</button>
     <button class="btn wide" data-act="train-cancel">Отмена</button>`;
 
   el('scr-train').innerHTML = h;
+  restoreOpenForm();
 }
 
 /* Экран 4 — «Заметки» (инвариант 16): список от новых к старым, тап по
@@ -2957,17 +3052,15 @@ function renderNotes() {
       <p class="overline">Своими словами</p>
       <h1>Заметки</h1>
     </header>`;
-  if (ui.savedFlash) { // тихое подтверждение сохранения, как в «Настройках»
-    h += `<p class="flash" role="status">Сохранено</p>`;
-    ui.savedFlash = false;
-  }
-
   h += ui.noteAdd
     ? noteForm(null)
     : `<div class="nadd">
         <button class="btn" data-act="note-add-open" data-kind="note">Новая заметка</button>
         <button class="btn" data-act="note-add-open" data-kind="quote">Новая выписка</button>
       </div>`;
+  // якорь над списком: сюда встаёт подтверждение записи, у которой своей
+  // строки уже нет (пустой текст удалил её — инвариант 16)
+  h += flashAt('note-add');
 
   const list = notesByDate();
   if (!list.length && !ui.noteAdd) h += `<p class="muted">Пока пусто</p>`;
@@ -2981,6 +3074,7 @@ function renderNotes() {
         <span class="ntext">${quote ? '&laquo;' + esc(n.text) + '&raquo;' : esc(n.text)}</span>
         ${quote && n.source ? `<span class="nsrc">${esc(n.source)}</span>` : ''}
       </button>`;
+    h += flashAt('note:' + n.id);
   }
 
   el('scr-notes').innerHTML = h;
@@ -3172,7 +3266,7 @@ function renderDetail(it) {
   const meta = [valUnit(it), (it.group || '').trim()].filter(Boolean).join(' · ');
   let h = `
     <header class="page">
-      <h1 class="dtitle">${esc(it.name)}</h1>
+      <h1 class="dtitle" tabindex="-1">${esc(it.name)}</h1>
       ${meta ? `<p class="muted">${esc(meta)}</p>` : ''}
       ${it.note ? `<p class="muted">${esc(it.note)}</p>` : ''}
     </header>`;
@@ -3217,15 +3311,18 @@ function renderDetail(it) {
     }
     h += `<div class="btns"><button class="btn quiet" data-act="formula-open" data-id="${esc(it.id)}">Изменить</button></div>`;
   }
+  h += flashAt('formula:' + it.id);
 
   h += ui.detailForm === 'ladder'
     ? ladderForm(it)
     : `<div class="btns dfoot"><button class="btn quiet" data-act="ladder-open" data-id="${esc(it.id)}">Настроить лестницу</button></div>`;
+  h += flashAt('ladder:' + it.id);
 
   h += `<button class="btn primary wide" data-act="detail-done">Готово</button>`;
 
   el('scr-detail').innerHTML = h;
   restoreOpenForm();
+  armFlash();
 }
 
 function formulaForm(it) {
@@ -3304,7 +3401,7 @@ function reviewActionable() {
 const weekFoldOpen = () => (ui.weekOpen === null ? !reviewActionable() : ui.weekOpen);
 
 function renderReview() {
-  let h = `<header class="page"><p class="overline">Раз в неделю</p><h1>Разбор недели</h1></header>`;
+  let h = `<header class="page"><p class="overline">Раз в неделю</p><h1 tabindex="-1">Разбор недели</h1></header>`;
 
   if (!reviewDue()) {
     if (ui.justClosed) h += `<p class="lead" role="status">Неделя закрыта.</p>`;
@@ -3567,8 +3664,12 @@ function paramHistory(it) {
    пока открыта та же форма. */
 function currentFormKey() {
   if (ui.detailId !== null && ui.detailForm) return ui.detailForm + ':' + ui.detailId; // формы листа детали
+  // лист тренировки перекрывает вкладку целиком — его поля и есть открытая
+  // форма, пока он открыт (задача 26, п. 3). Порядок проверок — как в
+  // renderAll: лист детали главнее листа тренировки.
+  if (ui.detailId === null && ui.trainOpen) return 'train:' + ui.trainId;
   // форма заметки принадлежит своей вкладке: на других экранах ключ не её
-  if (ui.tab === 'notes' && ui.detailId === null) {
+  if (ui.tab === 'notes' && ui.detailId === null && !ui.trainOpen) {
     if (ui.noteAdd) return 'note:new';
     if (ui.noteEditingId !== null) return 'note:' + ui.noteEditingId;
   }
@@ -3577,14 +3678,18 @@ function currentFormKey() {
   return null;
 }
 
-/* Два слота черновика (задача 15, п. 6): формы листа детали и формы
-   «Пунктов» больше не делят один. Иначе уход в лист стирал бы начатую
-   правку названия, а возврат — черновик формы листа. */
+/* Четыре слота черновика (задача 15, п. 6; лист тренировки — задача 26,
+   п. 3): формы листа детали, заметок, листа тренировки и «Пунктов» не делят
+   один. Иначе уход в лист стирал бы начатую правку названия, а возврат —
+   черновик формы листа. */
 const isDetailKey = key => key.startsWith('formula:') || key.startsWith('ladder:');
 const isNoteKey = key => key.startsWith('note:');
-const draftSlot = key => (isDetailKey(key) ? 'detailDraft' : (isNoteKey(key) ? 'noteDraft' : 'formDraft'));
+const isTrainKey = key => key.startsWith('train:');
+const draftSlot = key => (isDetailKey(key) ? 'detailDraft'
+  : (isNoteKey(key) ? 'noteDraft' : (isTrainKey(key) ? 'trainDraft' : 'formDraft')));
 /* Экран, на котором живёт форма ключа: снимок ищет её именно там */
-const formScope = key => (isDetailKey(key) ? '#scr-detail' : (isNoteKey(key) ? '#scr-notes' : '#scr-settings'));
+const formScope = key => (isDetailKey(key) ? '#scr-detail'
+  : (isNoteKey(key) ? '#scr-notes' : (isTrainKey(key) ? '#scr-train' : '#scr-settings')));
 
 function snapshotOpenForm() {
   const key = currentFormKey();
@@ -3592,8 +3697,10 @@ function snapshotOpenForm() {
   const slot = draftSlot(key);
   // форма ищется на том экране, которому принадлежит ключ: лист открывается
   // поверх «Пунктов», где форма правки остаётся в DOM и стоит в разметке выше
-  // формы блока черновиком не считаются — одно поле и один тап
-  const form = document.querySelector(formScope(key) + ' .card.form:not([data-form="group-add"])');
+  // формы блока черновиком не считаются — одно поле и один тап.
+  // Признак формы — data-form, а не класс .card.form: поля листа тренировки
+  // карточкой не обёрнуты, но черновик им нужен тот же (задача 26, п. 3.2)
+  const form = document.querySelector(formScope(key) + ' [data-form]:not([data-form="group-add"])');
   const domKey = form ? (form.dataset.form === 'add' ? 'add' : form.dataset.form + ':' + form.dataset.id) : null;
   if (domKey !== key) {
     if (ui[slot] && ui[slot].key !== key) ui[slot] = null; // открыли другую форму
@@ -3634,7 +3741,8 @@ function restoreOpenForm() {
 }
 
 /* Редактор блоков: строка — имя и стрелки, правка раскрывается тапом по
-   имени (механика формы правки пункта). Перетаскивание — отдельная задача. */
+   имени (механика формы правки пункта). Порядок задаётся стрелками и
+   перетаскиванием (инвариант 17, задача 16F). */
 function groupEditor() {
   let h = '';
   if (!store.groups.length) {
@@ -3661,6 +3769,7 @@ function groupEditor() {
             <button class="btn quiet" data-act="group-del" data-name="${esc(g.name)}">${ui.groupDelete === g.name ? 'Подтвердить удаление' : 'Удалить'}</button>
           </div>
         </div>` : ''}
+        ${flashAt('group:' + g.name)}
       </div>`;
   });
   h += ui.groupAdd
@@ -3711,6 +3820,7 @@ function exerciseEditor() {
             <button class="btn quiet" data-act="ex-cancel">Отмена</button>
           </div>
         </div>` : ''}
+        ${flashAt('ex:' + ex.id)}
       </div>`;
   });
   h += ui.exAddOpen
@@ -3738,10 +3848,17 @@ function sect(key, title, body) {
     </details>`;
 }
 
-/* Строка возврата — первой в «Данных», пока копия существует. Поводов
-   к её жизни два: чистка и импорт (задача 25, п. 2.2) — оба замещают
-   прежнее состояние, и оба обратимы одной кнопкой. Копия без kind —
-   снятая до задачи 25, то есть чисткой. */
+/* Строка возврата — первой в «Данных», пока копия существует. Поводов к её
+   жизни три: чистка, импорт (задача 25, п. 2.2) и сам возврат (задача 26,
+   п. 1.1) — все замещают прежнее состояние и все обратимы одной кнопкой.
+   Копия без kind — снятая до задачи 25, то есть чисткой.
+
+   Строка говорит, ЧТО лежит в копии и ОТКУДА взялось (п. 1.2), а не что
+   было сделано: копия обменная, и «Стёрто» после второго тапа по «Вернуть»
+   называло бы стёртым то, что как раз вернули. Тон нейтральный: ни
+   тревоги, ни оценки. */
+const PREV_WHENCE = { import: 'до импорта', restore: 'до возврата' };
+
 function restoreLine() {
   const c = wipedCopy();
   if (!c) return '';
@@ -3749,12 +3866,13 @@ function restoreLine() {
   const when = (typeof c.wipedAt === 'number' && isFinite(c.wipedAt))
     ? fmtDay(dateKeyShift(new Date(c.wipedAt), store.settings.dayBoundary))
     : '';
-  const what = c.kind === 'import' ? 'Заменено импортом' : 'Стёрто';
+  const whence = PREV_WHENCE[c.kind] || 'до чистки';
   const n = Number(st.items) || 0;
   const d = Number(st.days) || 0;
   return `
     <div class="restore">
-      <p class="muted">${what}${when ? ' ' + esc(when) : ''} · ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ${d} ${plural(d, 'день', 'дня', 'дней')} отметок</p>
+      <p class="muted">В копии — состояние ${whence}${when ? ', ' + esc(when) : ''} · ${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}, ${d} ${plural(d, 'день', 'дня', 'дней')} отметок</p>
+      <p class="muted">«Вернуть» меняет местами: нынешнее состояние ляжет в копию.</p>
       <div class="btns">
         <button class="btn" data-act="wipe-undo">Вернуть</button>
         <button class="btn quiet" data-act="wipe-drop">${ui.wipeDropConfirm ? 'Подтвердить: убрать копию' : 'Убрать копию'}</button>
@@ -3818,11 +3936,9 @@ function wipeBlock() {
 /* Экран 5 — «Настройки»: секции по порядку (задачи 16B, 16D) */
 function renderSettings() {
   snapshotOpenForm();
+  // подтверждение сохранения печатается не здесь, а у якоря той строки,
+  // которой принадлежала форма (задача 26, п. 2.1) — см. flashAt()
   let h = `<header class="page"><p class="overline">Устройство приложения</p><h1>Настройки</h1></header>`;
-  if (ui.savedFlash) { // тихое подтверждение сохранения — гаснет само (CSS), показывается один раз
-    h += `<p class="flash" role="status">Сохранено</p>`;
-    ui.savedFlash = false;
-  }
 
   h += sect('groups', 'Блоки', groupEditor());
 
@@ -3859,6 +3975,7 @@ function renderSettings() {
           </span>
         </div>
         ${ui.editingId === it.id ? editForm(it) : ''}
+        ${flashAt('item:' + it.id)}
       </div>`;
     });
     body += `</div>`;
@@ -4130,6 +4247,41 @@ function parsePositive(v) {
   return n !== null && n > 0 ? n : null;
 }
 
+/* ── Листы поверх вкладок (задача 26, п. 4) ────────────────────
+   Три листа: деталь пункта, разбор недели и тренировка. Все три
+   возвращают прежнюю вкладку с прежним скроллом и фокусом — каким бы
+   путём ни закрывались: кнопкой «Готово» или таб-баром. Прежде скролл
+   и фокус возвращали только кнопки, а таб-бар ронял экран наверх. */
+
+/* Куда вернёт закрытие открытого сейчас листа: вкладка, её скролл и
+   кнопка, которой лист открыт. Зовётся ДО close*(), пока состояние цело. */
+function sheetReturn() {
+  const src = ui.sheetSrc;
+  if (ui.detailId !== null) return { tab: ui.tab, y: ui.detailScroll, src };
+  if (ui.reviewOpen) return { tab: ui.reviewFrom || ui.tab, y: ui.reviewScroll, src };
+  if (ui.trainOpen) return { tab: ui.trainFrom || ui.tab, y: ui.trainScroll, src };
+  return null;
+}
+
+/* Фокус — в открытый лист: заголовок несёт tabindex="-1", чтобы клавиатура
+   и чтение с экрана начинались с листа, а не с начала документа. Ловушки
+   фокуса нет: лист закрывается таб-баром, запирать в нём нельзя (п. 4.3). */
+function focusSheet(id) {
+  const h = document.querySelector('#' + id + ' h1');
+  // preventScroll: скроллом распоряжается renderAll и sheetReturn, а не фокус
+  if (h && typeof h.focus === 'function') h.focus({ preventScroll: true });
+}
+
+/* Фокус обратно на кнопку-источник. Узел к этому моменту пересоздан
+   перерисовкой, поэтому помним не ссылку, а действие и пункт. Зовётся
+   ПОСЛЕ возврата скролла: кнопка тогда уже на экране и фокус его не двинет. */
+function focusSrc(src) {
+  if (!src) return;
+  const list = [...document.querySelectorAll(`[data-act="${src.act}"]`)];
+  const btn = src.id ? list.find(x => x.dataset.id === src.id) : list[0];
+  if (btn && typeof btn.focus === 'function') btn.focus({ preventScroll: true });
+}
+
 /* Лист детали: открытие запоминает позицию вкладки, закрытие её возвращает */
 function openDetail(id) {
   ui.detailScroll = window.scrollY || 0;
@@ -4139,6 +4291,7 @@ function openDetail(id) {
   ui.detailDraft = null;
   ui.missOpen = {}; // раскрытая подпись «вчера» принадлежит дневному экрану
   renderAll();
+  focusSheet('scr-detail');
 }
 
 function closeDetail() {
@@ -4148,6 +4301,7 @@ function closeDetail() {
   ui.detailDraft = null;
   ui.formulaMode = null;
   ui.ladderDoneConfirm = false;
+  ui.sheetSrc = null; // источник принадлежал закрытому листу
 }
 
 /* Лист разбора закрывается и таб-баром — как лист детали */
@@ -4161,13 +4315,15 @@ function closeReview() {
   // сброса оно гасило карточку шага до перезагрузки страницы, в том числе
   // после смены недели и для другой лестницы (задача 25, п. 1)
   ui.ladderStay = false;
+  ui.sheetSrc = null;
 }
 
 function closeTrain() {
   ui.trainOpen = false;
   ui.trainId = null;
   ui.trainFrom = null;
-  ui.trainNote = '';
+  ui.trainDraft = null; // черновик принадлежал закрытому листу
+  ui.sheetSrc = null;
 }
 
 /* Взведённое подтверждение вторым тапом — временное состояние одного
@@ -4350,6 +4506,9 @@ function onClick(e) {
   if (syncDay()) return; // stale-экран: действие не применяется (инвариант 8)
   const hadImportNote = ui.importNote !== null;
   ui.importNote = null; // строка «Импортировано…» живёт до следующего действия
+  // и якорь подтверждения тоже: не отданный прошлым рендером, он не должен
+  // всплыть позже у чужого действия (задача 26, п. 2.1)
+  ui.savedAt = null;
   const act = b.dataset.act;
   const id = b.dataset.id;
   const item = id ? store.items.find(i => i.id === id) : null;
@@ -4362,16 +4521,18 @@ function onClick(e) {
       ui.reviewScroll = window.scrollY || 0;
       ui.reviewFrom = ui.tab;
       ui.reviewOpen = true;
+      ui.sheetSrc = { act, id: id || '' };
       renderAll();
+      focusSheet('scr-review');
       break;
 
     case 'review-done': {
-      const back = ui.reviewFrom, y = ui.reviewScroll;
+      const back = sheetReturn();
       closeReview();
       resetConfirms(); // «Готово» уводит с листа — как таб-бар
-      if (back) ui.tab = back;
+      if (back && back.tab) ui.tab = back.tab;
       renderAll();
-      window.scrollTo(0, y); // прежняя вкладка с прежним скроллом
+      if (back) { window.scrollTo(0, back.y); focusSrc(back.src); } // прежняя вкладка, скролл и фокус
       break;
     }
 
@@ -4400,15 +4561,15 @@ function onClick(e) {
     }
 
     case 'item-detail':
-      if (item && item.type === 'daily') openDetail(id);
+      if (item && item.type === 'daily') { ui.sheetSrc = { act, id }; openDetail(id); }
       break;
 
     case 'detail-done': {
-      const y = ui.detailScroll;
+      const back = sheetReturn();
       closeDetail();
       resetConfirms();
       renderAll();
-      window.scrollTo(0, y); // прежняя вкладка с прежним скроллом
+      if (back) { window.scrollTo(0, back.y); focusSrc(back.src); } // прежняя вкладка, скролл и фокус
       break;
     }
 
@@ -4441,7 +4602,8 @@ function onClick(e) {
       ui.detailForm = null;
       ui.detailDraft = null;
       ui.formulaMode = null;
-      renderAll();
+      flashOk('formula:' + id);
+      keepInPlace(b, renderAll);
       break;
     }
 
@@ -4452,7 +4614,8 @@ function onClick(e) {
       ui.detailForm = null;
       ui.ladderConfirm = false; // незавершённое подтверждение не переживает форму
       ui.detailDraft = null;
-      renderAll();
+      flashOk('ladder:' + id);
+      keepInPlace(b, renderAll);
       break;
     }
     case 'ladder-clear': {
@@ -4470,9 +4633,14 @@ function onClick(e) {
       ui.trainScroll = window.scrollY || 0;
       ui.trainFrom = ui.tab;
       ui.trainId = id;
-      ui.trainNote = '';
+      ui.trainDraft = null; // новый лист — чистые поля
+      // прежний лист остаётся в DOM скрытым; чистим разметку, иначе снимок
+      // черновика подхватит его поля как «текущие» (у листа тот же ключ)
+      el('scr-train').innerHTML = '';
       ui.trainOpen = true;
+      ui.sheetSrc = { act, id };
       renderAll();
+      focusSheet('scr-train');
       break;
 
     case 'train-save': {
@@ -4486,31 +4654,29 @@ function onClick(e) {
       // поведение прежнее: лист вырождается в подтверждение «тренировка была»,
       // и это единственный способ засчитать её (решение архитектора).
       if (list.length && !entries.some(e => e.value !== null)) {
-        // отказ молчаливым не бывает: лист остаётся и говорит. Строка
-        // раскрывается точечно — перерисовка листа вернула бы в поля
-        // сохранённые нагрузки, и отказ противоречил бы тому, что видно.
-        const n = el('tr-empty');
-        if (n) n.hidden = false;
+        // отказ молчаливым не бывает: лист остаётся и говорит — той же
+        // строкой у кнопки, что и все прочие формы (задача 26, п. 2.5)
+        refuse(b, 'Нечего записать: ни одно упражнение не заполнено');
         break;
       }
       const note = el('tr-note') ? el('tr-note').value : '';
-      const back = ui.trainFrom, y = ui.trainScroll, weekly = ui.trainId;
+      const back = sheetReturn(), weekly = ui.trainId;
       recordSession(weekly, entries, note);
       closeTrain();
       resetConfirms();
-      if (back) ui.tab = back;
+      if (back && back.tab) ui.tab = back.tab;
       renderAll();
-      window.scrollTo(0, y);
+      if (back) { window.scrollTo(0, back.y); focusSrc(back.src); }
       break;
     }
 
     case 'train-cancel': { // ничего не пишет
-      const back = ui.trainFrom, y = ui.trainScroll;
+      const back = sheetReturn();
       closeTrain();
       resetConfirms();
-      if (back) ui.tab = back;
+      if (back && back.tab) ui.tab = back.tab;
       renderAll();
-      window.scrollTo(0, y);
+      if (back) { window.scrollTo(0, back.y); focusSrc(back.src); }
       break;
     }
 
@@ -4557,13 +4723,24 @@ function onClick(e) {
     case 'note-save': {
       const text = el('n-text') ? el('n-text').value : '';
       const src = el('n-source') ? el('n-source').value : undefined;
-      if (id === 'new') { if (addNote(text, ui.noteKind, src)) ui.savedFlash = true; }
-      else if (updateNote(id, text, src)) ui.savedFlash = true; // пустой текст удаляет заметку
+      const empty = !String(text).trim();
+      if (id === 'new') {
+        // пустая новая запись прежде тихо закрывала форму: ввода не было,
+        // но и отказа владелец не видел (задача 26, п. 2.2)
+        const n = addNote(text, ui.noteKind, src);
+        if (!n) { refuse(b, 'Текст не заполнен'); break; }
+        flashOk('note:' + n.id);
+      } else if (updateNote(id, text, src)) {
+        // пустой текст удаляет запись (инвариант 16) — своей строки у неё
+        // больше нет, и подтверждение встаёт над списком, говоря что случилось
+        if (empty) flashOk('note-add', 'Запись удалена');
+        else flashOk('note:' + id);
+      }
       ui.noteAdd = false;
       ui.noteEditingId = null;
       ui.noteDelete = null;
       ui.noteDraft = null;
-      renderNotes();
+      keepInPlace(b, renderNotes);
       break;
     }
 
@@ -4579,24 +4756,31 @@ function onClick(e) {
     case 'ex-add-open': ui.exAddOpen = true; ui.exEditingId = null; renderSettings(); break;
     case 'ex-add-cancel': ui.exAddOpen = false; renderSettings(); break;
     case 'ex-add-save': {
-      const name = el('x-add-name') ? el('x-add-name').value : '';
-      if (!name.trim()) break; // безымянное упражнение не заводится
-      addExercise(name, el('x-add-unit') ? el('x-add-unit').value : '',
-        el('x-add-value') ? parsePositive(el('x-add-value').value) : null);
+      const name = el('x-add-name') ? el('x-add-name').value.trim() : '';
+      if (!name) { refuse(b, 'Название не заполнено'); break; } // безымянное упражнение не заводится
+      const raw = el('x-add-value') ? el('x-add-value').value : '';
+      // нагрузка необязательна, но написанная и непринятая — отказ, а не тишина
+      if (String(raw).trim() && parsePositive(raw) === null) {
+        refuse(b, 'Нагрузка не принята: нужно число больше нуля');
+        break;
+      }
+      const ex = addExercise(name, el('x-add-unit') ? el('x-add-unit').value : '', parsePositive(raw));
       ui.exAddOpen = false;
-      ui.savedFlash = true;
-      renderSettings();
+      if (ex) flashOk('ex:' + ex.id); // подтверждение — у только что заведённой строки
+      keepInPlace(b, renderSettings);
       break;
     }
     case 'ex-open': ui.exEditingId = id; ui.exAddOpen = false; renderSettings(); break;
     case 'ex-cancel': ui.exEditingId = null; renderSettings(); break;
-    case 'ex-save':
-      if (updateExercise(id, el('x-name') ? el('x-name').value : '', el('x-unit') ? el('x-unit').value : '')) {
-        ui.exEditingId = null;
-        ui.savedFlash = true;
-      }
-      renderSettings();
+    case 'ex-save': {
+      const name = el('x-name') ? el('x-name').value.trim() : '';
+      if (!name) { refuse(b, 'Название не заполнено'); break; }
+      updateExercise(id, name, el('x-unit') ? el('x-unit').value : '');
+      ui.exEditingId = null;
+      flashOk('ex:' + id);
+      keepInPlace(b, renderSettings);
       break;
+    }
     case 'ex-up':
     case 'ex-down': {
       if (!moveExercise(id, act === 'ex-up' ? 'up' : 'down')) break;
@@ -4651,7 +4835,9 @@ function onClick(e) {
       if (!item) break;
       const input = el('raise-' + id);
       const v = input ? parsePositive(input.value) : raiseSuggest(item.value);
-      if (v === null) break; // осознанный тихий no-op: карточка остаётся
+      // карточка остаётся — и говорит, почему (задача 26, п. 2.3): прежде
+      // это был тихий no-op, и тап по «Принять» выглядел как промах
+      if (v === null) { refuse(b, 'Планка не принята: нужно число больше нуля'); break; }
       acceptRaise(item, v);
       delete ui.raiseEdit[id];
       motionLeave(b.closest('.card'), renderReview); // карточка уходит, затем перерисовка
@@ -4697,12 +4883,19 @@ function onClick(e) {
       renderSettings();
       break;
     case 'group-cancel': ui.groupRename = null; ui.groupDelete = null; renderSettings(); break;
+    // Отказ больше не молчит и не закрывает форму: пустое или занятое имя
+    // прежде уносило правку целиком — форма закрывалась, введённое пропадало
+    // (задача 26, пп. 2.3–2.4)
     case 'group-save': {
-      const inp = el('g-name');
-      if (inp) renameGroup(b.dataset.name, inp.value); // пустое или занятое имя — тихий отказ
+      const from = b.dataset.name;
+      const nm = el('g-name') ? el('g-name').value.trim() : '';
+      if (!nm) { refuse(b, 'Название не заполнено'); break; }
+      if (nm !== from && findGroup(nm)) { refuse(b, 'Блок с таким именем уже есть'); break; }
+      renameGroup(from, nm);
       ui.groupRename = null;
       ui.groupDelete = null;
-      renderSettings();
+      flashOk('group:' + nm);
+      keepInPlace(b, renderSettings);
       break;
     }
     case 'group-del': {
@@ -4717,9 +4910,13 @@ function onClick(e) {
     case 'group-add-cancel': ui.groupAdd = false; renderSettings(); break;
     case 'group-add-save': {
       const inp = el('g-add');
-      if (inp && !addGroup(inp.value)) { inp.focus(); break; } // пустое или дубль — форма остаётся
+      const nm = inp ? inp.value.trim() : '';
+      if (!nm) { refuse(b, 'Название не заполнено'); if (inp) inp.focus(); break; }
+      if (findGroup(nm)) { refuse(b, 'Блок с таким именем уже есть'); if (inp) inp.focus(); break; }
+      addGroup(nm);
       ui.groupAdd = false;
-      renderSettings();
+      flashOk('group:' + nm); // подтверждение — у только что заведённой строки
+      keepInPlace(b, renderSettings);
       break;
     }
 
@@ -4765,40 +4962,59 @@ function onClick(e) {
       break;
     }
 
+    /* Форма правки пункта. Порядок жёсткий: сначала ВСЕ проверки, потом
+       запись. Прежде поля писались по ходу, невалидное число молча
+       оставляло старое значение, а форма всё равно закрывалась с
+       «Сохранено» — приложение говорило «сохранено» о том, что выбросило
+       (задача 26, п. 2.2). Теперь первый же непринятый ввод — отказ:
+       форма остаётся открытой, введённое не переписано, в store не
+       записано ничего (п. 2.4). Сообщается первый отказ: строка короткая,
+       и владелец правит по одному полю. */
     case 'edit-save': {
       if (!item) break;
       const name = el('e-name').value.trim();
-      if (name) item.name = name;
-      item.note = el('e-note').value.trim();
+      if (!name) { refuse(b, 'Название не заполнено'); break; }
+      let pv = null, pstep = null, value, goal = null;
       if (item.type === 'param') {
         // pkind фиксирован при создании — правятся только порог, единица и шаг
-        const oldPv = item.pvalue;
-        let pv = oldPv;
         if (item.pkind === 'number') {
           const n = parseNum(el('e-pvalue') ? el('e-pvalue').value : '');
-          if (n !== null) pv = n; // невалид — старый порог
-          if (el('e-punit')) item.unit = el('e-punit').value.trim();
+          if (n === null) { refuse(b, 'Порог не принят: нужно число'); break; }
+          pv = n;
         } else {
           const m = /^(\d{1,2}):(\d{2})$/.exec((el('e-ptime') ? el('e-ptime').value : '') || '');
-          if (m) pv = Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]);
+          if (!m) { refuse(b, 'Порог не принят: нужно время вида 23:30'); break; }
+          pv = Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]);
         }
-        if (pv !== oldPv) { item.pvalue = pv; recordBar(item, pv); } // история — по общим правилам
         const st = parseNum(el('e-pstep') ? el('e-pstep').value : '');
-        if (st !== null) item.pstep = Math.round(st);
+        if (st === null) { refuse(b, 'Шаг не принят: нужно число со знаком'); break; }
+        pstep = Math.round(st);
       } else if (item.area !== 'habit') {
         const rawValue = el('e-value').value;
         if (!String(rawValue).trim()) {
-          item.value = null; // осознанная очистка: пункт остаётся чекбоксом без числа, история не трогается
+          value = null; // осознанная очистка: пункт остаётся чекбоксом без числа, история не трогается
         } else {
-          const v = parsePositive(rawValue);
-          if (v !== null && v !== item.value) { item.value = v; recordBar(item, v); }
-          // невалидный ввод — старое значение сохраняется
+          value = parsePositive(rawValue);
+          if (value === null) { refuse(b, 'Значение не принято: нужно число больше нуля'); break; }
         }
-        item.unit = el('e-unit').value.trim();
         if (item.type === 'weekly') {
           const g = parsePositive(el('e-goal') ? el('e-goal').value : null);
-          if (g !== null && Math.round(g) >= 1) item.goal = Math.round(g); // невалид — старая цель
+          if (g === null || Math.round(g) < 1) { refuse(b, 'Цель не принята: нужно целое число от 1'); break; }
+          goal = Math.round(g);
         }
+      }
+      // проверки пройдены — запись
+      item.name = name;
+      item.note = el('e-note').value.trim();
+      if (item.type === 'param') {
+        if (item.pkind === 'number' && el('e-punit')) item.unit = el('e-punit').value.trim();
+        if (pv !== item.pvalue) { item.pvalue = pv; recordBar(item, pv); } // история — по общим правилам
+        item.pstep = pstep;
+      } else if (item.area !== 'habit') {
+        if (value === null) item.value = null;
+        else if (value !== item.value) { item.value = value; recordBar(item, value); }
+        item.unit = el('e-unit').value.trim();
+        if (item.type === 'weekly') item.goal = goal;
       } else if (ui.editNorm !== null) {
         item.normPerWeek = Math.max(1, Math.min(7, ui.editNorm)); // ежедневная привычка: норма недели
       }
@@ -4811,8 +5027,8 @@ function onClick(e) {
       ui.editNorm = null;
       ui.groupPick = null;
       ui.groupNew = false;
-      ui.savedFlash = true; // тихое подтверждение (движение, задача 12)
-      renderSettings();
+      flashOk('item:' + id); // тихое подтверждение у той же строки (задача 26)
+      keepInPlace(b, renderSettings);
       break;
     }
 
@@ -4832,28 +5048,35 @@ function onClick(e) {
       ui.addOpen = false; ui.addHint = false; ui.groupPick = null; ui.groupNew = false;
       renderSettings();
       break;
+    /* Форма добавления — тот же порядок, что у правки: сначала проверки,
+       потом создание (задача 26, пп. 2.2–2.5). Прежде пустое название
+       молча ставило фокус в поле, а непринятое число подставляло
+       умолчание — и пункт заводился не таким, каким его набрали. */
     case 'add-save': {
       const name = el('f-name').value.trim();
-      if (!name) { el('f-name').focus(); break; }
+      if (!name) { refuse(b, 'Название не заполнено'); el('f-name').focus(); break; }
       const note = el('f-note').value.trim();
       let item;
       if (ui.addArea === 'habit' && ui.addType === 'param') {
         const pkind = el('f-pkind') && el('f-pkind').value === 'number' ? 'number' : 'time';
-        let pvalue = 0;
+        let pvalue;
         if (pkind === 'time') {
           const m = /^(\d{1,2}):(\d{2})$/.exec((el('f-ptime') ? el('f-ptime').value : '') || '');
-          if (m) pvalue = Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]);
+          if (!m) { refuse(b, 'Порог не принят: нужно время вида 23:30'); break; }
+          pvalue = Math.min(23, +m[1]) * 60 + Math.min(59, +m[2]);
         } else {
           const n = parseNum(el('f-pvalue') ? el('f-pvalue').value : '');
-          if (n !== null) pvalue = n;
+          if (n === null) { refuse(b, 'Порог не принят: нужно число'); break; }
+          pvalue = n;
         }
         const st = parseNum(el('f-pstep') ? el('f-pstep').value : '');
+        if (st === null) { refuse(b, 'Шаг не принят: нужно число со знаком'); break; }
         item = {
           id: uid(), name, value: null,
           unit: pkind === 'number' && el('f-punit') ? el('f-punit').value.trim() : '',
           note, group: readGroupField('f', ''),
           type: 'param', area: 'habit', pkind, pvalue,
-          pstep: st !== null ? Math.round(st) : 0,
+          pstep: Math.round(st),
           goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
           history: [{ date: todayKey(), value: pvalue }]
         };
@@ -4868,9 +5091,16 @@ function onClick(e) {
         let goal = null;
         if (type === 'weekly') {
           const g = parsePositive(el('f-goal') ? el('f-goal').value : null);
-          goal = g !== null && Math.round(g) >= 1 ? Math.round(g) : 3; // невалид — цель по умолчанию
+          if (g === null || Math.round(g) < 1) { refuse(b, 'Цель не принята: нужно целое число от 1'); break; }
+          goal = Math.round(g);
         }
-        const value = parsePositive(el('f-value').value); // невалид/пусто — пункт без числа
+        // значение необязательно; написанное и непринятое — отказ, а не «без числа»
+        const rawValue = el('f-value').value;
+        const value = String(rawValue).trim() ? parsePositive(rawValue) : null;
+        if (String(rawValue).trim() && value === null) {
+          refuse(b, 'Значение не принято: нужно число больше нуля');
+          break;
+        }
         item = {
           id: uid(), name, value,
           unit: el('f-unit').value.trim(),
@@ -4886,8 +5116,8 @@ function onClick(e) {
       ui.addOpen = false;
       ui.groupPick = null;
       ui.groupNew = false;
-      ui.savedFlash = true; // тихое подтверждение (движение, задача 12)
-      renderSettings();
+      flashOk('item:' + item.id); // подтверждение у только что появившейся строки
+      keepInPlace(b, renderSettings);
       break;
     }
 
@@ -5079,6 +5309,10 @@ async function init() {
   document.querySelectorAll('#tabs button').forEach(b =>
     b.addEventListener('click', () => {
       ui.importNote = null;
+      // лист закрывается и таб-баром: если владелец вернулся на ту же
+      // вкладку, с которой лист открыт, вернуть её скролл и фокус — как
+      // это делает «Готово» (задача 26, п. 4.1). Замер снимается ДО close*.
+      const back = sheetReturn();
       if (b.dataset.tab !== ui.tab) { ui.missOpen = {}; ui.raiseEdit = {}; }
       resetConfirms(); // взведённое подтверждение не переживает уход с экрана
       closeDetail(); // таб-бар уводит с листов, черновик формы не переносится
@@ -5086,6 +5320,7 @@ async function init() {
       closeTrain();
       ui.tab = b.dataset.tab;
       if (!syncDay()) renderAll(); // при смене дня syncDay уже перерисовал новую вкладку
+      if (back && back.tab === ui.tab) { window.scrollTo(0, back.y); focusSrc(back.src); }
     }));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') { syncDay(); armDayTimer(); }

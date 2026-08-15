@@ -196,7 +196,161 @@ const MUTANTS = [
     id: '25.1-ladderStay-не-сбрасывается',
     file: 'app.js',
     note: '«Остаться» снова гасит карточку ступени до перезагрузки страницы',
-    edits: [['  ui.ladderStay = false;\n}', '}']]
+    // якорь обновлён в задаче 26: после ui.ladderStay в closeReview встал
+    // сброс ui.sheetSrc (фокус кнопки-источника листа)
+    edits: [['  ui.ladderStay = false;\n  ui.sheetSrc = null;\n}', '  ui.sheetSrc = null;\n}']]
+  },
+  /* ── Задача 26 ─────────────────────────────────────────────── */
+  {
+    id: '26.1-возврат-не-кладёт-копию',
+    file: 'app.js',
+    note: '«Вернуть» снова необратим — наработанное после чистки или импорта теряется',
+    edits: [[
+      `  const prev = store;
+  if (hasData(prev)) {
+    if (!keepPrev(prev, 'restore')) return false; // копию некуда положить — возврат не выполняется
+  } else {
+    dropWiped();
+  }
+  store = restored;`,
+      `  dropWiped();
+  store = restored;`]]
+  },
+  {
+    id: '26.1-строка-возврата-врёт-про-стёртое',
+    file: 'app.js',
+    note: 'строка называет совершённое действие вместо содержимого обменной копии',
+    edits: [["      <p class=\"muted\">В копии — состояние ${whence}${when ? ', ' + esc(when) : ''} ·",
+      "      <p class=\"muted\">Стёрто${when ? ' ' + esc(when) : ''} ·"]]
+  },
+  {
+    id: '26.2-сохранено-при-отброшенном-вводе',
+    file: 'app.js',
+    note: 'невалидное число снова молча оставляет старое значение и печатает «Сохранено»',
+    edits: [["          if (value === null) { refuse(b, 'Значение не принято: нужно число больше нуля'); break; }",
+      '          if (value === null) value = item.value;']]
+  },
+  {
+    id: '26.2-подтверждение-снова-в-шапке',
+    file: 'app.js',
+    note: 'узел «Сохранено» возвращается в шапку экрана, за 1939 px от нажатой кнопки',
+    edits: [
+      ["  let h = `<header class=\"page\"><p class=\"overline\">Устройство приложения</p><h1>Настройки</h1></header>`;",
+        "  let h = `<header class=\"page\"><p class=\"overline\">Устройство приложения</p><h1>Настройки</h1></header>`;\n  if (ui.savedAt) { h += `<p class=\"flash\" role=\"status\">${esc(ui.savedAt.text)}</p>`; ui.savedAt = null; }"],
+      ["        ${flashAt('item:' + it.id)}\n", '']
+    ]
+  },
+  {
+    id: '26.2-отказ-закрывает-форму',
+    file: 'app.js',
+    note: 'занятое имя блока снова закрывает форму молча и уносит правку',
+    edits: [[
+      `      if (!nm) { refuse(b, 'Название не заполнено'); break; }
+      if (nm !== from && findGroup(nm)) { refuse(b, 'Блок с таким именем уже есть'); break; }`,
+      `      if (!nm || (nm !== from && findGroup(nm))) { ui.groupRename = null; renderSettings(); break; }`]]
+  },
+  {
+    id: '26.3-черновик-тренировки-теряется',
+    file: 'app.js',
+    note: 'поля листа тренировки снова не черновик: перерисовка возвращает сохранённые нагрузки',
+    edits: [["  if (ui.detailId === null && ui.trainOpen) return 'train:' + ui.trainId;\n", '']]
+  },
+  {
+    id: '26.4-скролл-не-возвращается-таб-баром',
+    file: 'app.js',
+    note: 'закрытие листа таб-баром снова роняет вкладку наверх и теряет фокус',
+    edits: [['      if (back && back.tab === ui.tab) { window.scrollTo(0, back.y); focusSrc(back.src); }\n', '']]
+  },
+  {
+    id: '26.4-фокус-не-уходит-в-лист',
+    file: 'app.js',
+    note: 'фокус остаётся на прежней вкладке — лист открыт, а клавиатура и AT о нём не знают',
+    edits: [['function focusSheet(id) {\n  const h = document.querySelector', 'function focusSheet(id) {\n  if (id) return;\n  const h = document.querySelector']]
+  },
+  {
+    id: '26.5-градиент-полосы-дня-снят',
+    file: 'styles.css',
+    note: 'планка дня снова заливается плоским акцентом',
+    edits: [['  background: linear-gradient(90deg, var(--accent), var(--chain));', '  background: var(--accent);']]
+  },
+  {
+    id: '26.5-планка-дня-снова-3px',
+    file: 'styles.css',
+    note: 'высота планки дня расходится с полосой «Прогресса»',
+    edits: [['.bar, .dbar {\n  height: 8px;', '.bar, .dbar {\n  height: 3px;']]
+  },
+  {
+    id: '26.5-счёт-дня-снова-мельче-даты',
+    file: 'styles.css',
+    note: 'крупное число счёта дня возвращается на 13px',
+    edits: [['.bar-note b { font-size: 22px;', '.bar-note b { font-size: 13px;']]
+  },
+  {
+    id: '26.5-имя-блока-снова-тише-надстрочника',
+    file: 'styles.css',
+    note: 'слово владельца снова мельче и тише декоративной подписи приложения',
+    edits: [['  font-size: var(--text-xs);\n  font-weight: 650;\n  letter-spacing: .08em;\n  text-transform: uppercase;\n  color: var(--muted);\n}',
+      '  font-size: 11px;\n  font-weight: 650;\n  letter-spacing: .08em;\n  text-transform: uppercase;\n  color: var(--faint);\n}']]
+  },
+  {
+    id: '26.5-рамка-кнопок-вернулась-к-старому-токену',
+    file: 'styles.css',
+    note: 'кнопка снова обведена вдвое тише поля в той же карточке (1,45:1)',
+    edits: [['  border: 1px solid var(--control-border);\n  border-radius: var(--radius-md);',
+      '  border: 1px solid var(--line-strong);\n  border-radius: var(--radius-md);']]
+  },
+  {
+    id: '26.5-ячейка-цепи-снова-мелкая',
+    file: 'styles.css',
+    note: 'шаг сетки разбора возвращается на «Прогресс», краска — пятая часть ширины',
+    edits: [['  grid-template-columns: repeat(7, 1fr);\n  gap: 8px 6px;', '  grid-template-columns: repeat(7, 26px);\n  gap: 8px 4px;'],
+      ['.cdays i {\n  width: 20px;\n  height: 20px;\n', '.cdays i {\n']]
+  },
+  {
+    id: '26.6-active-снят',
+    file: 'styles.css',
+    note: 'состояние нажатия снова только у .btn — остальные тач-цели молчат под пальцем',
+    edits: [[`.btn:active,
+.idetail:active,
+.dot:active,
+.undo:active,
+.itxt:active,
+.card.note:active,
+.sect > summary:active,
+#tabs button:active { background: var(--accent-weak); }`,
+      '.btn:active { background: var(--accent-weak); }']]
+  },
+  {
+    id: '26.6-переход-таб-бара-вне-окна',
+    file: 'styles.css',
+    note: 'переход цвета вкладки возвращается на 160 мс — короче окна движения',
+    edits: [['  transition: color .18s ease-out;', '  transition: color .16s ease;']]
+  },
+  {
+    id: '26.6-reduced-motion-не-отключает-переходы',
+    file: 'styles.css',
+    note: 'глобальный блок перестаёт гасить transition — движение играет и при reduced-motion',
+    edits: [['    transition: none !important;\n    animation: none !important;', '    animation: none !important;']]
+  },
+  {
+    id: '26.8-будущая-ячейка-снова-одной-прозрачностью',
+    file: 'styles.css',
+    note: 'состояние «будущий день» опять передаётся только альфой (1,35:1 в тёмной)',
+    edits: [['.hstrip i.fut { visibility: hidden; }', '.hstrip i.fut { opacity: .45; }']]
+  },
+  {
+    id: '26.8-точка-без-aria-controls',
+    file: 'app.js',
+    note: 'aria-expanded снова без aria-controls, раскрываемая строка без id',
+    edits: [['aria-controls="miss-${esc(it.id)}" ', ''],
+      ['<p class="miss-note" id="miss-${esc(it.id)}"${ui.missOpen[it.id] ? \'\' : \' hidden\'}>',
+        '<p class="miss-note"${ui.missOpen[it.id] ? \'\' : \' hidden\'}>']]
+  },
+  {
+    id: '26.7-система-называет-чужие-блоки',
+    file: 'app.js',
+    note: 'тексты «Системы» снова описывают набор блоков, которого у владельца нет',
+    edits: [["      { lead: 'Блок — связка пунктов.',", "      { lead: 'Тело:', text: 'гигиена, короткая силовая связка.' },\n      { lead: 'Сон:', text: 'телефон вне кровати до отбоя.' },\n      { lead: 'Развитие:', text: 'десять минут в день.' },\n      { lead: 'Блок — связка пунктов.',"]]
   },
   {
     id: '24.4-слот-свободен-не-говорится',

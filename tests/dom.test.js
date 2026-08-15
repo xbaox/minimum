@@ -429,7 +429,14 @@ test('вредоносные данные не ломают разбор: имя
   assert.doesNotMatch(scr.textContent, /<img src=x/);  // count из архива не показывается вовсе
 });
 
-test('правка значения: невалид сохраняет старое, пустое — осознанная очистка без истории', async () => {
+/* Задача 26, п. 2.2 переписала предмет этого теста. Прежде он закреплял
+   «невалид молча сохраняет старое»: форма закрывалась, значение оставалось
+   прежним, и всё это под надписью «Сохранено» — приложение говорило
+   «сохранено» о том, что выбросило. Теперь непринятое число — отказ:
+   форма остаётся открытой, введённое цело, в store не записано ничего.
+   Осознанная очистка (пустое поле → value: null) отказом НЕ стала — это
+   решение владельца, а не отброшенный ввод (инвариант 5). */
+test('правка значения: невалид — отказ без записи, пустое — осознанная очистка без истории', async () => {
   const seed = dueSeed();
   seed.items = [{
     id: 'e1', name: 'Правка', value: 12, unit: 'мин', type: 'daily', goal: null,
@@ -448,34 +455,43 @@ test('правка значения: невалид сохраняет стар�
 
   assert.match(document.getElementById('scr-settings').textContent, /Планка: 10 → 12/);
 
-  // невалидный ввод — значение и история не меняются
+  // невалидный ввод — отказ: ни значения, ни истории, ни «Сохранено»,
+  // и правка названия в той же форме тоже не записана (всё или ничего)
   openEdit('Правка');
+  document.getElementById('e-name').value = 'Другое имя';
   document.getElementById('e-value').value = '1о';
   document.querySelector('[data-act="edit-save"]').click();
   assert.equal(savedItem('Правка').value, 12);
   assert.equal(savedItem('Правка').history.length, 2);
+  assert.ok(savedItem('Правка'), 'имя не переписано: отказ ничего не пишет');
+  assert.ok(document.getElementById('e-value'), 'форма осталась открытой');
+  assert.equal(document.getElementById('e-value').value, '1о', 'введённое цело');
+  assert.equal(document.getElementById('e-name').value, 'Другое имя');
+  assert.match(document.querySelector('#scr-settings .flash.keep').textContent,
+    /Значение не принято: нужно число больше нуля/);
+  assert.equal(document.querySelector('#scr-settings .flash:not(.keep)'), null, '«Сохранено» нет');
 
   // пустое поле — осознанная очистка: значение null, история не растёт, «Планка:» скрыта
-  openEdit('Правка');
+  document.getElementById('e-name').value = 'Правка';
   document.getElementById('e-value').value = '';
   document.querySelector('[data-act="edit-save"]').click();
   assert.equal(savedItem('Правка').value, null);
   assert.equal(savedItem('Правка').history.length, 2);
   assert.doesNotMatch(document.getElementById('scr-settings').textContent, /Планка:/);
 
-  // цель weekly: пустое и невалидное поле сохраняют старую цель, валидное — меняет
+  // цель weekly: пустое и невалидное поле — отказ, старая цель на месте
   openEdit('Недельный');
   document.getElementById('e-goal').value = '';
   document.querySelector('[data-act="edit-save"]').click();
   assert.equal(savedItem('Недельный').goal, 3);
-  openEdit('Недельный');
+  assert.ok(document.getElementById('e-goal'), 'форма открыта после отказа');
   document.getElementById('e-goal').value = '0';
   document.querySelector('[data-act="edit-save"]').click();
   assert.equal(savedItem('Недельный').goal, 3);
-  openEdit('Недельный');
   document.getElementById('e-goal').value = '5';
   document.querySelector('[data-act="edit-save"]').click();
   assert.equal(savedItem('Недельный').goal, 5);
+  assert.equal(document.getElementById('e-goal'), null, 'принятое закрывает форму');
 });
 
 test('отметка чекбокса не пересоздаёт узлы — CSS-переходы могут играть', async () => {
@@ -708,12 +724,15 @@ test('подпись «вчера — пропуск» закрывается п
   const { document, window } = await boot({ seed });
   const dot = document.querySelector('[data-act="miss-note"]');
   assert.ok(dot, 'точка-маркер есть');
+  // задача 26, п. 8.1: узел подписи стоит в разметке всегда (aria-controls
+  // обязан указывать на существующий элемент), раскрытость несёт hidden
+  assert.equal(document.querySelector('.miss-note').hidden, true, 'до тапа свёрнута');
   dot.click();
-  assert.ok(document.querySelector('.miss-note'), 'подпись раскрыта');
+  assert.equal(document.querySelector('.miss-note').hidden, false, 'подпись раскрыта');
 
   document.querySelector('#tabs button[data-tab="progress"]').click();
   document.querySelector('#tabs button[data-tab="today"]').click();
-  assert.equal(document.querySelector('.miss-note'), null); // missOpen очищен
+  assert.equal(document.querySelector('.miss-note').hidden, true); // missOpen очищен
   assert.ok(document.querySelector('[data-act="miss-note"]')); // сама точка на месте
 });
 
@@ -794,10 +813,18 @@ test('доступность: точка вне label, aria-expanded, имена
   assert.equal(after.getAttribute('aria-expanded'), 'true');
   assert.equal(dots().find(d => d.dataset.id === 'it1').getAttribute('aria-expanded'), 'false');
   assert.equal(document.activeElement, after, 'фокус на пересозданной кнопке того же пункта');
-  assert.ok(document.querySelector('.miss-note'));
+  // задача 26, п. 8.1: aria-controls указывает на существующий узел подписи,
+  // и раскрытость несёт hidden, а не наличие узла в DOM
+  const ctrl = after.getAttribute('aria-controls');
+  assert.ok(ctrl, 'у точки есть aria-controls');
+  const panel = document.getElementById(ctrl);
+  assert.ok(panel, 'aria-controls указывает на существующий узел');
+  assert.ok(panel.classList.contains('miss-note'));
+  assert.equal(panel.hidden, false, 'раскрыт');
   after.click();
   after = dots().find(d => d.dataset.id === 'it2');
   assert.equal(after.getAttribute('aria-expanded'), 'false');
+  assert.equal(document.getElementById(ctrl).hidden, true, 'свёрнут');
   assert.equal(document.activeElement, after);
 
   // .bar-note: aria-live и переживание точечной отметки тем же узлом
@@ -2184,11 +2211,16 @@ test('редактор блоков: строка — имя и стрелки, 
   assert.deepEqual(s.items.filter(i => i.group === 'Ночь').map(i => i.id), ['c1', 'c2', 'c3']);
   assert.equal(s.items.find(i => i.id === 's1').group, 'Утро'); // чужой не тронут
 
-  // пустое имя не сохраняется
+  // Пустое имя не сохраняется. С задачи 26 (пп. 2.3–2.4) отказ не молчит и
+  // форму не закрывает: прежде тап по «Сохранить» уносил правку целиком.
   rowOf('Ночь').querySelector('[data-act="group-open"]').click();
   document.getElementById('g-name').value = '   ';
   document.querySelector('[data-act="group-save"]').click();
   assert.ok(saved().groups.find(g => g.name === 'Ночь'));
+  assert.ok(document.getElementById('g-name'), 'форма осталась открытой');
+  assert.equal(document.getElementById('g-name').value, '   ', 'введённое не переписано');
+  assert.match(rowOf('Ночь').querySelector('.flash').textContent, /Название не заполнено/);
+  document.querySelector('[data-act="group-cancel"]').click();
 
   // добавление в конец
   document.querySelector('[data-act="group-add-open"]').click();
@@ -3174,11 +3206,16 @@ test('чистка: «Вернуть» восстанавливает всё, «
   const line = sect.querySelector('.restore');
   assert.ok(line, 'строка возврата');
   assert.equal(sect.querySelector('.sect-b').firstElementChild, line, 'первой строкой блока');
-  assert.match(line.textContent, /Стёрто .* · 2 пункта, 1 день отметок/);
+  // строка называет содержимое копии и его происхождение (задача 26, п. 1.2):
+  // после второго тапа по «Вернуть» слово «Стёрто» называло бы стёртым как
+  // раз возвращённое — копия обменная
+  assert.match(line.textContent, /В копии — состояние до чистки, .* · 2 пункта, 1 день отметок/);
+  assert.match(line.textContent, /«Вернуть» меняет местами/);
 
   document.querySelector('[data-act="wipe-undo"]').click();
   assert.deepEqual(saved(), before, 'состояние вернулось побайтово');
-  assert.equal(window.localStorage.getItem(NS + ':wiped'), null, 'копия убрана возвратом');
+  // менять было не на что: store после чистки пуст, пустое в копию не кладут
+  assert.equal(window.localStorage.getItem(NS + ':wiped'), null, 'копия отдана без замены');
   assert.equal(document.querySelector('.restore'), null);
 
   // ещё раз — и на сей раз копию убираем руками, вторым тапом
@@ -3761,6 +3798,9 @@ test('B.3: форма новой привычки и нового парамет
   assert.ok(document.getElementById('f-group'), 'поле «Блок» в форме нового параметра');
   document.getElementById('f-name').value = 'Новый порог';
   document.getElementById('f-group').value = 'Вечер';
+  // шаг с задачи 26 обязателен: параметр без шага не может двинуться, и
+  // карточка разбора предлагала бы «Шаг: → то же самое» (п. 2.3)
+  document.getElementById('f-pstep').value = '-15';
   document.querySelector('[data-act="add-save"]').click();
   items = JSON.parse(window.localStorage.getItem(NS)).items;
   const p = items[items.length - 1];
@@ -4175,8 +4215,10 @@ test('З20: подсказки живут только в форме — в бл
    поэтому хелперы не введены — но сторож нужен и без них: он ловит любую
    будущую правку шаблонов форм, случайную или в ходе такого рефакторинга.
 
-   Снимок — outerHTML всех девяти форм. Дат в формах нет, идентификаторы
-   в сиде фиксированы, поэтому снимок стабилен от запуска к запуску.
+   Снимок — outerHTML всех четырнадцати форм (число сверяется ассертом
+   ниже; в комментарии стояло «девяти» — счёт отстал на пять форм, задача
+   26, п. 7.1). Дат в формах нет, идентификаторы в сиде фиксированы,
+   поэтому снимок стабилен от запуска к запуску.
    Пересобрать после осознанной правки разметки:
        MARKUP_SNAPSHOT=write node --test tests/dom.test.js
 
@@ -4651,9 +4693,12 @@ test('З22/7.4: «Записать» без единого значения не
   assert.equal(document.getElementById('scr-train').hidden, false, 'лист остался открыт');
   assert.deepEqual(saved().sessions, [], 'сессии нет');
   assert.deepEqual(saved().weekLog, [], 'счётчик не вырос');
-  assert.equal(document.getElementById('tr-empty').hidden, false);
-  assert.match(document.getElementById('tr-empty').textContent,
-    /Нечего записать: ни одно упражнение не заполнено\./);
+  // с задачи 26 отказ листа идёт тем же узлом, что и отказ любой формы:
+  // .flash.keep рядом с нажатой кнопкой, а не собственный скрытый #tr-empty
+  const refusal = document.querySelector('#scr-train .flash.keep');
+  assert.ok(refusal, 'отказ показан');
+  assert.match(refusal.textContent, /Нечего записать: ни одно упражнение не заполнено/);
+  assert.equal(refusal.nextElementSibling.dataset.act, 'train-save', 'строка стоит у нажатой кнопки');
   assert.equal(document.getElementById('tr-note').value, 'без цифр', 'черновик заметки цел');
   // отказ ничего не переписал: поля остались такими, какими их видел владелец
   assert.equal(document.getElementById('ex-e1').value, '');
@@ -5391,15 +5436,18 @@ test('З25/2: импорт кладёт копию прежних данных �
   openData(document);
   const row = document.querySelector('#scr-settings .restore');
   assert.ok(row, 'строка возврата на месте');
-  assert.match(row.textContent, /Заменено импортом/);
-  assert.doesNotMatch(row.textContent, /Стёрто/);
+  assert.match(row.textContent, /В копии — состояние до импорта/);
+  assert.doesNotMatch(row.textContent, /до чистки/);
   assert.match(row.textContent, /9 пунктов/);
 
-  // «Вернуть» — тот же путь, что после чистки
+  // «Вернуть» — тот же путь, что после чистки, и с задачи 26 обратимый:
+  // импортированное не теряется, а ложится в ту же копию (п. 1.1)
   row.querySelector('[data-act="wipe-undo"]').click();
   assert.deepEqual(JSON.parse(window.localStorage.getItem(NS)), before, 'вернулось побайтово');
-  assert.equal(window.localStorage.getItem(NS + ':wiped'), null, 'ключ убран');
-  assert.equal(document.querySelector('#scr-settings .restore'), null, 'строки больше нет');
+  const swapped = JSON.parse(window.localStorage.getItem(NS + ':wiped'));
+  assert.equal(swapped.kind, 'restore');
+  assert.equal(swapped.store.items.length, 1, 'импортированное лежит в копии');
+  assert.match(document.querySelector('#scr-settings .restore').textContent, /состояние до возврата/);
 });
 
 test('З25/2.5: зеркало не добивает прежние данные раньше, чем ляжет копия', async () => {
@@ -5636,12 +5684,13 @@ test('З25/2.2: копия без kind читается как чистка — 
   }));
   openData(document);
   const row = document.querySelector('#scr-settings .restore:not(.corrupt)');
-  assert.match(row.textContent, /Стёрто /);
-  assert.doesNotMatch(row.textContent, /Заменено импортом/);
+  assert.match(row.textContent, /состояние до чистки/);
+  assert.doesNotMatch(row.textContent, /до импорта/);
   assert.match(row.textContent, /4 пункта, 2 дня отметок/);
-  // и «Вернуть» на ней работает так же
+  // и «Вернуть» на ней работает так же: содержательное нынешнее состояние
+  // уходит в обмен (задача 26, п. 1.1)
   row.querySelector('[data-act="wipe-undo"]').click();
-  assert.equal(window.localStorage.getItem(NS + ':wiped'), null);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS + ':wiped')).kind, 'restore');
 });
 
 test('З25/7: при содержательном store предупреждение чистки обещает замену копии', async () => {
@@ -5694,4 +5743,622 @@ test('З25/2: копию некуда положить — импорт не в�
   assert.match(said, /Импорт не выполнен: копию прежних данных некуда сохранить\./);
   assert.equal(window.localStorage.getItem(NS), before, 'данные не тронуты');
   assert.equal(window.localStorage.getItem(NS + ':wiped'), null, 'и копии не появилось');
+});
+
+/* ══ Задача 26. Отклик и вид ═══════════════════════════════════ */
+
+/* Сид с длинным списком: подтверждение сохранения обязано вставать у
+   строки, а не в шапке, и разница между двумя местами должна быть
+   заметна не только глазом. Идентификаторы фиксированы. */
+function flashSeed() {
+  const mon = curMonday();
+  const item = (id, name, extra) => Object.assign({
+    id, name, value: 10, unit: 'мин', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', active: true, addedAt: addKey(mon, -70),
+    raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    formula: null, ladder: null, ladderLog: []
+  }, extra);
+  return {
+    schemaVersion: 16,
+    groups: [{ name: 'Утро' }, { name: 'Вечер' }],
+    items: [
+      item('f-1', 'Первый', { group: 'Утро' }),
+      item('f-2', 'Второй', { group: 'Утро' }),
+      item('f-3', 'Третий', { group: 'Вечер' }),
+      item('f-4', 'Последний', { group: 'Вечер' }),
+      item('f-w', 'Тренировка', { type: 'weekly', value: null, unit: '', goal: 3 }),
+      item('f-h', 'Привычка', { area: 'habit', type: 'daily', value: null, unit: '', normPerWeek: 7 })
+    ],
+    exercises: [{ id: 'f-ex', name: 'Жим', unit: 'кг', value: 60, history: [], active: true, addedAt: addKey(mon, -70) }],
+    days: {}, weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [], sessions: [],
+    notes: [{ id: 'f-n', date: daysAgo(1), text: 'Старая заметка', kind: 'note', source: '', updatedAt: 1 }],
+    paramDecided: {}, draftOneChange: '', weekStart: mon,
+    settings: { dayBoundary: 4, dayThreshold: 0.8, exportedAt: null, calendarSince: addKey(mon, -70), habitSeeded: true, seed17: true }
+  };
+}
+
+const openSettings = document => document.querySelector('#tabs button[data-tab="settings"]').click();
+const openSect = (document, re) => {
+  const s = [...document.querySelectorAll('#scr-settings details.sect')]
+    .find(d => re.test(d.querySelector('summary').textContent));
+  if (s && !s.open) s.querySelector('summary').click();
+  return s;
+};
+const byId = (document, act, id) =>
+  [...document.querySelectorAll(`[data-act="${act}"]`)].find(x => x.dataset.id === id);
+
+test('З26/2.1: «Сохранено» встаёт у строки формы, а не в шапке экрана', async () => {
+  const { document } = await boot({ seed: flashSeed() });
+  openSettings(document);
+  byId(document, 'edit-open', 'f-4').click();
+  document.getElementById('e-name').value = 'Последний+';
+  document.querySelector('[data-act="edit-save"]').click();
+
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.ok(flash, 'подтверждение показано');
+  assert.equal(flash.textContent, 'Сохранено');
+  assert.equal(flash.getAttribute('role'), 'status');
+
+  // якорь — строка того пункта, чья форма закрылась; шапка узла не несёт
+  const row = flash.closest('.rowwrap');
+  assert.ok(row, 'узел внутри строки пункта');
+  assert.equal(row.dataset.dragId, 'f-4');
+  assert.equal(document.querySelector('#scr-settings > .flash'), null, 'в шапке экрана узла нет');
+  const head = document.querySelector('#scr-settings header.page');
+  assert.equal(head.nextElementSibling.classList.contains('flash'), false);
+
+  // разовое: следующий рендер его не повторяет
+  byId(document, 'edit-open', 'f-1').click();
+  assert.equal(document.querySelector('#scr-settings .flash'), null, 'подтверждение разовое');
+});
+
+test('З26/2.1: подтверждение стоит у своей строки в каждой из форм списка', async () => {
+  const { document } = await boot({ seed: flashSeed() });
+  openSettings(document);
+
+  // блок
+  openSect(document, /Блоки/);
+  [...document.querySelectorAll('[data-act="group-open"]')].find(x => x.dataset.name === 'Вечер').click();
+  document.getElementById('g-name').value = 'Ночь';
+  document.querySelector('[data-act="group-save"]').click();
+  let flash = document.querySelector('#scr-settings .flash');
+  assert.ok(flash.closest('.rowwrap').textContent.includes('Ночь'), 'подтверждение у переименованного блока');
+
+  // упражнение
+  openSect(document, /Упражнения/);
+  document.querySelector('[data-act="ex-open"]').click();
+  document.getElementById('x-name').value = 'Жим стоя';
+  document.querySelector('[data-act="ex-save"]').click();
+  flash = document.querySelector('#scr-settings .flash');
+  assert.equal(flash.closest('.rowwrap').dataset.dragId, 'f-ex');
+
+  // заметка
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  document.querySelector('[data-act="note-open"]').click();
+  document.getElementById('n-text').value = 'Правленая заметка';
+  document.querySelector('[data-act="note-save"]').click();
+  flash = document.querySelector('#scr-notes .flash');
+  assert.ok(flash, 'подтверждение на «Заметках»');
+  assert.equal(flash.previousElementSibling.dataset.id, 'f-n', 'сразу под своей карточкой');
+
+  // лист детали: форма формулы
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  byId(document, 'edit-open', 'f-1').click();
+  document.querySelector('#scr-settings [data-act="item-detail"]').click();
+  document.querySelector('[data-act="formula-open"]').click();
+  document.getElementById('fx-anchor').value = 'после душа';
+  document.querySelector('[data-act="formula-save"]').click();
+  flash = document.querySelector('#scr-detail .flash');
+  assert.ok(flash, 'подтверждение в листе детали');
+  assert.ok(flash.previousElementSibling.querySelector('[data-act="formula-open"]'),
+    'сразу под кнопкой «Изменить», которой уступила место форма');
+});
+
+/* Таблица форм: у каждой — как открыть, какое поле испортить, что должно
+   быть сказано и какое поле обязано уцелеть. Тест общего вида (п. 10.2):
+   расхождение между соседними формами ловится одним прогоном, а не
+   отдельным тестом на каждую. */
+const REFUSALS = [
+  { name: 'правка пункта', open: d => byId(d, 'edit-open', 'f-1').click(),
+    field: 'e-value', bad: 'ноль', save: 'edit-save', say: /Значение не принято/ },
+  { name: 'правка пункта — пустое название', open: d => byId(d, 'edit-open', 'f-1').click(),
+    field: 'e-name', bad: '  ', save: 'edit-save', say: /Название не заполнено/ },
+  { name: 'правка недельного', open: d => byId(d, 'edit-open', 'f-w').click(),
+    field: 'e-goal', bad: '0', save: 'edit-save', say: /Цель не принята/ },
+  { name: 'добавление пункта', open: d => [...d.querySelectorAll('[data-act="add-open"]')].find(x => x.dataset.area === 'min').click(),
+    field: 'f-name', bad: '', save: 'add-save', say: /Название не заполнено/,
+    pre: d => { d.getElementById('f-value').value = '7'; } },
+  { name: 'добавление пункта — значение', open: d => [...d.querySelectorAll('[data-act="add-open"]')].find(x => x.dataset.area === 'min').click(),
+    field: 'f-value', bad: 'три', save: 'add-save', say: /Значение не принято/,
+    pre: d => { d.getElementById('f-name').value = 'Новый'; } },
+  { name: 'правка блока', sect: /Блоки/, open: d => d.querySelector('[data-act="group-open"]').click(),
+    field: 'g-name', bad: 'Вечер', save: 'group-save', say: /Блок с таким именем уже есть/ },
+  { name: 'добавление блока', sect: /Блоки/, open: d => d.querySelector('[data-act="group-add-open"]').click(),
+    field: 'g-add', bad: 'Утро', save: 'group-add-save', say: /Блок с таким именем уже есть/ },
+  { name: 'правка упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-open"]').click(),
+    field: 'x-name', bad: ' ', save: 'ex-save', say: /Название не заполнено/ },
+  { name: 'добавление упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-add-open"]').click(),
+    field: 'x-add-value', bad: 'много', save: 'ex-add-save', say: /Нагрузка не принята/,
+    pre: d => { d.getElementById('x-add-name').value = 'Приседания'; } }
+];
+
+test('З26/2.3–2.5: все формы отказывают одинаково — строка у кнопки, форма цела', async () => {
+  for (const f of REFUSALS) {
+    const { document, window } = await boot({ seed: flashSeed() });
+    const before = window.localStorage.getItem(NS);
+    openSettings(document);
+    if (f.sect) openSect(document, f.sect);
+    f.open(document);
+    if (f.pre) f.pre(document);
+    document.getElementById(f.field).value = f.bad;
+    document.querySelector(`[data-act="${f.save}"]`).click();
+
+    const said = document.querySelector('#scr-settings .flash.keep');
+    assert.ok(said, `${f.name}: отказ сказан`);
+    assert.match(said.textContent, f.say, f.name);
+    // строка стоит вплотную к нажатой кнопке — над её рядом
+    assert.ok(said.nextElementSibling.contains(document.querySelector(`[data-act="${f.save}"]`)),
+      `${f.name}: строка у нажатой кнопки`);
+    assert.equal(document.querySelector('#scr-settings .flash:not(.keep)'), null,
+      `${f.name}: «Сохранено» при отброшенном вводе не показывается`);
+    assert.ok(document.getElementById(f.field), `${f.name}: форма осталась открытой`);
+    assert.equal(document.getElementById(f.field).value, f.bad, `${f.name}: введённое цело`);
+    assert.equal(window.localStorage.getItem(NS), before, `${f.name}: в store не записано ничего`);
+    assert.doesNotMatch(said.textContent, /ошибк|!/i, `${f.name}: без слова «ошибка» и восклицаний`);
+  }
+});
+
+test('З26/2.5: те же формы, принятый ввод — «Сохранено» и закрытие', async () => {
+  const OK = [
+    { name: 'правка пункта', open: d => byId(d, 'edit-open', 'f-1').click(), field: 'e-name', good: 'Первый+', save: 'edit-save' },
+    { name: 'правка недельного', open: d => byId(d, 'edit-open', 'f-w').click(), field: 'e-goal', good: '4', save: 'edit-save' },
+    { name: 'добавление пункта', open: d => [...d.querySelectorAll('[data-act="add-open"]')].find(x => x.dataset.area === 'min').click(), field: 'f-name', good: 'Новый', save: 'add-save' },
+    { name: 'правка блока', sect: /Блоки/, open: d => d.querySelector('[data-act="group-open"]').click(), field: 'g-name', good: 'Рассвет', save: 'group-save' },
+    { name: 'добавление блока', sect: /Блоки/, open: d => d.querySelector('[data-act="group-add-open"]').click(), field: 'g-add', good: 'День', save: 'group-add-save' },
+    { name: 'правка упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-open"]').click(), field: 'x-name', good: 'Жим узким', save: 'ex-save' },
+    { name: 'добавление упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-add-open"]').click(), field: 'x-add-name', good: 'Присед', save: 'ex-add-save' }
+  ];
+  for (const f of OK) {
+    const { document } = await boot({ seed: flashSeed() });
+    openSettings(document);
+    if (f.sect) openSect(document, f.sect);
+    f.open(document);
+    document.getElementById(f.field).value = f.good;
+    document.querySelector(`[data-act="${f.save}"]`).click();
+
+    assert.equal(document.getElementById(f.field), null, `${f.name}: форма закрылась`);
+    const flash = document.querySelector('#scr-settings .flash');
+    assert.ok(flash, `${f.name}: подтверждение показано`);
+    assert.equal(flash.textContent, 'Сохранено', f.name);
+    assert.equal(flash.classList.contains('keep'), false, `${f.name}: подтверждение гаснет само`);
+    assert.ok(flash.closest('.rowwrap'), `${f.name}: узел у строки записи`);
+  }
+});
+
+test('З26/2.2: пустая новая заметка — отказ, а не тихое закрытие', async () => {
+  const { document, window } = await boot({ seed: flashSeed() });
+  document.querySelector('#tabs button[data-tab="notes"]').click();
+  [...document.querySelectorAll('[data-act="note-add-open"]')].find(b => b.dataset.kind === 'note').click();
+  document.getElementById('n-text').value = '   ';
+  document.querySelector('[data-act="note-save"]').click();
+  assert.ok(document.getElementById('n-text'), 'форма осталась');
+  assert.match(document.querySelector('#scr-notes .flash.keep').textContent, /Текст не заполнен/);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).notes.length, 1, 'записи не прибавилось');
+
+  // пустой текст у СУЩЕСТВУЮЩЕЙ записи по-прежнему удаляет её (инвариант 16),
+  // и об этом говорится: своей строки у удалённой записи больше нет
+  document.querySelector('[data-act="note-cancel"]').click();
+  document.querySelector('[data-act="note-open"]').click();
+  document.getElementById('n-text').value = '';
+  document.querySelector('[data-act="note-save"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).notes.length, 0, 'запись удалена');
+  assert.match(document.querySelector('#scr-notes .flash').textContent, /Запись удалена/);
+});
+
+test('З26/2.3: невалидная планка в разборе — карточка говорит, а не молчит', async () => {
+  const seed = dueSeed();
+  const prev = prevMonday();
+  for (let w = 1; w <= 3; w++) fillWeek(seed.days, 'it1', addKey(prev, -7 * (w - 1)), 7);
+  seed.settings.calendarSince = addKey(prev, -70);
+  const { document, window } = await boot({ seed });
+  openReview(document);
+  document.querySelector('[data-act="raise-edit"]').click();
+  document.querySelector('.card.raise .num').value = 'ноль';
+  document.querySelector('[data-act="raise-ok"]').click();
+
+  assert.ok(document.querySelector('.card.raise'), 'карточка осталась');
+  assert.match(document.querySelector('.card.raise .flash.keep').textContent, /Планка не принята/);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].value, 10, 'планка не тронута');
+});
+
+/* ── п. 3: черновик листа «Тренировка» ─────────────────────── */
+
+test('З26/3: нагрузки и заметка листа переживают перерисовку и смену дня', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  document.querySelector('[data-act="train-inc"]').click();
+  document.getElementById('ex-e1').value = '47,5';
+  document.getElementById('ex-e2').value = '80';
+  document.getElementById('tr-note').value = 'тяжело шло';
+
+  // обычная перерисовка листа
+  window.renderTrain();
+  assert.equal(document.getElementById('ex-e1').value, '47,5');
+  assert.equal(document.getElementById('ex-e2').value, '80');
+  assert.equal(document.getElementById('tr-note').value, 'тяжело шло');
+
+  // смена логического дня — тот же путь, что у черновика заметки (задача 15)
+  shiftWindowDate(window, 26 * 3600000);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  assert.equal(document.getElementById('scr-train').hidden, false, 'лист не закрылся');
+  assert.equal(document.getElementById('ex-e1').value, '47,5', 'нагрузка пережила смену дня');
+  assert.equal(document.getElementById('tr-note').value, 'тяжело шло', 'заметка пережила смену дня');
+
+  // и записывается именно то, что видно
+  document.querySelector('[data-act="train-save"]').click();
+  const s = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(s.sessions[0].note, 'тяжело шло');
+  assert.deepEqual(s.sessions[0].entries, [{ exId: 'e1', value: 47.5 }, { exId: 'e2', value: 80 }]);
+});
+
+test('З26/3: черновик листа — свой слот; закрытие листа его убирает', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  // начатая правка в «Пунктах» не должна пострадать от листа и наоборот
+  openSettings(document);
+  document.querySelector('[data-act="edit-open"]').click();
+  document.getElementById('e-name').value = 'Начатая правка';
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('[data-act="train-inc"]').click();
+  document.getElementById('tr-note').value = 'черновик листа';
+  window.renderTrain();
+  assert.equal(document.getElementById('tr-note').value, 'черновик листа');
+
+  document.querySelector('[data-act="train-cancel"]').click();
+  document.querySelector('[data-act="train-inc"]').click();
+  assert.equal(document.getElementById('tr-note').value, '', 'новый лист — чистые поля');
+});
+
+/* ── п. 4: скролл и фокус листов ───────────────────────────── */
+
+/* Скролл в jsdom не существует: boot глушит scrollTo. Записываем вызовы и
+   подставляем scrollY — предмет проверки в том, КУДА приложение просит
+   вернуться, а не в том, прокрутится ли окно. */
+function scrollSpy(window) {
+  const calls = [];
+  window.scrollTo = (x, y) => calls.push(y);
+  const at = y => Object.defineProperty(window, 'scrollY', { value: y, configurable: true });
+  return { calls, at, last: () => calls[calls.length - 1] };
+}
+
+const SHEETS = [
+  { name: 'деталь пункта', tab: 'today', screen: 'scr-detail',
+    open: d => d.querySelector('#scr-today [data-act="item-detail"]').click(), act: 'item-detail' },
+  { name: 'разбор недели', tab: 'today', screen: 'scr-review',
+    open: d => d.querySelector('#scr-today [data-act="goto-review"]').click(), act: 'goto-review' },
+  { name: 'тренировка', tab: 'today', screen: 'scr-train',
+    open: d => d.querySelector('#scr-today [data-act="train-inc"]').click(), act: 'train-inc' }
+];
+
+/* Сид, в котором на «Сегодня» разом есть все три входа в листы */
+function sheetSeed() {
+  const seed = dueSeed();
+  seed.items[0].formula = { anchor: 'после душа', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '', mode: 'build' };
+  seed.items.push({
+    id: 'sw', name: 'Тренировка', value: null, unit: '', type: 'weekly', area: 'min',
+    goal: 3, note: '', group: '', active: true, addedAt: addKey(prevMonday(), -14),
+    raiseAfter: 0, history: []
+  });
+  return seed;
+}
+
+test('З26/4.1: все три листа возвращают скролл и при закрытии таб-баром', async () => {
+  for (const s of SHEETS) {
+    const { document, window } = await boot({ seed: sheetSeed() });
+    const spy = scrollSpy(window);
+    spy.at(640);
+    s.open(document);
+    assert.equal(document.getElementById(s.screen).hidden, false, `${s.name}: лист открыт`);
+
+    spy.at(0);
+    document.querySelector(`#tabs button[data-tab="${s.tab}"]`).click(); // закрытие таб-баром
+    assert.equal(document.getElementById(s.screen).hidden, true, `${s.name}: лист закрыт`);
+    assert.equal(spy.last(), 640, `${s.name}: прежний скролл возвращён таб-баром`);
+  }
+});
+
+test('З26/4.1: уход таб-баром на ЧУЖУЮ вкладку скролл не возвращает', async () => {
+  const { document, window } = await boot({ seed: sheetSeed() });
+  const spy = scrollSpy(window);
+  spy.at(640);
+  document.querySelector('#scr-today [data-act="train-inc"]').click();
+  spy.at(0);
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  assert.equal(spy.last(), 0, 'другая вкладка открывается сверху');
+});
+
+test('З26/4.2: фокус уходит в лист и возвращается на кнопку-источник', async () => {
+  for (const s of SHEETS) {
+    // «Готово» / «Отмена»
+    const a = await boot({ seed: sheetSeed() });
+    s.open(a.document);
+    const h1 = a.document.querySelector(`#${s.screen} h1`);
+    assert.equal(a.document.activeElement, h1, `${s.name}: фокус в заголовке листа`);
+    assert.equal(h1.getAttribute('tabindex'), '-1', `${s.name}: заголовок фокусируем`);
+    const close = a.document.querySelector(`#${s.screen} [data-act$="-done"], #${s.screen} [data-act="train-cancel"]`);
+    close.click();
+    assert.equal(a.document.activeElement.dataset.act, s.act, `${s.name}: фокус вернулся источнику`);
+
+    // таб-бар на ту же вкладку
+    const b = await boot({ seed: sheetSeed() });
+    s.open(b.document);
+    b.document.querySelector(`#tabs button[data-tab="${s.tab}"]`).click();
+    assert.equal(b.document.activeElement.dataset.act, s.act, `${s.name}: и при закрытии таб-баром`);
+  }
+});
+
+test('З26/4.3: ловушки фокуса нет — таб-бар из открытого листа достижим', async () => {
+  const { document } = await boot({ seed: sheetSeed() });
+  document.querySelector('#scr-today [data-act="item-detail"]').click();
+  const tabs = [...document.querySelectorAll('#tabs button')];
+  assert.equal(tabs.length, 5);
+  for (const t of tabs) {
+    assert.equal(t.disabled, false);
+    assert.equal(t.getAttribute('aria-hidden'), null);
+    assert.equal(t.getAttribute('tabindex'), null, 'таб-бар из фокусного обхода не изымается');
+  }
+  assert.equal(document.querySelector('#tabs').getAttribute('inert'), null);
+});
+
+/* ── п. 5: отделка, замером по объявлениям ─────────────────── */
+
+const CSS_SRC = () => fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+/* Тело правила по ТОЧНОМУ селектору. Селектор ищется от начала строки:
+   иначе «.cdays i» нашлось бы внутри «.grid i, .cdays i», и тест мерил бы
+   чужое правило, ничего об этом не сообщив. */
+const ruleOf = (css, sel) => {
+  const re = new RegExp('(?:^|\\n)' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}');
+  const m = re.exec(css);
+  return m ? m[1] : null;
+};
+const px = (body, prop) => parseFloat((new RegExp(prop + ':\\s*([\\d.]+)px').exec(body || '') || [])[1]);
+
+test('З26/5.1: планка дня и полоса «Прогресса» — одна форма и один градиент', async () => {
+  const css = CSS_SRC();
+  const box = ruleOf(css, '.bar, .dbar');
+  assert.ok(box, 'правило формы общее для обеих полос');
+  assert.equal(px(box, 'height'), 8, 'высота 8px — как у полосы «Прогресса» (была 3px)');
+  assert.match(box, /border-radius:\s*var\(--radius-sm\)/);
+  const fill = ruleOf(css, '.bar i, .dbar i');
+  assert.match(fill, /background:\s*linear-gradient\(90deg, var\(--accent\), var\(--chain\)\)/,
+    'градиент --accent → --chain у обеих');
+  assert.match(fill, /border-radius:\s*var\(--radius-sm\)/);
+  // одна форма — одно место: своего правила у .dbar i нет, градиент в файле один
+  assert.equal(ruleOf(css, '.dbar i'), null, 'у .dbar i своего правила нет');
+  assert.doesNotMatch(ruleOf(css, '.dbar') || '', /height|linear-gradient/);
+  assert.equal((css.match(/linear-gradient/g) || []).length, 1,
+    'градиент в приложении по-прежнему один — на планку дня (CLAUDE.md)');
+
+  // и в живом DOM обе полосы на месте
+  const { document } = await boot({ seed: progSeed() });
+  assert.ok(document.querySelector('#scr-today .bar i'), 'планка на «Сегодня»');
+  openProgress(document);
+  assert.ok(document.querySelector('#scr-progress .dbar i'), 'полоса на «Прогрессе»');
+});
+
+test('З26/5.2: счёт дня — на ступени недельного счётчика того же экрана', () => {
+  const css = CSS_SRC();
+  const note = ruleOf(css, '.bar-note');
+  const num = ruleOf(css, '.bar-note b');
+  const wnum = ruleOf(css, '.wnum');
+  const wnumB = ruleOf(css, '.wnum b');
+  assert.match(note, /font-size:\s*var\(--text-base\)/, 'строка счёта — 17px, как .wnum');
+  assert.equal(px(wnum, 'font-size'), 17);
+  assert.equal(px(num, 'font-size'), 22, 'число — 22px');
+  assert.equal(px(num, 'font-size'), px(wnumB, 'font-size'), 'ступень та же, что у .wnum b');
+  // новой ступени не заведено: крупнее 22px только h1/.stat и «+»
+  const sizes = [...css.matchAll(/font-size:\s*(\d+)px/g)].map(m => +m[1]);
+  assert.deepEqual([...new Set(sizes)].sort((a, b) => b - a).slice(0, 3), [32, 24, 22]);
+});
+
+test('З26/5.3: имя блока не мельче и не тише надстрочника приложения', () => {
+  const css = CSS_SRC();
+  const g = ruleOf(css, '.g-label');
+  const o = ruleOf(css, '.overline');
+  assert.match(g, /font-size:\s*var\(--text-xs\)/, 'ступень существующая');
+  assert.equal(px(o, 'font-size'), 12);
+  assert.ok(13 >= px(o, 'font-size'), '--text-xs (13px) не мельче .overline (12px)');
+  assert.match(g, /color:\s*var\(--muted\)/, 'тон не тише .overline');
+  assert.doesNotMatch(g, /--faint/);
+  assert.equal(/font-weight:\s*650/.test(g), /font-weight:\s*650/.test(o), 'вес общий, как и был');
+  // 11px больше нигде не живёт — ступень ушла из шкалы вместе с .g-label
+  assert.doesNotMatch(css, /font-size:\s*11px/);
+});
+
+test('З26/5.4: рамка кнопки — тот же токен, что у поля ввода', () => {
+  const css = CSS_SRC();
+  const btn = ruleOf(css, '.btn');
+  const field = ruleOf(css, '.field input, .field select, .field textarea, select');
+  const tok = s => (/border:\s*1px solid var\(--([\w-]+)\)/.exec(s) || [])[1];
+  assert.equal(tok(btn), 'control-border');
+  assert.equal(tok(btn), tok(field), 'кнопка и поле обведены одним токеном');
+  assert.doesNotMatch(btn, /--line-strong/);
+  // «+» больше не переопределяет рамку на тихий тон
+  assert.doesNotMatch(ruleOf(css, '.btn.plus'), /border-color/);
+});
+
+test('З26/5.5: ячейка цепи крупнее — доля краски считается, а не назначается', () => {
+  const css = CSS_SRC();
+  const grid = ruleOf(css, '.cdays');
+  const cell = ruleOf(css, '.cdays i');
+  assert.match(grid, /grid-template-columns:\s*repeat\(7, 1fr\)/, 'колонки тянутся по ширине карточки');
+  const d = px(cell, 'width');
+  assert.equal(d, px(cell, 'height'), 'ячейка круглая');
+
+  // ширина карточки на целевом устройстве: 375 − поля экрана − поля и рамка карточки
+  const screenPad = px(ruleOf(css, '.screen'), 'padding-left') || 20;
+  const cardPad = px(ruleOf(css, '.pcard'), 'padding');
+  const inner = 375 - 2 * screenPad - 2 * cardPad - 2;
+  const share = 7 * d / inner;
+  assert.ok(share > 0.4, `доля краски ${(share * 100).toFixed(1)}% — было 20,9%`);
+  // зазор между кругами остаётся воздухом, круги не касаются
+  const gapCol = parseFloat((/gap:\s*[\d.]+px\s+([\d.]+)px/.exec(grid) || [])[1]);
+  assert.ok(inner / 7 - d >= gapCol, 'круги не касаются');
+
+  // сетка разбора свой шаг сохранила: 26px там выравнивает кружки с именами
+  assert.match(ruleOf(css, '.grid'), /repeat\(var\(--cols\), 26px\)/);
+  assert.equal(px(ruleOf(css, '.grid i, .cdays i'), 'width'), 9, 'кружок разбора прежний');
+  assert.ok(d > 9, 'ячейка цепи крупнее кружка разбора');
+});
+
+/* ── п. 6: отклик на нажатие ───────────────────────────────── */
+
+/* Полный список тач-целей приложения. Круг отметки и тумблер в него не
+   входят: у них свой отклик — заливка с .pop и ход головки. */
+const TAPPABLE = ['.btn', '.banner:not(.static)', '.idetail', '.dot', '.undo',
+  '.itxt', '.card.note', '.sect > summary', '#tabs button'];
+
+test('З26/6.1: состояние нажатия есть у каждой тач-цели, не только у .btn', () => {
+  const css = CSS_SRC();
+  for (const sel of TAPPABLE) {
+    const re = new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':active');
+    assert.match(css, re, `нет состояния нажатия у ${sel}`);
+  }
+  const start = css.indexOf('.btn:active');
+  const block = css.slice(start, css.indexOf('}', start) + 1);
+  assert.match(block, /background:\s*var\(--accent-weak\)/, 'тон — существующий токен');
+  assert.doesNotMatch(block, /#[0-9a-f]{3,8}\b/i, 'сырых цветов в отклике нет');
+  assert.doesNotMatch(block, /rgba?\(/, 'сырых rgba в отклике нет');
+  // системную подсветку снимает body — отклик обязан быть своим
+  assert.match(css, /-webkit-tap-highlight-color:\s*transparent/);
+});
+
+/* Нативные контролы: у них свой отклик — галочка, ход головки тумблера,
+   системный список select, календарь date. Заливкой их не подменяют. */
+const EXEMPT = ['input', 'select', 'label.switch', 'label.row.check', '.banner.static'];
+
+/* Обход живого DOM, а не сверка со списком: любая будущая тач-цель без
+   отклика на нажатие валит этот тест сама, без правки списка (п. 10.6). */
+test('З26/6.1: ни одной тач-цели без отклика на нажатие на всех экранах и листах', async () => {
+  const seed = sheetSeed();
+  seed.notes = [{ id: 'sn', date: daysAgo(1), text: 'Заметка', kind: 'note', source: '', updatedAt: 1 }];
+  seed.exercises = [{ id: 'sx', name: 'Жим', unit: 'кг', value: 60, history: [], active: true, addedAt: addKey(prevMonday(), -14) }];
+  seed.days[daysAgo(2)] = { it1: true }; // пункт начат, вчера пропуск — будет точка
+  const { document } = await boot({ seen: undefined, seed });
+
+  const seen = new Set();
+  const scan = () => {
+    for (const el of document.querySelectorAll('section.screen:not([hidden]) [data-act], section.screen:not([hidden]) button, #tabs button, #tabs summary')) {
+      if (EXEMPT.some(s => el.matches(s))) continue;
+      const hit = TAPPABLE.find(s => el.matches(s));
+      assert.ok(hit, `тач-цель без отклика на нажатие: <${el.tagName.toLowerCase()} class="${el.className}" data-act="${el.dataset.act || ''}">`);
+      seen.add(hit);
+    }
+  };
+
+  for (const t of ['today', 'habits', 'progress', 'notes', 'settings']) {
+    document.querySelector(`#tabs button[data-tab="${t}"]`).click();
+    if (t === 'settings') {
+      [...document.querySelectorAll('#scr-settings details.sect')].forEach(d => { if (!d.open) d.querySelector('summary').click(); });
+    }
+    scan();
+  }
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('#scr-today [data-act="miss-note"]').click(); // раскрытая подпись даёт «отметить»
+  scan();
+  for (const s of ['scr-detail', 'scr-review', 'scr-train']) {
+    document.querySelector('#tabs button[data-tab="today"]').click();
+    const open = { 'scr-detail': 'item-detail', 'scr-review': 'goto-review', 'scr-train': 'train-inc' }[s];
+    document.querySelector(`#scr-today [data-act="${open}"]`).click();
+    scan();
+  }
+  // и список не ветшает: каждая перечисленная тач-цель где-то действительно есть
+  for (const sel of TAPPABLE) assert.ok(seen.has(sel), `${sel} — селектор в списке, но на экранах не встречается`);
+});
+
+test('З26/6.3: все переходы движения — в окне 180–260 мс', () => {
+  const css = CSS_SRC();
+  const secs = [...css.matchAll(/transition:[^;]*?([\d.]+)s/g)].map(m => Math.round(+m[1] * 1000));
+  assert.ok(secs.length >= 10, 'переходы найдены');
+  for (const ms of secs) assert.ok(ms >= 180 && ms <= 260, `переход ${ms} мс вне окна 180–260`);
+  // анимации-отклики тоже; flash-note — не переход движения, а появление,
+  // удержание и уход, и конституция считает его отдельно
+  for (const m of css.matchAll(/animation:\s*([\w-]+)\s+([\d.]+)s/g)) {
+    if (m[1] === 'flash-note' || m[1] === 'none') continue;
+    const ms = Math.round(+m[2] * 1000);
+    assert.ok(ms >= 180 && ms <= 260, `анимация ${m[1]} ${ms} мс вне окна`);
+  }
+  // таб-бар был единственным нарушителем: .16s ease
+  assert.doesNotMatch(css, /transition:\s*color\s*\.16s/);
+});
+
+test('З26/6.4: reduced-motion гасит движение, состояние нажатия остаётся достижимым', () => {
+  const css = CSS_SRC();
+  const block = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(block, /\*, \*::before, \*::after\s*\{[^}]*transition: none !important/);
+  assert.match(block, /animation: none !important/);
+  // состояние нажатия мгновенное: переходов ему не заведено, гасить нечего
+  const start = css.indexOf('.btn:active');
+  assert.doesNotMatch(css.slice(start, css.indexOf('}', start)), /transition|animation/);
+  // и ни одно правило :active внутри блока reduced-motion не отменяется
+  assert.doesNotMatch(block, /:active/);
+});
+
+/* ── п. 7–8: тексты и доступность ──────────────────────────── */
+
+test('З26/7: тексты «Системы» описывают то, что приложение делает', async () => {
+  const { document } = await boot({ seed: flashSeed() });
+  openSettings(document);
+  const sys = openSect(document, /Система/).textContent;
+  // блоки: набор посева, а не выдуманный
+  assert.doesNotMatch(sys, /Тело:/, 'блока «Тело» в программе нет');
+  assert.doesNotMatch(sys, /Сон:/);
+  assert.doesNotMatch(sys, /Развитие:/);
+  // «одно изменение за раз» названо тем, чем оно держится
+  assert.match(sys, /лестница одна и повышение планки одно за разбор/);
+
+  // и посев действительно заводит те блоки, что названы
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const seeded = /const SEED_GROUPS = \[([^\]]*)\]/.exec(app)[1].match(/'([^']+)'/g).map(s => s.slice(1, -1));
+  assert.equal(seeded.length, 3);
+  for (const g of seeded) assert.ok(sys.includes(g), `«Система» не называет блок ${g}`);
+});
+
+test('З26/7: устаревших комментариев про «два листа» и «отдельную задачу» нет', () => {
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  assert.doesNotMatch(app, /Перетаскивание — отдельная задача/);
+  assert.doesNotMatch(app, /он открывается и из разбора/);
+  assert.doesNotMatch(app, /два листа поверх них/);
+  assert.match(app, /три листа поверх них/);
+  // счёт форм в комментарии сторожа сходится с его же ассертом (было «девяти»)
+  const dom = fs.readFileSync(path.join(ROOT, 'tests', 'dom.test.js'), 'utf8');
+  const said = /outerHTML всех ([а-я]+) форм/.exec(dom)[1];
+  const checked = /Object\.keys\(got\)\.length, (\d+),/.exec(dom)[1];
+  assert.equal(said, 'четырнадцати');
+  assert.equal(checked, '14');
+  // docs/plan.md помечен историческим, а не выдаёт себя за источник задач
+  const plan = fs.readFileSync(path.join(ROOT, 'docs', 'plan.md'), 'utf8');
+  assert.match(plan, /исторический/i);
+  assert.doesNotMatch(plan, /^Источник задач — этот файл/m);
+});
+
+test('З26/8.2: будущий день полосы недели не передаётся одной прозрачностью', () => {
+  const css = CSS_SRC();
+  const fut = ruleOf(css, '.hstrip i.fut');
+  assert.match(fut, /visibility:\s*hidden/);
+  assert.doesNotMatch(fut, /opacity/);
+  // идиома та же, что в цепи дней «Прогресса»
+  assert.match(css, /\.cdays i\.fut,\s*\n?\.cdays i\.pre \{[^}]*visibility:\s*hidden/);
+});
+
+test('З26/8.2: место будущей ячейки в раскладке остаётся — полоса не съезжает', async () => {
+  const seed = dueSeed();
+  seed.items.push({
+    id: 'h1', name: 'Привычка', value: null, unit: '', type: 'daily', area: 'habit',
+    goal: null, note: '', group: '', active: true, addedAt: addKey(curMonday(), -21),
+    raiseAfter: 0, history: []
+  });
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const cells = [...document.querySelectorAll('#scr-habits .hstrip i')];
+  assert.equal(cells.length, 7, 'семь ячеек на месте');
+  assert.equal(document.querySelectorAll('#scr-habits .hstrip .hd').length, 7, 'и семь подписей дней');
 });

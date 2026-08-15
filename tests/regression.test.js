@@ -114,7 +114,13 @@ test('З23/7.2: restoreWiped проводит копию как данные и�
     // и следующий старт не засеет её уже как «первый запуск»
     assert.equal(app.store.settings.seed17, true, 'флаг посева проставлен пустому внешнему store');
     assert.equal(app.store.settings.habitSeeded, true);
-    assert.equal(app.wipedCopy(), null, 'ключ копии убран');
+    // Задача 26, п. 1.1: копия обменная. Прежде «Вернуть» убирало ключ;
+    // теперь на его место ложится состояние, которое возврат сместил, —
+    // здесь это засеянный freshStore, и он не потерян.
+    const back = app.wipedCopy();
+    assert.ok(back, 'копия не убрана, а обменена');
+    assert.equal(back.kind, 'restore');
+    assert.ok(back.store.items.length > 0, 'в копии — смещённое возвратом состояние');
   } finally { clearLocalStorage(); }
 });
 

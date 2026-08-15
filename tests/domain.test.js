@@ -4306,14 +4306,57 @@ test('З25/2: keepPrev — общая механика копии, kind разл
   assert.deepEqual(c.store, snapshot);
   assert.deepEqual(c.stats, app.wipeStats(snapshot));
 
-  // «Вернуть» одинаков для обоих поводов: migrate с внешним флагом, ключ убран
+  // «Вернуть» одинаков для всех поводов: migrate с внешним флагом. С задачи
+  // 26 (п. 1.1) он ещё и обратим — смещённое состояние ложится в ту же копию
   assert.equal(app.restoreWiped(), true);
   assert.deepEqual(app.store, snapshot);
-  assert.equal(app.wipedCopy(), null);
+  const back = app.wipedCopy();
+  assert.ok(back, 'копия обменная, а не убранная');
+  assert.equal(back.kind, 'restore');
 
   // чистка ставит свой kind
   app.wipeAll();
   assert.equal(app.wipedCopy().kind, 'wipe');
+  clearLocalStorage();
+});
+
+/* Задача 26, п. 1.1. Копия — переключатель между двумя состояниями:
+   наработанное после чистки или импорта возврат не уносит, а меняет
+   местами. Прежде возврат был единственной необратимой операцией. */
+test('З26/1: «Вернуть» обменивает состояния, а не стирает нынешнее', () => {
+  fakeLocalStorage();
+  filledStore();
+  const был = JSON.parse(JSON.stringify(app.store));
+
+  app.wipeAll();                       // чистка: практика ушла в копию
+  app.store.items.push({
+    id: 'после', name: 'Заведено после чистки', value: null, unit: '', type: 'daily',
+    area: 'min', goal: null, note: '', group: '', active: true, addedAt: '2026-08-14',
+    raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    formula: null, ladder: null, ladderLog: []
+  });
+  const после = JSON.parse(JSON.stringify(app.store));
+
+  assert.equal(app.restoreWiped(), true, 'возврат выполнен');
+  assert.deepEqual(app.store.items.map(i => i.name), был.items.map(i => i.name), 'прежнее вернулось');
+  const c = app.wipedCopy();
+  assert.equal(c.kind, 'restore', 'повод копии — возврат');
+  assert.deepEqual(c.store.items.map(i => i.id), после.items.map(i => i.id),
+    'наработанное после чистки лежит в копии, а не потеряно');
+
+  // и обратно: второй тап возвращает наработанное
+  assert.equal(app.restoreWiped(), true);
+  assert.deepEqual(app.store.items.map(i => i.id), после.items.map(i => i.id), 'переключатель');
+  assert.deepEqual(app.wipedCopy().store.items.map(i => i.name), был.items.map(i => i.name));
+  clearLocalStorage();
+});
+
+test('З26/1: пустое нынешнее состояние менять не на что — копия убирается', () => {
+  fakeLocalStorage();
+  filledStore();
+  app.wipeAll();                       // после чистки store пуст
+  assert.equal(app.restoreWiped(), true);
+  assert.equal(app.wipedCopy(), null, 'пустоту в копию не кладут, старая копия отдана');
   clearLocalStorage();
 });
 
