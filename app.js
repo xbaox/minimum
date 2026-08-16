@@ -153,15 +153,6 @@ const SEED_ITEMS = [
     { area: 'habit', pkind: 'time', pvalue: 0, pstep: -15 }]
 ];
 
-/* Выписки посева: текст и источник дословно (инвариант 16) */
-const SEED_QUOTES = [
-  ['Капля точит камень не силой, а частым падением.', 'Овидий'],
-  ['Путь в тысячу ли начинается под ногами.', 'Лао-цзы'],
-  ['Начал — половину сделал.', 'Гораций'],
-  ['Кто везде — тот нигде.', 'Сенека'],
-  ['Делай каждое дело так, будто оно последнее.', 'Марк Аврелий']
-];
-
 /* Пункты программы. Единственная фабрика на два пути — посев в migrate
    и defaultStore: наборы обязаны совпадать, поэтому собираются здесь. */
 function programItems(today) {
@@ -178,21 +169,6 @@ function programItems(today) {
     if (it.type === 'param') it.history = [{ date: today, value: it.pvalue }];
     return it;
   });
-}
-
-/* Выписки программы идут в общий список заметок; updatedAt задаёт
-   порядок сверху вниз (notesByDate: день, при равенстве — правка) */
-/* Порядок ключей — как у нормализации notes в migrate (kind перед source):
-   живой store не должен отличаться от прошедшего migrate ни полем, ни
-   байтом — то же правило, что записано в setLadder. Прежде посев давал
-   {…, source, kind, …}, и ПЕРВЫЙ экспорт со свежей установки байт-в-байт
-   не совпадал ни с одним следующим экспортом тех же данных: файл сам себе
-   не равен (задача 27, п. 5.1). Потери данных не было — только порядок. */
-function programQuotes(today) {
-  return SEED_QUOTES.map(([text, source], i) => ({
-    id: uid(), date: today, text, kind: 'quote', source,
-    updatedAt: SEED_QUOTES.length - i
-  }));
 }
 
 const programGroups = () => SEED_GROUPS.map(name => ({ name }));
@@ -232,7 +208,6 @@ function ownerNewestItem() {
 function seedProgram(s, today) {
   s.groups = programGroups();
   s.items = programItems(today);
-  s.notes = programQuotes(today);
   s.settings.seed17 = true;
   s.settings.habitSeeded = true; // привычки программы уже здесь — посев v5 не нужен
 }
@@ -252,7 +227,9 @@ function defaultStore() {
     pendingLowers: [], // принятые понижения, ещё не записанные в разбор
     exercises: [],     // упражнения тренировки: рабочая нагрузка и её история
     sessions: [],      // записанные тренировки: день, значения упражнений, заметка
-    notes: programQuotes(today), // выписки программы; дальше — заметки владельца
+    // заметки и выписки владельца. Экран снят задачей 28.C, но поле живёт:
+    // данные никуда не делись, идут в экспорт и проходят нормализацию
+    notes: [],
     paramDecided: {},  // itemId -> {week, from, to|null}: решения по параметрам, привязанные к разбираемой неделе
     draftOneChange: '',
     weekStart: today,  // историческая отсечка скользящей эпохи
@@ -1165,65 +1142,12 @@ function moveExercise(id, dir) {
   return true;
 }
 
-/* ── Заметки (инвариант 16) ────────────────────────────────────
-   Свободный текст владельца: день записи, текст, время правки.
-   Ни поиска, ни тегов, ни связей с пунктами — только запись. */
-
-function addNote(text, kind, source) {
-  const t = (text || '').trim();
-  if (!t) return null; // пустая заметка не заводится
-  const k = kind === 'quote' ? 'quote' : 'note';
-  const n = {
-    id: uid(), date: todayKey(), text: t, kind: k,
-    source: k === 'quote' ? (source || '').trim() : '',
-    updatedAt: Date.now()
-  };
-  store.notes.push(n);
-  save();
-  return n;
-}
-
-/* Пустой текст при сохранении удаляет заметку — отдельной кнопки для
-   этого не нужно, но явная «Удалить» тоже есть. Вид записи задаётся
-   при создании и не меняется: источник правится только у выписки. */
-function updateNote(id, text, source) {
-  const n = store.notes.find(x => x.id === id);
-  if (!n) return false;
-  const t = (text || '').trim();
-  if (!t) return deleteNote(id);
-  n.text = t;
-  if (n.kind === 'quote' && source !== undefined) n.source = (source || '').trim();
-  n.updatedAt = Date.now();
-  save();
-  return true;
-}
-
-/* Выписки — подмножество заметок; порядок общий (notesByDate). */
-function quotes() {
-  return store.notes.filter(n => n.kind === 'quote');
-}
-
-/* Выписка дня: детерминированный выбор по номеру логического дня —
-   не случайный, чтобы один и тот же день давал одну и ту же строку. */
-function quoteOfDay() {
-  const list = quotes();
-  if (!list.length) return null;
-  return list[daysInSystem() % list.length];
-}
-
-function deleteNote(id) {
-  const i = store.notes.findIndex(x => x.id === id);
-  if (i < 0) return false;
-  store.notes.splice(i, 1);
-  save();
-  return true;
-}
-
-/* От новых к старым: день записи, при равенстве — время правки */
-function notesByDate() {
-  return store.notes.slice().sort((a, b) =>
-    a.date === b.date ? b.updatedAt - a.updatedAt : (a.date < b.date ? 1 : -1));
-}
+/* Заметок и выписок в интерфейсе больше нет: экран снят задачей 28.C.
+   Доменные функции (addNote, updateNote, deleteNote, notesByDate, quotes,
+   quoteOfDay) ушли вместе с ним. ДАННЫЕ ОСТАЛИСЬ: `store.notes[]` живёт,
+   нормализация в migrate его валидирует, счёт потерь импорта его считает,
+   экспорт отдаёт целиком. Снятие поля — отдельное решение владельца, и до
+   него ни один байт заметок не теряется. */
 
 /* Запись тренировки: сессия дня, обновление нагрузок (история — только
    при изменении) и инкремент недельного счётчика, как раньше. */
@@ -2629,10 +2553,6 @@ function importJSON(file) {
     ui.groupAdd = false;
     ui.groupPick = null;
     ui.groupNew = false;
-    // заметки принадлежали прежним данным — форма и черновик
-    ui.noteAdd = false;
-    ui.noteEditingId = null;
-    ui.noteDraft = {};
     ui.exEditingId = null;
     ui.exAddOpen = false;
     // Взведённые подтверждения относились к ПРЕЖНИМ данным и после подмены
@@ -2706,8 +2626,9 @@ const ui = {
   trainFrom: null,      // вкладка возврата и её скролл
   trainScroll: 0,
   // черновик листа «Тренировка» — нагрузки и заметка (задача 26, п. 3).
-  // Четвёртый слот того же механизма, что у «Пунктов», листа детали и
-  // заметок: снимается в начале renderTrain, возвращается в конце.
+  // Третий слот того же механизма, что у «Пунктов» и листа детали
+  // (четвёртый, заметочный, ушёл с экраном — задача 28.C):
+  // снимается в начале renderTrain, возвращается в конце.
   // Прежде здесь лежала строка ui.trainNote с комментарием «переживает
   // перерисовку» — ввод в неё не попадал вовсе, и обещание было ложным.
   trainDraft: {},
@@ -2715,11 +2636,6 @@ const ui = {
   sheetSrc: null,       // { act, id } | null
   exEditingId: null,    // упражнение с раскрытой правкой
   exAddOpen: false,     // открыта форма «Добавить упражнение»
-  noteAdd: false,       // открыта форма новой заметки (задача 16E)
-  noteKind: 'note',     // вид новой записи: 'note' | 'quote' (задача 17)
-  noteEditingId: null,  // заметка с раскрытой правкой
-  noteDelete: null,     // заметка ждёт подтверждения удаления вторым тапом
-  noteDraft: {},      // черновик формы заметки — свой слот, как у листа детали
   wipeOpen: false,      // раскрыто предупреждение «Начать с чистого листа» (16.1)
   wipeFailed: false,    // чистка не выполнена: копию некуда положить или запись отказала (19, C.6.4)
   restoreFailed: false, // то же у возврата — молчать о нём нельзя (задача 27, Д7)
@@ -2772,7 +2688,7 @@ function el(id) { return document.getElementById(id); }
 /* Баннер отказа хранилища — ПОСТОЯННЫЙ узел вне экранов (index.html),
    обновляется точечно из save(). Прежде он жил в разметке «Сегодня» и
    «Привычек», а renderAll рисует одну текущую вкладку — и все отказы,
-   случившиеся на «Настройках», «Заметках» и листах (правка пункта,
+   случившиеся на «Настройках» и листах (правка пункта,
    экспорт, «Вернуть»), проходили без единого следа на том экране, где
    владелец стоял (задача 27, Д6). Тон прежний: тихая констатация, ни
    красного, ни слова «ошибка».
@@ -2937,7 +2853,7 @@ function motionLeave(node, done) {
   setTimeout(fin, MOTION_MS + MOTION_TAIL_MS);
 }
 
-/* Пять вкладок плюс три листа поверх них: деталь пункта, разбор недели и
+/* Четыре вкладки плюс три листа поверх них: деталь пункта, разбор недели и
    тренировка. Разбор с таб-бара ушёл (задача 16B) — открывается баннером
    «Сегодня» и строкой «Прогресса», закрывается «Готово» на ту вкладку,
    с которой открыт. Лист детали главнее двух других: если открыт он,
@@ -2946,7 +2862,7 @@ function motionLeave(node, done) {
 function renderAll() {
   const map = {
     today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
-    notes: 'scr-notes', settings: 'scr-settings'
+    settings: 'scr-settings'
   };
   // исчезнувший пункт (импорт) закрывает лист детали
   const detail = ui.detailId ? store.items.find(i => i.id === ui.detailId) : null;
@@ -2976,7 +2892,6 @@ function renderAll() {
     if (ui.tab === 'today') renderToday();
     if (ui.tab === 'habits') renderHabits();
     if (ui.tab === 'progress') renderProgress();
-    if (ui.tab === 'notes') renderNotes();
     if (ui.tab === 'settings') renderSettings();
   }
   const view = sheet || ui.tab;
@@ -3385,13 +3300,8 @@ function renderProgress() {
     ? `<button class="banner rev" data-act="goto-review"><span>Разбор недели</span><span class="chev" aria-hidden="true">&rsaquo;</span></button>`
     : `<p class="muted rev">Следующий разбор — в понедельник</p>`;
 
-  // последней строкой — выписка дня; выписок нет — строки нет
-  const q = quoteOfDay();
-  if (q) {
-    h += `<p class="quote">&laquo;${esc(q.text)}&raquo;</p>`;
-    if (q.source) h += `<p class="qsrc">${esc(q.source)}</p>`;
-  }
-
+  // Ниже строки разбора не стоит ничего: выписка дня ушла с экраном
+  // «Заметки» (задача 28.C), и на её место не встало ничего.
   el('scr-progress').innerHTML = h;
 }
 
@@ -3444,63 +3354,6 @@ function renderTrain() {
 
   el('scr-train').innerHTML = h;
   restoreOpenForm();
-}
-
-/* Экран 4 — «Заметки» (инвариант 16): список от новых к старым, тап по
-   карточке открывает правку. Ни поиска, ни тегов, ни форматирования. */
-function noteForm(n) {
-  const id = n ? n.id : 'new';
-  // вид записи задаётся при создании: у правки он берётся из самой записи
-  const quote = n ? n.kind === 'quote' : ui.noteKind === 'quote';
-  return `
-    <div class="card form" data-form="note" data-id="${esc(id)}">
-      <label class="field"><span>${quote ? 'Выписка' : 'Заметка'}</span>
-        <textarea id="n-text" rows="6">${esc(n ? n.text : '')}</textarea></label>
-      ${quote ? `<label class="field"><span>Источник</span>
-        <input type="text" id="n-source" value="${esc(n ? n.source : '')}" placeholder="необязательно"></label>` : ''}
-      <div class="btns">
-        <button class="btn primary" data-act="note-save" data-id="${esc(id)}">Сохранить</button>
-        <button class="btn quiet" data-act="note-cancel">Отмена</button>
-        ${n ? `<button class="btn quiet" data-act="note-del" data-id="${esc(n.id)}">${ui.noteDelete === n.id ? 'Подтвердить удаление' : 'Удалить'}</button>` : ''}
-      </div>
-    </div>`;
-}
-
-function renderNotes() {
-  snapshotOpenForm();
-  let h = `
-    <header class="page">
-      <p class="overline">Своими словами</p>
-      <h1>Заметки</h1>
-    </header>`;
-  h += ui.noteAdd
-    ? noteForm(null)
-    : `<div class="nadd">
-        <button class="btn" data-act="note-add-open" data-kind="note">Новая заметка</button>
-        <button class="btn" data-act="note-add-open" data-kind="quote">Новая выписка</button>
-      </div>`;
-  // якорь над списком: сюда встаёт подтверждение записи, у которой своей
-  // строки уже нет (пустой текст удалил её — инвариант 16)
-  h += flashAt('note-add');
-
-  const list = notesByDate();
-  if (!list.length && !ui.noteAdd) h += `<p class="muted">Пока пусто</p>`;
-  for (const n of list) {
-    const quote = n.kind === 'quote';
-    h += ui.noteEditingId === n.id
-      ? noteForm(n)
-      : `
-      <button type="button" class="card note" data-act="note-open" data-id="${esc(n.id)}">
-        <span class="ndate">${esc(fmtDay(n.date))}</span>
-        <span class="ntext">${quote ? '&laquo;' + esc(n.text) + '&raquo;' : esc(n.text)}</span>
-        ${quote && n.source ? `<span class="nsrc">${esc(n.source)}</span>` : ''}
-      </button>`;
-    h += flashAt('note:' + n.id);
-  }
-
-  el('scr-notes').innerHTML = h;
-  restoreOpenForm();
-  armFlash();
 }
 
 /* ── Точечные обновления «Сегодня» и «Привычек» (горячие пути) ──
@@ -4120,11 +3973,6 @@ function currentFormKey() {
   // форма, пока он открыт (задача 26, п. 3). Порядок проверок — как в
   // renderAll: лист детали главнее листа тренировки.
   if (ui.detailId === null && ui.trainOpen) return 'train:' + ui.trainId;
-  // форма заметки принадлежит своей вкладке: на других экранах ключ не её
-  if (ui.tab === 'notes' && ui.detailId === null && !ui.trainOpen) {
-    if (ui.noteAdd) return 'note:new';
-    if (ui.noteEditingId !== null) return 'note:' + ui.noteEditingId;
-  }
   if (ui.addOpen) return 'add';
   if (ui.editingId !== null) return 'edit:' + ui.editingId;
   // формы блока и упражнения черновиком не считались вовсе — ключ был null,
@@ -4153,18 +4001,18 @@ function domFormKey(form) {
   return (FORM_KIND[f] || f) + ':' + (form.dataset.id || '');
 }
 
-/* Четыре слота черновика (задача 15, п. 6; лист тренировки — задача 26,
-   п. 3): формы листа детали, заметок, листа тренировки и «Пунктов» не делят
-   один. Иначе уход в лист стирал бы начатую правку названия, а возврат —
-   черновик формы листа. */
+/* Три слота черновика (задача 15, п. 6; лист тренировки — задача 26,
+   п. 3): формы листа детали, листа тренировки и «Пунктов» не делят один.
+   Иначе уход в лист стирал бы начатую правку названия, а возврат —
+   черновик формы листа. Четвёртым был слот заметок; он ушёл вместе с
+   экраном (задача 28.C), механизм не изменился. */
 const isDetailKey = key => key.startsWith('formula:') || key.startsWith('ladder:');
-const isNoteKey = key => key.startsWith('note:');
 const isTrainKey = key => key.startsWith('train:');
 const draftSlot = key => (isDetailKey(key) ? 'detailDraft'
-  : (isNoteKey(key) ? 'noteDraft' : (isTrainKey(key) ? 'trainDraft' : 'formDraft')));
+  : (isTrainKey(key) ? 'trainDraft' : 'formDraft'));
 /* Экран, на котором живёт форма ключа: снимок ищет её именно там */
 const formScope = key => (isDetailKey(key) ? '#scr-detail'
-  : (isNoteKey(key) ? '#scr-notes' : (isTrainKey(key) ? '#scr-train' : '#scr-settings')));
+  : (isTrainKey(key) ? '#scr-train' : '#scr-settings'));
 
 /* Черновик формы по ключу. Хранилище — по одному на экран (`draftSlot`),
    внутри — запись на каждую форму этого экрана (задача 28.B, п. 4.3):
@@ -4401,7 +4249,9 @@ function restoreLine() {
   const d = Number(st.days) || 0;
   // копия из одних заметок читалась как пустая: считались только пункты и
   // дни (задача 27.1, п. 10.5). Заметки и выписки — такие же слова
-  // владельца, и их отсутствие в строке делало содержательную копию немой
+  // владельца, и их отсутствие в строке делало содержательную копию немой.
+  // Экран заметок снят (задача 28.C), новых записей не заводится, но
+  // прежние живут в store и в копию идут — значит, и в счёт тоже
   const q = Number(st.notes) || 0;
   const parts = [
     `${n} ${plural(n, 'пункт', 'пункта', 'пунктов')}`,
@@ -4924,7 +4774,6 @@ function resetConfirms() {
   ui.mirrorRestoreConfirm = false;
   ui.mirrorKeepConfirm = false;
   ui.groupDelete = null;
-  ui.noteDelete = null;
   ui.ladderConfirm = false;
   ui.ladderDoneConfirm = false;
   ui.ladderNewConfirm = false;
@@ -5297,65 +5146,6 @@ function onClick(e) {
       inp.value = String(next);
       break;
     }
-
-    // заметки: форма новой и правка существующей взаимно исключают друг друга
-    case 'note-add-open':
-      ui.noteAdd = true;
-      ui.noteKind = b.dataset.kind === 'quote' ? 'quote' : 'note';
-      ui.noteEditingId = null;
-      ui.noteDelete = null;
-      ui.noteDraft = {};
-      renderNotes();
-      break;
-
-    case 'note-open':
-      ui.noteEditingId = id;
-      ui.noteAdd = false;
-      ui.noteDelete = null;
-      ui.noteDraft = {};
-      renderNotes();
-      break;
-
-    case 'note-cancel':
-      ui.noteAdd = false;
-      ui.noteEditingId = null;
-      ui.noteDelete = null;
-      ui.noteDraft = {};
-      renderNotes();
-      break;
-
-    case 'note-save': {
-      const text = el('n-text') ? el('n-text').value : '';
-      const src = el('n-source') ? el('n-source').value : undefined;
-      const empty = !String(text).trim();
-      if (id === 'new') {
-        // пустая новая запись прежде тихо закрывала форму: ввода не было,
-        // но и отказа владелец не видел (задача 26, п. 2.2)
-        const n = addNote(text, ui.noteKind, src);
-        if (!n) { refuse(b, 'Текст не заполнен'); break; }
-        flashWrite('note:' + n.id);
-      } else if (updateNote(id, text, src)) {
-        // пустой текст удаляет запись (инвариант 16) — своей строки у неё
-        // больше нет, и подтверждение встаёт над списком, говоря что случилось
-        if (empty) flashWrite('note-add', 'Запись удалена');
-        else flashWrite('note:' + id);
-      }
-      ui.noteAdd = false;
-      ui.noteEditingId = null;
-      ui.noteDelete = null;
-      ui.noteDraft = {};
-      keepInPlace(b, renderNotes);
-      break;
-    }
-
-    case 'note-del':
-      if (ui.noteDelete !== id) { ui.noteDelete = id; renderNotes(); break; }
-      deleteNote(id);
-      ui.noteDelete = null;
-      ui.noteEditingId = null;
-      ui.noteDraft = {};
-      renderNotes();
-      break;
 
     case 'ex-add-open': openSettingsForm(() => { ui.exAddOpen = true; }); break;
     case 'ex-add-cancel': dropOpenDraft(); ui.exAddOpen = false; renderSettings(); break;
@@ -5761,11 +5551,8 @@ function onClick(e) {
       ui.addOpen = false;
       ui.exEditingId = null;
       ui.exAddOpen = false;
-      ui.noteAdd = false;
-      ui.noteEditingId = null;
       ui.formDraft = {};
       ui.detailDraft = {};
-      ui.noteDraft = {};
       ui.missOpen = {};
       ui.raiseEdit = {};
       closeDetail();
@@ -6024,8 +5811,6 @@ if (typeof module !== 'undefined' && module.exports) {
     lowerEligible, lowerSuggest, acceptLower, keepBar,
     // упражнения и тренировки (задача 16D)
     activeExercises, findExercise, addExercise, updateExercise, moveExercise, recordSession,
-    // заметки и выписки (задача 16E, инвариант 16 + задача 17)
-    addNote, updateNote, deleteNote, notesByDate, quotes, quoteOfDay,
     // чистка и её отмена (задача 16.1)
     WIPE_KEY, emptyStore, wipeStats, wipedCopy, wipeAll, restoreWiped, dropWiped,
     // копия перед замещением, нечитаемые данные и счёт потерь (задача 25)
@@ -6053,7 +5838,7 @@ if (typeof module !== 'undefined' && module.exports) {
     chainWeeks, marksInSystem, riseSeries, risePath,
     // доля дня, порог и рекорд (задача 17)
     dayScore, dayNeed, dayThreshold, clampThreshold, bestStreak,
-    marksWindow, seedProgram, SEED_QUOTES,
+    marksWindow, seedProgram,
     // задача 22
     everMarked, thresholdNote, seedDayKey, ownerNewestItem,
     // задача 27.1: ремонт по приёмке

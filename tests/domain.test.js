@@ -2420,48 +2420,10 @@ test('З16D: упражнение с двумя записями истории 
   assert.equal((app.risePath(ser.points).match(/[HV]/g) || []).length, 3);
 });
 
-/* ── Задача 16, фаза E. Заметки (инвариант 16) ─────────────── */
-
-test('З16E: заметка — создание, правка, удаление, пустой текст = удаление', () => {
-  setNow(2026, 8, 13, 12, 0);
-  const s = freshStore();
-  s.notes = []; // стартовые выписки программы (задача 17) к механике заметок не относятся
-
-  assert.equal(app.addNote('   '), null, 'пустая заметка не заводится');
-  const n = app.addNote('  первая мысль  ');
-  assert.equal(n.text, 'первая мысль', 'текст с trim');
-  assert.equal(n.date, app.todayKey());
-  assert.equal(s.notes.length, 1);
-
-  assert.equal(app.updateNote(n.id, ' поправленная '), true);
-  assert.equal(n.text, 'поправленная');
-  assert.equal(app.updateNote('нет такой', 'x'), false);
-
-  // пустой текст при сохранении удаляет заметку
-  assert.equal(app.updateNote(n.id, '    '), true);
-  assert.deepEqual(s.notes, []);
-
-  const a = app.addNote('к удалению');
-  assert.equal(app.deleteNote(a.id), true);
-  assert.equal(app.deleteNote(a.id), false);
-  assert.deepEqual(s.notes, []);
-});
-
-test('З16E: порядок — от новых к старым, при равном дне по времени правки', () => {
-  setNow(2026, 8, 13, 12, 0);
-  const s = freshStore();
-  s.notes = []; // стартовые выписки программы (задача 17) порядок бы зашумили
-  const old = app.addNote('позавчерашняя');
-  old.date = app.addDays(app.todayKey(), -2);
-  const a = app.addNote('сегодня раньше');
-  a.updatedAt = 1000;
-  const b = app.addNote('сегодня позже');
-  b.updatedAt = 2000;
-
-  assert.deepEqual(app.notesByDate().map(x => x.text),
-    ['сегодня позже', 'сегодня раньше', 'позавчерашняя']);
-  assert.equal(s.notes[0].text, 'позавчерашняя', 'сортировка не переставляет хранилище');
-});
+/* ── Задача 16, фаза E. Заметки: экрана нет, данные есть ────
+   Экран снят задачей 28.C — доменные функции работы с заметками ушли
+   вместе с ним. Осталась нормализация в migrate: она и есть гарантия,
+   что заметки владельца переживут снятие экрана и любое обновление. */
 
 test('З16E: миграция v12→v13 и экспорт → импорт заметок', () => {
   setNow(2026, 8, 13, 12, 0);
@@ -2492,6 +2454,53 @@ test('З16E: миграция v12→v13 и экспорт → импорт за�
   app.store = m2;
   const roundTrip = app.migrate(JSON.parse(JSON.stringify(app.store)));
   assert.deepEqual(roundTrip.notes, m2.notes);
+});
+
+/* Главный тест задачи 28.C: экран снят, ДАННЫЕ ЦЕЛЫ. Store владельца
+   с заметками обоих видов проходит migrate без единой потери, дважды
+   подряд даёт побайтово тот же результат и не теряет ничего на пути
+   «внешний файл → migrate». Схема при этом остаётся 16: снятие поля —
+   отдельное решение, и до него ни один байт не пропадает. */
+test('З28C: снятие экрана не трогает данные — notes переживает migrate байт в байт', () => {
+  setNow(2026, 8, 13, 12, 0);
+  const t = app.todayKey();
+  const owner = app.defaultStore();
+  assert.deepEqual(owner.notes, [], 'новый store выписок посева не несёт');
+
+  // реалистичный store владельца: пять посевных выписок прежних версий
+  // плюс собственные заметки — ровно то, что лежит у него сейчас
+  owner.notes = [
+    { id: 'q1', date: '2026-07-18', text: 'Капля точит камень не силой, а частым падением.', kind: 'quote', source: 'Овидий', updatedAt: 5 },
+    { id: 'q2', date: '2026-07-18', text: 'Путь в тысячу ли начинается под ногами.', kind: 'quote', source: 'Лао-цзы', updatedAt: 4 },
+    { id: 'q3', date: '2026-07-18', text: 'Начал — половину сделал.', kind: 'quote', source: 'Гораций', updatedAt: 3 },
+    { id: 'q4', date: '2026-07-18', text: 'Кто везде — тот нигде.', kind: 'quote', source: 'Сенека', updatedAt: 2 },
+    { id: 'q5', date: '2026-07-18', text: 'Делай каждое дело так, будто оно последнее.', kind: 'quote', source: 'Марк Аврелий', updatedAt: 1 },
+    { id: 'n1', date: '2026-08-01', text: 'своя мысль', kind: 'note', source: '', updatedAt: 100 },
+    { id: 'n2', date: t, text: 'вторая своя', kind: 'note', source: '', updatedAt: 200 }
+  ];
+  const before = JSON.parse(JSON.stringify(owner.notes));
+
+  // 1) migrate ничего не теряет и не переписывает
+  const m = app.migrate(JSON.parse(JSON.stringify(owner)));
+  assert.equal(m.schemaVersion, 16, 'схема осталась шестнадцатой');
+  assert.equal(m.notes.length, 7, 'все семь записей на месте');
+  assert.deepEqual(m.notes, before, 'ни одно поле не изменилось');
+  assert.deepEqual(m.notes.filter(n => n.kind === 'quote').map(n => n.source),
+    ['Овидий', 'Лао-цзы', 'Гораций', 'Сенека', 'Марк Аврелий'], 'источники выписок целы');
+
+  // 2) двойной прогон побайтово совпадает
+  const once = JSON.stringify(m);
+  const twice = JSON.stringify(app.migrate(JSON.parse(once)));
+  assert.equal(twice, once, 'migrate идемпотентна побайтово');
+
+  // 3) тот же файл как ВНЕШНИЙ (импорт, возврат копии) — посев не запускается,
+  //    заметки не теряются, счёт потерь их не называет
+  const ext = app.migrate(JSON.parse(once), { external: true });
+  assert.deepEqual(ext.notes, before, 'внешний путь заметок не теряет');
+  const was = app.dataCounts(JSON.parse(once));
+  const now = app.dataCounts(ext);
+  assert.equal(was.notes, 7, 'категория заметок в счёте потерь жива');
+  assert.equal(app.droppedLine(was, now), '', 'потерь нет — строки нет');
 });
 
 /* ── Задача 16, фаза F. Порядок внутри блока ───────────────── */
@@ -2592,14 +2601,16 @@ function filledStore() {
   s.settings.dayBoundary = 6;         // не дефолтная граница: должна пережить чистку
   s.settings.dayThreshold = 0.5;      // и не дефолтный порог зачёта дня (задача 17, п. 5)
   s.settings.calendarSince = app.addDays(app.weekStartOf(t), -70);
-  s.notes = [];                       // выписки программы считаем отдельно от заметки теста
   app.toggleMark(t, s.items[0].id);
   app.toggleMark(app.addDays(t, -1), s.items[0].id);
   s.reviews.push({ closedAt: 1, week: app.addDays(app.weekStartOf(t), -7), keys: [], perItem: {}, trainings: {}, oneChange: '', raises: [], lowers: [], params: [] });
   app.setLadder(s.items[0].id, 'первая\nвторая');
   const ex = app.addExercise('Жим', 'кг', 40);
   app.recordSession(s.items.find(i => i.type === 'weekly').id, [{ exId: ex.id, value: 42 }], 'заметка тренировки');
-  app.addNote('мысль');
+  // Заводить заметку через UI больше нечем (экран снят задачей 28.C),
+  // но данные живут: кладём запись прямо в store — ровно так она и лежит
+  // у владельца, и чистка обязана считать её наравне с остальным
+  s.notes.push({ id: 'n-мысль', date: t, text: 'мысль', kind: 'note', source: '', updatedAt: 1 });
   return s;
 }
 
@@ -2683,7 +2694,8 @@ test('З16.1: «Убрать копию» удаляет ключ, повтор�
   const one = app.wipedCopy();
   assert.equal(one.store.items.length, first.items.length);
 
-  app.addNote('после первой чистки');           // пустой store чуть наполнился
+  // пустой store чуть наполнился (запись кладём прямо в него: экран снят)
+  app.store.notes.push({ id: 'n-после', date: app.todayKey(), text: 'после первой чистки', kind: 'note', source: '', updatedAt: 1 });
   const second = JSON.parse(JSON.stringify(app.store));
   app.wipeAll();
   const two = app.wipedCopy();
@@ -2726,7 +2738,7 @@ test('З16.1: без места под копию чистка не выполн
   clearLocalStorage();
 });
 
-/* ── Задача 17. Посев, доля дня, серия, выписки ─────────────── */
+/* ── Задача 17. Посев, доля дня, серия ─────────────────────── */
 
 /* Пустой store схемы v14 без флага посева — вход migrate для п. 1 */
 function seedInput(extra) {
@@ -2738,7 +2750,7 @@ function seedInput(extra) {
   }, extra);
 }
 
-test('З17: посев — пустой store получает программу, блоки, выписки и флаг', () => {
+test('З17: посев — пустой store получает программу, блоки и флаг, но не выписки', () => {
   setNow(2026, 8, 13, 12, 0);
   const m = app.migrate(seedInput());
   const t = app.todayKey();
@@ -2777,10 +2789,9 @@ test('З17: посев — пустой store получает программ�
   assert.equal(ot.pvalue, 0);
   assert.equal(ot.pstep, -15);
 
-  // выписки (п. 6.5) — дословно, в порядке промпта
-  assert.equal(m.notes.length, 5);
-  assert.equal(m.notes.every(n => n.kind === 'quote'), true);
-  assert.deepEqual(m.notes.map(n => [n.text, n.source]), app.SEED_QUOTES);
+  // выписок посев больше не заводит: экран «Заметки» снят задачей 28.C,
+  // а сеять записи в экран, которого нет, значило бы прятать их от владельца
+  assert.deepEqual(m.notes, [], 'ни одной посевной выписки');
   assert.equal(m.settings.seed17, true);
 });
 
@@ -2798,7 +2809,7 @@ test('З17: посев одноразов — непустые данные не
   const once = app.migrate(seedInput());
   const twice = app.migrate(JSON.parse(JSON.stringify(once)));
   assert.equal(twice.items.length, 9);
-  assert.equal(twice.notes.length, 5);
+  assert.deepEqual(twice.notes, []);
   assert.deepEqual(twice, once, 'migrate идемпотентна и после посева');
 
   // импорт чужих данных посев не запускает
@@ -2996,32 +3007,6 @@ test('З17: выписки — kind и source достраиваются миг�
   assert.deepEqual(again.notes, m.notes);
 });
 
-test('З17: выписка дня — детерминированный выбор, без выписок строки нет', () => {
-  const s = scoreStore(1);
-  const t = app.todayKey();
-  s.settings.calendarSince = t;
-  s.notes = [];
-  assert.equal(app.quoteOfDay(), null, 'выписок нет — нечего показывать');
-
-  s.notes = [
-    { id: 'q0', date: t, text: 'ноль', kind: 'quote', source: 'А', updatedAt: 3 },
-    { id: 'q1', date: t, text: 'один', kind: 'quote', source: 'Б', updatedAt: 2 },
-    { id: 'n1', date: t, text: 'заметка', kind: 'note', source: '', updatedAt: 1 }
-  ];
-  assert.deepEqual(app.quotes().map(q => q.id), ['q0', 'q1'], 'заметка в выписки не входит');
-
-  // «в системе» = 1 → индекс 1; один и тот же день даёт одну и ту же выписку
-  assert.equal(app.quoteOfDay().id, 'q1');
-  assert.equal(app.quoteOfDay().id, 'q1');
-  s.settings.calendarSince = app.addDays(t, -1); // «в системе» = 2 → индекс 0
-  assert.equal(app.quoteOfDay().id, 'q0');
-
-  // выписки удаляются как обычные записи
-  app.deleteNote('q0');
-  app.deleteNote('q1');
-  assert.equal(app.quoteOfDay(), null);
-});
-
 test('З17: начало отсчёта — понедельник недели, пересчёт «в системе» и серии', () => {
   const s = scoreStore(5);
   const t = app.todayKey(); // 2026-08-13, четверг
@@ -3065,12 +3050,13 @@ test('З17: defaultStore и посев дают один и тот же стар
   assert.deepEqual(shape(def), shape(seeded), 'наборы разошлись — фабрика одна');
   assert.equal(def.items.length, 9);
   assert.equal(def.groups.length, 3);
-  assert.equal(def.notes.length, 5);
-  assert.equal(def.notes.every(n => n.kind === 'quote'), true);
+  // выписок нет ни у одной из двух фабрик — вырез симметричен (задача 28.C);
+  // ключ notes остаётся в shape() и сторожит именно эту симметрию
+  assert.deepEqual(def.notes, []);
   assert.equal(def.settings.seed17, true, 'программа уже здесь — migrate не сеет повторно');
 
   // id всё же уникальны: фабрика зовётся дважды, а не отдаёт один объект
-  const ids = def.items.map(i => i.id).concat(def.notes.map(n => n.id));
+  const ids = def.items.map(i => i.id);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(def.items[0].id === seeded.items[0].id, false);
 
@@ -3577,9 +3563,8 @@ test('З20/C.1: экспорт → очистка → импорт сохран�
   const exported = JSON.stringify(app.store);          // экспорт отдаёт текущий store
   const reimported = app.migrate(JSON.parse(exported), { external: true });
   // Сравнение по значению, а не побайтово: defaultStore через migrate не
-  // проходит (инвариант 19), поэтому у его выписок порядок ключей свой —
-  // {source, kind} против {kind, source}. Расхождение чисто косметическое,
-  // на данные не влияет; сама формула сверяется байт в байт ниже.
+  // проходит (инвариант 19), и совпадение порядка ключей им обоим никто не
+  // обещает. Сама формула сверяется байт в байт ниже.
   assert.deepEqual(reimported, JSON.parse(exported), 'состояние восстановлено полностью');
   const back = reimported.items.find(i => i.id === it.id);
   assert.equal(JSON.stringify(back.formula), JSON.stringify(it.formula), 'формула побайтово та же');
@@ -4391,7 +4376,7 @@ test('З25/7: пустой store копию не подменяет — «пос
   assert.deepEqual(app.wipedCopy().store, snapshot, 'практика в копии, а не пустота');
 
   // содержательный store копию по-прежнему заменяет
-  app.addNote('одна заметка — уже содержание');
+  app.store.notes.push({ id: 'n-одна', date: app.todayKey(), text: 'одна заметка — уже содержание', kind: 'note', source: '', updatedAt: 1 });
   assert.equal(app.hasData(app.store), true);
   const second = JSON.parse(JSON.stringify(app.store));
   app.wipeAll();
@@ -4847,7 +4832,6 @@ test('З27/9.1: domFormKey — формы блока и упражнения п�
   assert.equal(app.domFormKey(f('group-add')), 'group:new');
   assert.equal(app.domFormKey(f('ex-edit', 'x1')), 'ex:x1');
   assert.equal(app.domFormKey(f('ex-add')), 'ex:new');
-  assert.equal(app.domFormKey(f('note', 'new')), 'note:new');
   assert.equal(app.domFormKey(f('formula', 'i1')), 'formula:i1');
   assert.equal(app.domFormKey(f('ladder', 'i1')), 'ladder:i1');
   assert.equal(app.domFormKey(f('train', 'w1')), 'train:w1');

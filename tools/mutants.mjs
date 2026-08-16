@@ -319,7 +319,6 @@ const MUTANTS = [
 .dot:active,
 .undo:active,
 .itxt:active,
-.card.note:active,
 .sect > summary:active,
 #tabs button:active { background: var(--accent-weak); }`,
       '.btn:active { background: var(--accent-weak); }']]
@@ -602,12 +601,9 @@ const MUTANTS = [
     edits: [['  if (ui.weekOpen === null) ui.weekOpen = !reviewActionable();\n  return ui.weekOpen;',
       '  return ui.weekOpen === null ? !reviewActionable() : ui.weekOpen;']]
   },
-  {
-    id: '27.1-5.1-посев-расходится-с-migrate',
-    file: 'app.js',
-    note: 'п. 5.1: посевные выписки снова в другом порядке ключей — первый экспорт со свежей установки не равен следующему',
-    edits: [["    id: uid(), date: today, text, kind: 'quote', source,", "    id: uid(), date: today, text, source, kind: 'quote',"]]
-  },
+  /* Мутант 27.1-5.1 («посевные выписки в другом порядке ключей») снят
+     задачей 28.C вместе с programQuotes: предмета больше нет, а мутант
+     без предмета молча превращается в «не наложен» и усыхает батарею. */
   {
     id: '27.1-10.5-копия-из-заметок-читается-пустой',
     file: 'app.js',
@@ -704,6 +700,50 @@ const MUTANTS = [
     file: 'app.js',
     note: 'закрытие недели снова срабатывает с первого тапа — самая тяжёлая необратимость без подтверждения',
     edits: [['      if (!ui.weekCloseConfirm) { ui.weekCloseConfirm = true; renderReview(); break; }\n', '']]
+  },
+
+  /* ── Задача 28.C: экран «Заметки» снят, данные остались ─────
+     Пять мутантов делят задачу пополам. Первый и последний возвращают
+     СНЯТОЕ: посев выписок и вкладку в разметке. Три средних отнимают
+     ОСТАВЛЕННОЕ — нормализацию, экспорт и счёт потерь, — то есть ровно
+     те три пути, которыми данные владельца переживают снятие экрана.
+     Выживший из этих трёх означает, что «данные остались» никем не
+     сторожится и следующая задача снимет поле, ничего не заметив. */
+  {
+    id: '28C-посев-снова-заводит-выписки',
+    file: 'app.js',
+    note: 'посев снова кладёт выписки в store — записи появляются там, где показать их нечем',
+    edits: [['  s.items = programItems(today);\n  s.settings.seed17 = true;',
+      "  s.items = programItems(today);\n  s.notes = [{ id: uid(), date: today, text: 'Начал — половину сделал.', kind: 'quote', source: 'Гораций', updatedAt: 1 }];\n  s.settings.seed17 = true;"]]
+  },
+  {
+    id: '28C-notes-выпадает-из-migrate',
+    file: 'app.js',
+    note: 'нормализация обнуляет поле вместо того, чтобы его чинить — заметки владельца исчезают при первом же запуске',
+    edits: [['  if (!Array.isArray(s.notes)) s.notes = [];', '  s.notes = [];']]
+  },
+  {
+    id: '28C-notes-выпадает-из-экспорта',
+    file: 'app.js',
+    note: 'экспорт отдаёт store без заметок — единственный оставшийся путь владельца к своим записям обрывается молча',
+    edits: [["  download('minimum-' + todayKey() + '.json', JSON.stringify(store, null, 1));",
+      "  download('minimum-' + todayKey() + '.json', JSON.stringify(Object.assign({}, store, { notes: [] }), null, 1));"]]
+  },
+  {
+    id: '28C-заметки-выпали-из-счёта-потерь',
+    file: 'app.js',
+    note: 'категория заметок в dataCounts обнулена — импорт, роняющий записи, молчит об этом',
+    edits: [['    notes: len(s && s.notes), reviews: len(s && s.reviews),',
+      '    notes: 0, reviews: len(s && s.reviews),']]
+  },
+  {
+    id: '28C-вкладка-заметок-вернулась',
+    file: 'index.html',
+    note: 'кнопка вкладки и секция экрана возвращаются в разметку — снятое возвращается тихой правкой html',
+    edits: [['    <button data-tab="progress">Прогресс</button>\n',
+      '    <button data-tab="progress">Прогресс</button>\n    <button data-tab="notes">Заметки</button>\n'],
+      ['    <section class="screen" id="scr-progress" hidden></section>\n',
+        '    <section class="screen" id="scr-progress" hidden></section>\n    <section class="screen" id="scr-notes" hidden></section>\n']]
   }
 ];
 

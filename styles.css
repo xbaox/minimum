@@ -676,10 +676,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .cdays i.fut,
 .cdays i.pre { visibility: hidden; }                 /* будущее и дни до эпохи не рисуются */
 
-/* выписка дня — последняя строка экрана, тише всего остального */
-.quote { margin: var(--gap-section) 0 0; font-size: var(--text-sm); line-height: 1.5; color: var(--muted); }
-.qsrc { margin: 4px 0 0; font-size: var(--text-xs); color: var(--faint); }
-
 /* подъём: подпись и одна ступенчатая линия на пункт — ни осей, ни
    сетки, ни точек, ни подписей значений (CLAUDE.md, «Незыблемые») */
 .rise-b { margin: 0 0 var(--gap-block); }
@@ -756,27 +752,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
   box-shadow: var(--shadow-lift);
 }
 body.dragging { -webkit-user-select: none; user-select: none; }
-
-/* ── «Заметки» (задача 16E) ────────────────────────────────────
-   Карточка-кнопка: дата тихой строкой, ниже текст владельца как есть. */
-
-.card.note {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  width: 100%;
-  margin-top: 12px;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-/* две кнопки в ряд: заметка и выписка (задача 17) */
-.nadd { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 20px 0 0; }
-.ndate { font-size: var(--text-xs); color: var(--muted); }
-.ntext { font-size: var(--text-sm); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-.nsrc { font-size: var(--text-xs); color: var(--faint); }
 
 /* ── Секции «Настроек» (задача 16B) ────────────────────────────
    Нативный details: раскрытие без JS, состояние помнит ui. */
@@ -945,7 +920,6 @@ body.dragging { -webkit-user-select: none; user-select: none; }
 .dot:active,
 .undo:active,
 .itxt:active,
-.card.note:active,
 .sect > summary:active,
 #tabs button:active { background: var(--accent-weak); }
 /* Баннер разбора уже лежит на --accent-weak, и заливка тем же тоном под
