@@ -18,6 +18,7 @@
   --accent-weak: rgba(64, 104, 90, .12);
   --on-accent: #f4faf7;
   --dot: #8a8a86;                        /* нейтральный маркер пропуска, ≥3:1 */
+  --sheen: rgba(255, 255, 255, .6);      /* блик по заливке планки: высветляет, не темнит */
   --chain: #b06046;                      /* приглушённый тёплый: линия цепочки, ≥3:1 к --bg (задача 15, ярче в 16A) */
   /* тень (задача 16.1): подъём захваченной строки. Вторым был --shadow-knob
      — головка тумблера, снятая вместе с ним (задача 28.E/A). Объявлена в
@@ -51,6 +52,7 @@
     --accent-weak: rgba(143, 188, 170, .14);
     --on-accent: #0d1f18;
     --dot: #63666c;
+    --sheen: rgba(255, 255, 255, .5);    /* и в тёмной теме высветляет: --on-accent дал бы тёмную полосу по светлой заливке — мерцание */
     --chain: #e6a68f;                    /* тёплый для тёмной темы, ≥3:1 к --bg */
     --shadow-lift: 0 6px 18px rgba(0, 0, 0, .16);
     --tabbar: rgba(14, 15, 18, .82);
@@ -151,6 +153,10 @@ h2 {
   border-radius: var(--radius-sm);
   background: linear-gradient(90deg, var(--accent), var(--chain));
   transition: width .24s ease-out;
+  /* клип для блика (задача 28.E/C, п. 1.4): он живёт ВНУТРИ заполнения и
+     потому физически не может его обогнать — обрежется краем */
+  position: relative;
+  overflow: hidden;
 }
 /* Счёт дня — крупным числом на ступени недельного счётчика того же экрана
    (задача 26, п. 5.2: .wnum 17px / .wnum b 22px). Новой ступени не заведено;
@@ -900,6 +906,64 @@ body.dragging { -webkit-user-select: none; user-select: none; }
    ни горизонтального слайда, ни сдвига лэйаута/скролла. */
 @keyframes scr-fade { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
 .screen { animation: scr-fade .24s ease-out; }
+
+/* ── Сцена закрытия дня (задача 28.E/C) ──────────────────────
+   Волна не путешествует от круга к планке, а ПРИХОДИТ: расстояние между
+   ними скачет от 103 до 475 px в зависимости от того, какой пункт нажат
+   последним (разброс 4,6× при окне 1,44×), и связь несут время и цвет.
+
+   Три фазы, каждая ≤ 240 мс, сцена целиком ≤ 360 мс. Первая фаза сцены —
+   отклик круга на касание (.pop) на t = 0, она уже есть выше.
+   Классы-триггеры (.closing) навешивает только playDayClose.
+   В покое оба новых узла невидимы (opacity: 0) — reduced-motion гасит
+   анимации глобальным блоком, и ни бита информации это не отнимает:
+   конечное состояние дают классы .on и .ok, а не движение. */
+
+@keyframes day-ring {
+  from { transform: scale(1);   opacity: .5; }
+  to   { transform: scale(2.4); opacity: 0; }
+}
+/* Кольцо от круга — 60 → 260 мс */
+.check .box::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  opacity: 0;
+  pointer-events: none;
+}
+.check.closing .box::before { animation: .2s ease-out .06s day-ring; }
+
+@keyframes day-sheen {
+  0%   { transform: translateX(-110%); opacity: 0; }
+  25%  { opacity: 1; }
+  100% { transform: translateX(320%);  opacity: 0; }
+}
+/* Блик вдоль планки — 100 → 340 мс. Узел постоянный: рождать его в
+   горячем пути значило бы развести точечное обновление и полную
+   перерисовку, и сторож эквивалентности упал бы. Расстояние всегда одно
+   — ширина планки: у эффекта одна личность вместо шести. */
+.sheen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent, var(--sheen), transparent);
+  pointer-events: none;
+}
+.dayline.closing .sheen { animation: .24s ease-out .1s day-sheen; }
+
+/* Фраза «День закрыт» — 120 → 360 мс. Цвет и масштаб; font-weight не
+   анимируется (другие глифы и повторный шейпинг каждый кадр — это layout),
+   вес даёт статический класс .ok. */
+@keyframes day-word {
+  from { transform: scale(.94); color: var(--muted); }
+  to   { transform: scale(1);   color: var(--accent); }
+}
+.dayline.closing .bar-note { transform-origin: right center; animation: .24s ease-out .12s day-word; }
 
 /* Уход карточки разбора после решения — отчётливое схлопывание
    (opacity + translateY + высота/поля/паддинги в 0), ease-in.

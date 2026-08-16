@@ -824,6 +824,62 @@ const MUTANTS = [
     note: 'кредо-строка возвращается вниз «Сегодня» — за сгиб, где её никто не видит, и вторым лозунгом на экране',
     edits: [["  el('scr-today').innerHTML = h;",
       "  h += `<p class=\"creed\">Минимум выполняется даже в худший день.</p>`;\n  el('scr-today').innerHTML = h;"]]
+  },
+  /* ── Задача 28.E, часть C: сцена закрытия дня ────────────────
+     Заметный отклик в приложении один, и границы у него жёсткие:
+     закрытие дня, «Сегодня», три фазы, покойное состояние невидимо. */
+  {
+    id: '28E-C-эффект-при-обычном-тапе',
+    file: 'app.js',
+    note: 'сцена играет на любой отметке, а не только на закрывающей день — заметный отклик перестаёт быть событием',
+    edits: [['    if (on && minDayClosed(todayKey())) {',
+      '    if (on) {']]
+  },
+  {
+    id: '28E-C-эффект-не-гасится-под-reduced-motion',
+    file: 'app.js',
+    note: 'ранний выход снят: при reduced-motion классы навешиваются, и покой экрана нарушен',
+    edits: [['  if (prefersReducedMotion()) return;\n  const nodes = [dayline, label].filter(Boolean);',
+      '  const nodes = [dayline, label].filter(Boolean);']]
+  },
+  {
+    id: '28E-C-блик-рождается-в-горячем-пути',
+    file: 'app.js',
+    note: 'узел блика печатается не разметкой: точечный путь и полная перерисовка расходятся',
+    edits: [['<div class="bar"><i style="width:${pct}%"><b class="sheen" aria-hidden="true"></b></i></div>',
+      '<div class="bar"><i style="width:${pct}%"></i></div>'],
+      ['  const nodes = [dayline, label].filter(Boolean);\n  if (!nodes.length) return;',
+        '  const nodes = [dayline, label].filter(Boolean);\n  if (!nodes.length) return;\n' +
+        '  const fill = dayline && dayline.querySelector(\'.bar i\');\n' +
+        '  if (fill && !fill.querySelector(\'.sheen\')) fill.insertAdjacentHTML(\'beforeend\', \'<b class="sheen" aria-hidden="true"></b>\');']]
+  },
+  {
+    id: '28E-C-фаза-вылезла-за-240',
+    file: 'styles.css',
+    note: 'фаза блика растянута до 300 мс — сцена перестаёт укладываться в раскадровку',
+    edits: [['.dayline.closing .sheen { animation: .24s ease-out .1s day-sheen; }',
+      '.dayline.closing .sheen { animation: .3s ease-out .1s day-sheen; }']]
+  },
+  {
+    id: '28E-C-сцена-вылезла-за-360',
+    file: 'styles.css',
+    note: 'фраза стартует позже и сцена тянется 420 мс — потолок, легализованный архитектором, пробит',
+    edits: [['.dayline.closing .bar-note { transform-origin: right center; animation: .24s ease-out .12s day-word; }',
+      '.dayline.closing .bar-note { transform-origin: right center; animation: .24s ease-out .18s day-word; }']]
+  },
+  {
+    id: '28E-C-покой-блика-виден',
+    file: 'styles.css',
+    note: 'блик виден в покое: при reduced-motion по планке остаётся неподвижная светлая полоса',
+    edits: [['  width: 45%;\n  opacity: 0;\n  background: linear-gradient(90deg, transparent, var(--sheen), transparent);',
+      '  width: 45%;\n  opacity: 1;\n  background: linear-gradient(90deg, transparent, var(--sheen), transparent);']]
+  },
+  {
+    id: '28E-C-сторож-не-видит-задержку',
+    file: 'tests/dom.test.js',
+    note: 'разбор объявлений возвращается к первому числу: фазовая задержка снова не проверяется никем',
+    edits: [["      const ts = [...part.matchAll(/(-?[\\d.]+)s(?![\\w-])/g)].map(m => Math.round(+m[1] * 1000));",
+      "      const ts = [...part.matchAll(/(-?[\\d.]+)s(?![\\w-])/g)].map(m => Math.round(+m[1] * 1000)).slice(0, 1);"]]
   }
 ];
 

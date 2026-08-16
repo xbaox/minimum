@@ -84,6 +84,7 @@ function fillWeek(days, id, mon, n) {
    отличаться от «сразу» и тест начнёт проходить по случайности. */
 const T = {
   MIRROR_PROBE_MS: 50,
+  DAY_CLOSE_MS: 40,
   MIRROR_FLUSH_MS: 30,
   DAY_TIMER_SLACK_MS: 5,
   MOTION_MS: 20,
@@ -3124,9 +3125,13 @@ test('«Прогресс» 17: --chain в блоке цепи дней не ис
   for (const [, sel, body] of rules) {
     assert.doesNotMatch(body, /--chain/, `--chain в правиле «${sel.trim()}»`);
   }
-  // единственный градиент приложения — полоса дня
+  // градиентов в приложении ДВА, и оба названы поимённо (задача 28.E/C,
+  // п. 2.5): заливка планки дня и блик сцены закрытия. Третьего не заводить
+  // без решения архитектора — счёт держится здесь намеренно
   const grads = [...css.matchAll(/[\w-]+gradient\(/g)];
-  assert.equal(grads.length, 1, 'градиент в приложении один');
+  assert.equal(grads.length, 2, 'градиента два: заливка планки и блик');
+  assert.match((css.match(/\.sheen\s*\{([^}]*)\}/) || [])[1] || '',
+    /linear-gradient\(90deg, transparent, var\(--sheen\), transparent\)/, 'второй — блик');
   const fill = (css.match(/\.dbar i\s*\{([^}]*)\}/) || [])[1] || '';
   assert.match(fill, /linear-gradient\(90deg, var\(--accent\), var\(--chain\)\)/);
   // переход ширины — в окне движения 180–260 мс (снимается глобальным reduced-motion)
@@ -4275,6 +4280,14 @@ test('З23/6: отметка на «Сегодня» — экран после �
   assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'первая отметка');
 
   document.querySelectorAll('#scr-today input[data-act="mark"]')[1].click(); // все — «День закрыт»
+  // Сцена закрытия дня (задача 28.E/C) навешивает класс-триггер .closing на
+  // .dayline и на строку. Это транзиентная декорация, а не состояние: хук
+  // снимает её сам через DAY_CLOSE_MS. Ждём конца сцены и сравниваем —
+  // так сторож проверяет и разметку, и то, что след сцены не остаётся.
+  // Изымать .closing из сравнения было бы слабее: изъятое не сторожится.
+  assert.ok(document.querySelector('#scr-today .dayline.closing'), 'сцена играет');
+  await wait(T.DAY_CLOSE_MS + T.MOTION_TAIL_MS + 40);
+  assert.equal(document.querySelector('#scr-today .dayline.closing'), null, 'и след её снят');
   assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт');
 
   // снятие — обратный путь, отдельная ветка планки
@@ -5619,8 +5632,12 @@ test('З26/5.1: планка дня и полоса «Прогресса» — �
   // одна форма — одно место: своего правила у .dbar i нет, градиент в файле один
   assert.equal(ruleOf(css, '.dbar i'), null, 'у .dbar i своего правила нет');
   assert.doesNotMatch(ruleOf(css, '.dbar') || '', /height|linear-gradient/);
-  assert.equal((css.match(/linear-gradient/g) || []).length, 1,
-    'градиент в приложении по-прежнему один — на планку дня (CLAUDE.md)');
+  // второй градиент завёлся осознанно — блик сцены закрытия дня
+  // (задача 28.E/C, п. 2.5); у планки он по-прежнему один
+  assert.equal((css.match(/linear-gradient/g) || []).length, 2,
+    'градиента два: заливка планки и блик сцены (CLAUDE.md)');
+  assert.equal((css.match(/linear-gradient\(90deg, var\(--accent\), var\(--chain\)\)/g) || []).length, 1,
+    'градиент планки — один и тот же на оба экрана');
 
   // и в живом DOM обе полосы на месте
   const { document } = await boot({ seed: progSeed() });
@@ -5762,21 +5779,101 @@ test('З26/6.1: ни одной тач-цели без отклика на на�
   for (const sel of TAPPABLE) assert.ok(seen.has(sel), `${sel} — селектор в списке, но на экранах не встречается`);
 });
 
+/* ── Разбор объявлений движения (задача 28.E/C, п. 3) ─────────
+   В сторожах было ДВЕ дыры, и обе молчали.
+
+   1. Регулярка /transition:[^;]*?([\d.]+)s/ брала ТОЛЬКО ПЕРВОЕ число
+      объявления. У многосвойственного перехода (.card.leaving — пять
+      свойств) проверялась одна длительность из пяти, а ФАЗОВАЯ ЗАДЕРЖКА
+      не проверялась вовсе: она стоит вторым числом.
+   2. /animation:\s*([\w-]+)\s+([\d.]+)s/ требовала имя анимации ПЕРВЫМ
+      в сокращённой записи. `animation: .2s ease-out day-ring` — законная
+      запись, и на ней тест молча не находил ничего.
+
+   Разбор ниже чинит оба: значение делится запятыми на части, в каждой
+   первое время — длительность, второе — задержка (так их читает CSS
+   независимо от порядка прочих ключевых слов), имя ищется как первый
+   идентификатор, не являющийся ключевым словом. */
+const ANIM_WORDS = new Set(['none', 'linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out',
+  'step-start', 'step-end', 'cubic-bezier', 'steps', 'infinite', 'normal', 'reverse',
+  'alternate', 'alternate-reverse', 'forwards', 'backwards', 'both', 'running', 'paused',
+  'important', 'inherit', 'initial', 'unset', 'all', 'var', 's', 'ms']);
+
+/* Все объявления свойства prop в файле, значением (без «;» и «}») */
+const declValues = (css, prop) =>
+  [...css.matchAll(new RegExp('(?:^|[;{\\s])' + prop + ':([^;}]*)', 'g'))].map(m => m[1]);
+
+/* Части объявления: [{ dur, delay, name, raw }]. Части без времени
+   (`transition: none`) отбрасываются — гасить нечего. */
+function motionParts(value) {
+  return value.split(',')
+    .reduce((acc, chunk) => { // запятые внутри cubic-bezier()/rgba() не режут часть
+      const open = acc.length ? (acc[acc.length - 1].match(/\(/g) || []).length : 0;
+      const close = acc.length ? (acc[acc.length - 1].match(/\)/g) || []).length : 0;
+      if (acc.length && open > close) acc[acc.length - 1] += ',' + chunk; else acc.push(chunk);
+      return acc;
+    }, [])
+    .map(part => {
+      const ts = [...part.matchAll(/(-?[\d.]+)s(?![\w-])/g)].map(m => Math.round(+m[1] * 1000));
+      const words = [...part.matchAll(/[a-zA-Z][\w-]*/g)].map(m => m[0])
+        .filter(w => !ANIM_WORDS.has(w));
+      return { dur: ts[0], delay: ts.length > 1 ? ts[1] : 0, name: words[0] || null, raw: part.trim() };
+    })
+    .filter(x => x.dur !== undefined);
+}
+
+test('З28E/C.3: разбор объявлений движения видит все времена и имя не первым', () => {
+  // многосвойственный переход: пять длительностей, а не одна
+  const many = motionParts(' max-height .24s ease-in, opacity .21s ease-in, transform .19s ease-in');
+  assert.deepEqual(many.map(x => x.dur), [240, 210, 190], 'все длительности, не только первая');
+  // фазовая задержка — второе время
+  const delayed = motionParts(' transform .2s ease-out .06s');
+  assert.deepEqual([delayed[0].dur, delayed[0].delay], [200, 60], 'задержка прочитана');
+  // имя анимации в любой позиции сокращённой записи
+  assert.equal(motionParts(' .24s ease-out .1s day-sheen')[0].name, 'day-sheen');
+  assert.equal(motionParts(' scr-fade .24s ease-out')[0].name, 'scr-fade');
+  assert.equal(motionParts(' .24s cubic-bezier(.4, 0, .2, 1) wave')[0].name, 'wave', 'запятые в скобках не режут');
+  // «none» времени не несёт и в разбор не попадает
+  assert.deepEqual(motionParts(' none'), []);
+});
+
 test('З26/6.3: все переходы движения — в окне 180–260 мс', () => {
   const css = CSS_SRC();
-  const secs = [...css.matchAll(/transition:[^;]*?([\d.]+)s/g)].map(m => Math.round(+m[1] * 1000));
-  // было 10; две ушли с тумблером (трек и головка) — задача 28.E/A, п. 2
-  assert.ok(secs.length >= 8, 'переходы найдены');
-  for (const ms of secs) assert.ok(ms >= 180 && ms <= 260, `переход ${ms} мс вне окна 180–260`);
+  const trans = declValues(css, 'transition').flatMap(motionParts);
+  // было 10 частей; две ушли с тумблером (задача 28.E/A), зато разбор теперь
+  // видит ВСЕ свойства многосвойственных переходов, а не только первое
+  assert.ok(trans.length >= 12, `переходы найдены: ${trans.length}`);
+  for (const t of trans) {
+    assert.ok(t.dur >= 180 && t.dur <= 260, `переход «${t.raw}» — ${t.dur} мс вне окна 180–260`);
+  }
   // анимации-отклики тоже; flash-note — не переход движения, а появление,
   // удержание и уход, и конституция считает его отдельно
-  for (const m of css.matchAll(/animation:\s*([\w-]+)\s+([\d.]+)s/g)) {
-    if (m[1] === 'flash-note' || m[1] === 'none') continue;
-    const ms = Math.round(+m[2] * 1000);
-    assert.ok(ms >= 180 && ms <= 260, `анимация ${m[1]} ${ms} мс вне окна`);
+  const anims = declValues(css, 'animation').flatMap(motionParts)
+    .filter(a => a.name !== 'flash-note');
+  assert.ok(anims.length >= 4, `анимации найдены: ${anims.length}`);
+  for (const a of anims) {
+    assert.ok(a.dur >= 180 && a.dur <= 260, `анимация «${a.raw}» — ${a.dur} мс вне окна`);
   }
   // таб-бар был единственным нарушителем: .16s ease
   assert.doesNotMatch(css, /transition:\s*color\s*\.16s/);
+});
+
+test('З28E/C.1.6: фазы сцены закрытия дня — каждая ≤ 240 мс, сцена ≤ 360 мс', () => {
+  const css = CSS_SRC();
+  const all = declValues(css, 'transition').concat(declValues(css, 'animation')).flatMap(motionParts);
+  const delayed = all.filter(x => x.delay > 0);
+  // задержки в файле есть ТОЛЬКО у сцены закрытия дня: фазовая раскадровка
+  // — её единственное применение, и заводить вторую без решения архитектора
+  // нельзя. Прежний сторож задержек не видел вовсе
+  assert.equal(delayed.length, 3, `фаз с задержкой ровно три: ${delayed.map(x => x.raw).join(' | ')}`);
+  assert.deepEqual(delayed.map(x => x.name).sort(), ['day-ring', 'day-sheen', 'day-word']);
+  for (const ph of delayed) {
+    assert.ok(ph.dur <= 240, `фаза «${ph.name}» длится ${ph.dur} мс — больше 240`);
+    assert.ok(ph.delay + ph.dur <= 360, `фаза «${ph.name}» кончается на ${ph.delay + ph.dur} мс — сцена длиннее 360`);
+  }
+  // и первая фаза сцены — отклик круга на касание — стоит на t = 0
+  const pop = motionParts(declValues(css, 'animation').find(v => /tap-pop/.test(v)))[0];
+  assert.equal(pop.delay, 0, 'отклик на касание не имеет права опаздывать');
 });
 
 test('З26/6.4: reduced-motion гасит движение, состояние нажатия остаётся достижимым', () => {
@@ -6514,7 +6611,9 @@ test('З28B/1.1: закрытие дня не меняет высоту подп
 
 test('З28B/1.3: «Привычки» лечатся тем же правилом — своей подписи у них нет', async () => {
   // один и тот же селектор .bar-note обслуживает оба дневных экрана
-  assert.equal((CSS_SRC().match(/\.bar-note\s*\{/g) || []).length, 1, 'правило одно на оба экрана');
+  // считаем СОБСТВЕННОЕ правило подписи, с начала строки: правило сцены
+  // закрытия дня (.dayline.closing .bar-note) — про движение, не про высоту
+  assert.equal((CSS_SRC().match(/(?:^|\n)\.bar-note\s*\{/g) || []).length, 1, 'правило одно на оба экрана');
   const { document } = await boot();
   document.querySelector('#tabs button[data-tab="habits"]').click();
   const note = document.querySelector('#scr-habits .bar-note');
@@ -6870,4 +6969,109 @@ test('З28E/B.2.3: кредо снято с «Сегодня» и осталос
   const creed = document.querySelector('#scr-habits .creed');
   assert.ok(creed, 'на «Привычках» кредо видно всегда — замер 468 px при сгибе 753');
   assert.match(creed.textContent, /Не спеши — доверься накопительному эффекту/);
+});
+
+
+/* ══ Задача 28.E, часть C: сцена закрытия дня ═════════════════
+   Волна не путешествует от круга к планке, а приходит: связь несут время
+   и цвет. Классы-триггеры навешивает только хук, и только на «Сегодня». */
+
+test('З28E/C.5.1: классы сцены — при закрытии дня и только при нём', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  const scr = () => document.getElementById('scr-today');
+  const boxes = () => [...scr().querySelectorAll('input[data-act="mark"]')];
+  assert.ok(boxes().length >= 2);
+
+  // при загрузке экрана — ни следа: ни одна функция рендера класс не печатает
+  assert.equal(scr().querySelector('.closing'), null, 'загрузка экрана сцену не играет');
+  assert.ok(scr().querySelector('.bar i .sheen'), 'узел блика постоянный, а не рождаемый');
+
+  // обычный тап (день ещё не закрыт) — сцены нет
+  boxes()[0].click();
+  assert.equal(scr().querySelector('.closing'), null, 'обычная отметка сцену не играет');
+
+  // последний тап закрывает день — сцена играет
+  boxes()[1].click();
+  assert.ok(scr().querySelector('.dayline.closing'), 'планка получила класс');
+  assert.ok(scr().querySelector('label.check.closing'), 'строка нажатого пункта — тоже');
+  assert.equal(scr().querySelectorAll('label.check.closing').length, 1, 'кольцо — у одного круга');
+  assert.match(scr().querySelector('.bar-note').textContent, /День закрыт/);
+
+  // хук снимает классы сам — следа не остаётся
+  await wait(T.DAY_CLOSE_MS + T.MOTION_TAIL_MS + 40);
+  assert.equal(scr().querySelector('.closing'), null, 'сцена кончилась и убрала за собой');
+
+  // снятие отметки день «раскрывает» — сцены нет
+  boxes()[1].click();
+  assert.equal(scr().querySelector('.closing'), null, 'снятие отметки сцену не играет');
+  // и повторное закрытие играет её заново
+  boxes()[1].click();
+  assert.ok(scr().querySelector('.dayline.closing'), 'повторное закрытие — снова сцена');
+
+  // перерисовка экрана сцену отменяет и следа не печатает
+  window.renderToday();
+  assert.equal(scr().querySelector('.closing'), null, 'перерисовка класс не печатает');
+});
+
+test('З28E/C.2.2: сцены нет на «Привычках» и нет у недельного счётчика', async () => {
+  const { document } = await boot({ seed: pointSeed() });
+  // «Привычки»: при норме меньше семи «все отмечены» нормой не является
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const hb = document.getElementById('scr-habits');
+  hb.querySelectorAll('input[data-act="mark"]').forEach(b => b.click());
+  assert.match(hb.querySelector('.bar-note').textContent, /Все отмечены/);
+  assert.equal(hb.querySelector('.closing'), null, 'на «Привычках» сцены нет');
+  assert.equal(hb.querySelector('.sheen'), null, 'и узла блика тоже — он только у «Сегодня»');
+
+  // недельный счётчик: вторая валюта на том же экране не заводится
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('#scr-today [data-act="train-inc"]').click();
+  document.querySelector('[data-act="train-save"]').click();
+  assert.equal(document.querySelector('#scr-today .closing'), null, 'запись тренировки сцены не играет');
+});
+
+test('З28E/C.2.3: reduced-motion — сцены нет, конечное состояние на месте', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  window.matchMedia = q => ({ matches: /reduced-motion/.test(q), media: q,
+    addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
+  const scr = () => document.getElementById('scr-today');
+  const boxes = () => [...scr().querySelectorAll('input[data-act="mark"]')];
+  boxes().forEach(b => b.click());
+
+  // классы не навешиваются вовсе — хук выходит рано
+  assert.equal(scr().querySelector('.closing'), null, 'при reduced-motion сцена не играет');
+  // а конечное состояние достижимо мгновенно и ни бита не теряет
+  assert.match(scr().querySelector('.bar-note').textContent, /День закрыт/);
+  assert.ok(scr().querySelector('.bar-note').classList.contains('ok'));
+  assert.equal(scr().querySelector('.bar i').style.width, '100%');
+  assert.equal(scr().querySelectorAll('label.check.on').length, boxes().length);
+  // покойное состояние новых узлов — невидимое: ни бита информации в них нет
+  const css = CSS_SRC();
+  assert.match(ruleOf(css, '.sheen'), /opacity:\s*0/);
+  assert.match(ruleOf(css, '.check .box::before'), /opacity:\s*0/);
+  // и глобальный блок гасит анимации, если бы класс всё же появился
+  const block = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(block, /animation: none !important/);
+});
+
+test('З28E/C.1: раскадровка — три фазы, клип заполнением, вес не анимируется', () => {
+  const css = CSS_SRC();
+  // блик живёт ВНУТРИ заполнения и потому не может его обогнать
+  const fill = ruleOf(css, '.bar i, .dbar i');
+  assert.match(fill, /overflow:\s*hidden/);
+  assert.match(fill, /position:\s*relative/);
+  // фраза: цвет и масштаб, но НЕ font-weight — другой вес даёт другие глифы
+  // и повторный шейпинг каждый кадр, это layout
+  const word = css.slice(css.indexOf('@keyframes day-word'), css.indexOf('}', css.indexOf('@keyframes day-word') + 200));
+  assert.match(word, /transform:\s*scale/);
+  assert.match(word, /color:/);
+  assert.doesNotMatch(word, /font-weight/);
+  for (const name of ['day-ring', 'day-sheen', 'day-word']) {
+    assert.ok(css.includes('@keyframes ' + name), 'фаза ' + name);
+  }
+  // ни очков, ни конфетти, ни звука, ни эмодзи: отклик описывает предмет
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  for (const bad of ['Молодец', 'Отлично', 'Ура', 'confetti', 'Audio', 'new Audio']) {
+    assert.ok(!app.includes(bad), 'в отклике нет «' + bad + '»');
+  }
 });

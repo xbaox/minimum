@@ -396,7 +396,8 @@ function numOr(v, fallback) {
    formula, ladder и ladderLog живут в store владельца, уходят в экспорт
    и в зеркало, а снятие самих полей — отдельная задача. Пока их
    нормализует migrate, ни один байт не теряется — ни при обновлении,
-   ни при импорте. Схема остаётся v16 (инвариант 12, помета «СНЯТ»).
+   ни при импорте. Снятие самих полей — отдельное решение владельца
+   (инвариант 16).
 
    Убрать normLadder, не убрав строку `it.ladder = … normLadder(…)` в
    цикле по пунктам, — ReferenceError при первой же миграции. Функции и
@@ -1675,7 +1676,7 @@ function keepParam(itemId) {
    closeWeek на них не влияют, смена нормы ретроактивна. */
 
 /* Отметки ежедневного пункта в календарной неделе с понедельником mon —
-   общая функция для обеих областей (инвариант 12) */
+   общая функция для обеих областей (инвариант 10) */
 function itemWeekCount(item, mon) {
   let n = 0;
   for (let i = 0; i < 7; i++) if (isMarked(addDays(mon, i), item.id)) n++;
@@ -2944,6 +2945,45 @@ function motionLeave(node, done) {
   setTimeout(fin, MOTION_MS + MOTION_TAIL_MS);
 }
 
+/* ── Сцена закрытия дня (задача 28.E/C) ───────────────────────
+   Волна НЕ ПУТЕШЕСТВУЕТ от круга к планке, а приходит: разведка задачи 28
+   измерила расстояние от круга до планки — от 103 до 475 px в зависимости
+   от того, какой пункт нажат последним. Разброс 4,6× при окне движения
+   180–260 мс, которое допускает 1,44×; при 260 мс это 58°/с, глаз не
+   проследит. Связь несут время и цвет, а не движущийся объект.
+
+   Три фазы, каждая ≤ 240 мс, вся сцена ≤ 360 мс (это легализовано решением
+   архитектора: сцена, а не движение). Первая фаза сцены — не здесь: отклик
+   круга на касание (.pop) уже стоит в updateTodayMark и играет на t = 0,
+   опаздывать ему нельзя.
+     кольцо от круга   60 → 260 мс  (масштаб и прозрачность)
+     блик вдоль планки 100 → 340 мс (постоянный узел, клип заполнением)
+     фраза «День закрыт» 120 → 360 мс (цвет и масштаб; font-weight НЕ
+       анимируется — другой вес даёт другие глифы и повторный шейпинг
+       каждый кадр, это layout; вес ставит статический класс .ok)
+
+   Классы-триггеры навешивает только этот хук. Ни одна функция рендера их
+   не печатает — сцена не может проиграться при загрузке экрана. Оба узла
+   пересоздаются перерисовкой, поэтому перерисовка сцену просто отменяет.
+
+   Ранний выход при reduced-motion: конечное состояние (полная планка,
+   «День закрыт», акцентный тон) даёт разметка, а не анимация. */
+const DAY_CLOSE_MS = timing('DAY_CLOSE_MS', 360);
+let dayCloseTimer = null;
+
+function playDayClose(dayline, label) {
+  if (prefersReducedMotion()) return;
+  const nodes = [dayline, label].filter(Boolean);
+  if (!nodes.length) return;
+  for (const n of nodes) n.classList.remove('closing');
+  void nodes[0].offsetWidth; // рефлоу: повторное закрытие дня должно проигрываться заново
+  for (const n of nodes) n.classList.add('closing');
+  clearTimeout(dayCloseTimer);
+  dayCloseTimer = setTimeout(() => {
+    for (const n of nodes) n.classList.remove('closing');
+  }, DAY_CLOSE_MS + MOTION_TAIL_MS);
+}
+
 /* Четыре вкладки плюс ДВА листа поверх них: разбор недели и тренировка.
    Третьим был лист детали пункта; он существовал ради формулы и лестницы
    и ушёл вместе с ними (задача 28.D). Разбор с таб-бара ушёл (задача 16B) —
@@ -3018,7 +3058,7 @@ function renderToday() {
   if (total) {
     h += `
     <div class="dayline">
-      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="bar"><i style="width:${pct}%"><b class="sheen" aria-hidden="true"></b></i></div>
       <p class="bar-note${closed ? ' ok' : ''}" aria-live="polite">${closed ? 'День закрыт' : `<b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
     </div>`;
     h += `<div class="list">` + groupSections(items, t, false) + `</div>`;
@@ -3506,7 +3546,18 @@ function updateTodayMark(input) {
   if (label) { label.classList.toggle('on', on); tapPop(label.querySelector('.box')); } // scale-отклик круга (12.1)
   const scr = input.closest('section.screen');
   if (scr && scr.id === 'scr-habits') { updateHabitsDayline(); updateHabitWeekRow(input); }
-  else updateDayline();
+  else {
+    updateDayline();
+    // Сцена — только на «Сегодня» и только когда день закрылся ИМЕННО этим
+    // тапом (задача 28.E/C, п. 2.2). На «Привычках» её нет: при норме
+    // меньше семи «все отмечены» нормой не является, и подсветка давила бы
+    // в сторону ежедневности там, где конституция специально разрешила
+    // пропуски. Недельному счётчику — тоже нет: это завело бы вторую валюту
+    // на том же экране.
+    if (on && minDayClosed(todayKey())) {
+      playDayClose(scr && scr.querySelector('.dayline'), label);
+    }
+  }
 }
 
 /* Дневные экраны: перерисовка и контейнер по активной вкладке */
