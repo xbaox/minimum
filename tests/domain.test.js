@@ -336,7 +336,7 @@ test('И4: неделя с 5 отметками в тройке последни
   assert.equal(app.raiseEligible(item), true);
 });
 
-test('И4: повышение — активный дневной пункт минимума с числовой планкой и без лестницы', () => {
+test('И4: повышение — активный дневной пункт минимума с числовой планкой', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   calendarPast(s);
@@ -356,13 +356,33 @@ test('И4: повышение — активный дневной пункт м�
   assert.equal(app.raiseEligible(item), false);    // выключен
   item.active = true;
   assert.equal(app.raiseEligible(item), true);
+});
 
-  // лестница на пункте гасит предложение: шаг ступени и шаг планки в одну
-  // неделю — два изменения за раз (C.1.7)
-  app.setLadder(item.id, 'первая\nвторая');
-  assert.equal(app.raiseEligible(item), false);
-  app.clearLadder(item.id);
+/* Задача 28.D, п. 5: guard живой лестницы снят. Прежде поле ladder гасило
+   предложение — шаг ступени и шаг планки в одну неделю были бы двумя
+   изменениями за раз. Ступени в приложении не осталось, и поле, которого
+   владелец не видит и снять не может, права на повышение не отнимает. */
+test('З28D/5: поле ladder в данных повышению не мешает — критерий один', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const item = s.items.find(i => i.name === 'Подтягивания + отжимания');
+  for (const w of app.closedWeeks(3)) setWeekMarks(item.id, w, 6);
+  assert.equal(app.raiseEligible(item), true, 'три недели по 6 из 7 — предложение есть');
+
+  // ЖИВАЯ лестница в данных: прежде гасила предложение
+  item.ladder = { steps: ['первая', 'вторая'], step: 0, steppedWeek: null, startedAt: app.todayKey(), done: false };
+  assert.equal(app.raiseEligible(item), true, 'живая лестница больше не блокирует');
+  assert.equal(app.raiseOffer(), item, 'и карточку получает именно он');
+
+  // закрытая — тоже (она не блокировала и до задачи 28.D)
+  item.ladder.done = true;
   assert.equal(app.raiseEligible(item), true);
+
+  // критерий остался ЕДИНСТВЕННЫМ: недобор одной недели гасит предложение
+  item.ladder = null;
+  setWeekMarks(item.id, app.closedWeeks(3)[1], 5);
+  assert.equal(app.raiseEligible(item), false, '5 из 7 в средней неделе — предложения нет');
 });
 
 test('И4: raiseSuggest — +1 до 12 включительно, дальше +10% с округлением', () => {
@@ -1303,214 +1323,6 @@ function ladderReadyHabit() {
   return { s, h };
 }
 
-test('З14: activeLadderItem — пусто, вторая лестница невозможна, снятие освобождает слот', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  const [a, b] = s.items.filter(i => i.type === 'daily' && i.area === 'min');
-
-  assert.equal(app.activeLadderItem(), null); // свежий store — лестницы нет ни у кого
-
-  assert.equal(app.setLadder(a.id, 'раз\nдва'), true);
-  assert.equal(app.activeLadderItem().id, a.id);
-  assert.equal(app.ladderBlockedBy(a), null);   // для носителя слот не занят
-  assert.equal(app.ladderBlockedBy(b).id, a.id);
-
-  assert.equal(app.setLadder(b.id, 'три'), false); // вторую создать нельзя
-  assert.equal(b.ladder, null);
-  assert.equal(app.activeLadderItem().id, a.id);
-
-  assert.equal(app.clearLadder(a.id), true);
-  assert.equal(app.activeLadderItem(), null);
-  assert.equal(app.setLadder(b.id, 'три\nчетыре'), true); // слот освободился
-  assert.equal(app.activeLadderItem().id, b.id);
-});
-
-test('З14: шаг вперёд — критерий двух недель, одна неделя на шаг, последняя ступень', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { s, h } = ladderReadyHabit();
-  const prev = app.previousWeekStart();
-  app.setLadder(h.id, 'раз\nдва\nтри');
-
-  assert.equal(app.canStepForward(h), true);
-  assert.equal(app.ladderStatus(h), 'Ступень держится две недели — можно шагнуть');
-
-  // недобор нормы хотя бы в одной из двух недель закрывает шаг
-  app.toggleMark(prev, h.id); // W−1 стала 6 из 7 при норме 7
-  assert.equal(app.canStepForward(h), false);
-  // вместо оценки «две недели ещё не набраны» — счёт по норме этого пункта
-  // (задача 24, п. 3): текущая неделя и последняя завершённая
-  assert.equal(app.ladderStatus(h),
-    `Эта неделя ${app.itemWeekCount(h, app.weekStartOf(app.todayKey()))} из 7, прошлая 6 из 7`);
-  app.toggleMark(prev, h.id);
-  app.toggleMark(app.addDays(prev, -7), h.id); // теперь недобор в W−2
-  assert.equal(app.canStepForward(h), false);
-  app.toggleMark(app.addDays(prev, -7), h.id);
-  assert.equal(app.canStepForward(h), true);
-
-  // успешный шаг: индекс вперёд и неделя отмечена
-  assert.equal(app.ladderStep(h.id, 'fwd'), true);
-  assert.equal(h.ladder.step, 1);
-  assert.equal(h.ladder.steppedWeek, app.currentWeekStart());
-
-  // второй шаг на той же неделе недоступен
-  assert.equal(app.canStepForward(h), false);
-  assert.equal(app.ladderStatus(h), 'Шаг уже сделан на этой неделе');
-  assert.equal(app.ladderStep(h.id, 'fwd'), false);
-  assert.equal(h.ladder.step, 1);
-
-  // новая неделя открывает шаг снова; на последней ступени шага нет
-  advanceDays(7);
-  markWeek(h.id, app.previousWeekStart(), 7); // прошедшая неделя тоже по норме
-  assert.equal(app.canStepForward(h), true);
-  assert.equal(app.ladderStep(h.id, 'fwd'), true);
-  assert.equal(h.ladder.step, 2);
-  assert.equal(app.canStepForward(h), false);
-  // ПЕРЕПИСАНО в задаче 27.1 (п. 6.1). Прежде здесь ожидалось «привычка
-  // встала» СРАЗУ после шага: обе недели нормы были набраны, а что набраны
-  // они на ПРЕДЫДУЩЕЙ ступени, ladderSettled не различал. Один тап
-  // «Шагнуть» в разборе — и та же карточка в ту же секунду предлагала
-  // закрыть привычку, утверждая выдержку, которой не было (задача 27, Д3)
-  assert.equal(app.ladderSettled(h), false, 'шаг сделан на этой неделе — ступень ещё не выстояла');
-  assert.equal(app.ladderStatus(h), 'Последняя ступень');
-  // неделя прошла, обе завершённые недели по норме — теперь встала
-  advanceDays(7);
-  markWeek(h.id, app.previousWeekStart(), 7);
-  assert.equal(app.ladderSettled(h), true);
-  assert.equal(app.ladderStatus(h), 'Последняя ступень держится две недели — привычка встала.');
-  // а без выдержанных недель на той же последней ступени — прежний текст
-  // (setWeekMarks ставит состояние, а не переключает: 0 действительно чистит)
-  setWeekMarks(h.id, app.previousWeekStart(), 0);
-  assert.equal(app.ladderSettled(h), false);
-  assert.equal(app.ladderStatus(h), 'Последняя ступень');
-  setWeekMarks(h.id, app.previousWeekStart(), 7); // вернуть как было
-  assert.equal(s.items.find(i => i.id === h.id).ladder.step, 2);
-});
-
-test('З14: шаг вперёд у минимума — норма 6 из 7', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  calendarPast(s);
-  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
-  const prev = app.previousWeekStart();
-  app.setLadder(m.id, 'раз\nдва');
-  assert.equal(app.ladderNorm(m), 6);
-
-  markWeek(m.id, prev, 6);
-  markWeek(m.id, app.addDays(prev, -7), 5);
-  assert.equal(app.canStepForward(m), false); // 5 из 7 в W−2
-  app.toggleMark(app.addDays(prev, -7 + 5), m.id); // добор до 6
-  assert.equal(app.canStepForward(m), true);
-});
-
-test('З14: шаг назад — всегда при step > 0, steppedWeek не меняется, на нуле недоступен', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { h } = ladderReadyHabit();
-  app.setLadder(h.id, 'раз\nдва\nтри');
-  app.ladderStep(h.id, 'fwd');
-  const week = h.ladder.steppedWeek;
-  assert.equal(h.ladder.step, 1);
-
-  assert.equal(app.canStepBack(h), true);
-  assert.equal(app.ladderStep(h.id, 'back'), true);
-  assert.equal(h.ladder.step, 0);
-  assert.equal(h.ladder.steppedWeek, week); // шаг назад неделю не тратит
-
-  assert.equal(app.canStepBack(h), false);
-  assert.equal(app.ladderStep(h.id, 'back'), false);
-  assert.equal(h.ladder.step, 0);
-
-  // критериев у шага назад нет: без единой отметки он всё равно доступен
-  const s2 = freshStore();
-  const it = s2.items.find(i => i.type === 'daily');
-  app.setLadder(it.id, 'а\nб\nв');
-  it.ladder.step = 2;
-  assert.equal(app.canStepForward(it), false); // недель нет вовсе
-  assert.equal(app.ladderStep(it.id, 'back'), true);
-  assert.equal(it.ladder.step, 1);
-});
-
-test('З14.2: ladderLog — старт при создании, замена в тот же день, старт неприкосновенен', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  const it = s.items.find(i => i.type === 'daily');
-  const day1 = app.todayKey();
-
-  // создание пишет стартовую запись
-  app.setLadder(it.id, 'раз\nдва\nтри\nчетыре');
-  assert.deepEqual(it.ladderLog, [{ date: day1, step: 0, text: 'раз', start: true }]);
-
-  // шаг в тот же день не затирает старт — записей становится две
-  it.ladder.step = 3;
-  app.ladderStep(it.id, 'back'); // → «три»
-  assert.equal(it.ladderLog.length, 2);
-  assert.deepEqual(it.ladderLog[0], { date: day1, step: 0, text: 'раз', start: true });
-  assert.deepEqual(it.ladderLog[1], { date: day1, step: 2, text: 'три' });
-
-  // второй шаг того же дня заменяет уже нестартовую запись
-  app.ladderStep(it.id, 'back');
-  assert.equal(it.ladderLog.length, 2);
-  assert.deepEqual(it.ladderLog[1], { date: day1, step: 1, text: 'два' });
-
-  advanceDays(1);
-  app.ladderStep(it.id, 'back'); // новый день: новая запись
-  assert.equal(it.ladderLog.length, 3);
-  assert.deepEqual(it.ladderLog[2], { date: app.todayKey(), step: 0, text: 'раз' });
-
-  // снятие журнал не изменяет, повторное создание пишет новый старт
-  const before = JSON.stringify(it.ladderLog);
-  assert.equal(app.clearLadder(it.id), true);
-  assert.equal(JSON.stringify(it.ladderLog), before);
-  assert.equal(app.setLadder(it.id, 'а\nб'), true);
-  assert.equal(it.ladderLog.length, 4);
-  assert.deepEqual(it.ladderLog[3], { date: app.todayKey(), step: 0, text: 'а', start: true });
-});
-
-test('З14: снятие лестницы не трогает days, history и ladderLog', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  calendarPast(s);
-  const it = s.items.find(i => i.name === 'Пешком'); // несёт history планки
-  markWeek(it.id, app.previousWeekStart(), 4);
-  app.toggleMark(app.todayKey(), it.id);
-  app.setLadder(it.id, 'раз\nдва');
-  it.ladder.step = 1;
-  app.ladderStep(it.id, 'back');
-
-  const daysBefore = JSON.stringify(s.days);
-  const histBefore = JSON.stringify(it.history);
-  const logBefore = JSON.stringify(it.ladderLog);
-
-  assert.equal(app.clearLadder(it.id), true);
-
-  assert.equal(it.ladder, null);
-  assert.equal(JSON.stringify(s.days), daysBefore);
-  assert.equal(JSON.stringify(it.history), histBefore);
-  assert.equal(JSON.stringify(it.ladderLog), logBefore);
-  assert.equal(app.clearLadder(it.id), false); // снимать нечего
-});
-
-test('З14: правка ступеней не сбрасывает step и подтягивает его в границы', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  const it = s.items.find(i => i.type === 'daily');
-  app.setLadder(it.id, 'а\nб\nв\nг');
-  it.ladder.step = 3;
-
-  app.setLadder(it.id, 'а\nб\nв\nг\nд'); // список вырос — индекс на месте
-  assert.equal(it.ladder.step, 3);
-
-  app.setLadder(it.id, ' а \n\n б \n'); // пустые строки отбрасываются, список короче
-  assert.deepEqual(it.ladder.steps, ['а', 'б']);
-  assert.equal(it.ladder.step, 1); // step = steps.length − 1
-
-  app.setLadder(it.id, 'а\nб\nв'); // возврат длины — индекс не сбрасывается
-  assert.equal(it.ladder.step, 1);
-
-  // пустой текст — лестницы нет (как пустая формула — null)
-  assert.equal(app.setLadder(it.id, '   \n  '), true);
-  assert.equal(it.ladder, null);
-});
-
 test('З14: closedWeeks — текущая не входит, эпоха ограничивает, при нехватке короче n', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
@@ -1702,60 +1514,146 @@ test('З14.2: миграция v7→v8 — пустому журналу жив�
     [{ date: '2026-07-02', step: 1, text: 'два', start: true }]);
 });
 
-test('З14: steppedWeek не-понедельник и v6-экспорт — экспорт → импорт возвращает новые поля', () => {
+/* Задача 28.D, п. 6.2–6.3: механики нет, ДАННЫЕ ЕСТЬ. Заводить формулу и
+   лестницу в интерфейсе больше нечем — кладём их прямо в store, ровно так
+   они и лежат у владельца, — и требуем, чтобы экспорт → импорт вернул их
+   до байта. Прежде тот же путь проверялся через setFormula/setLadder. */
+test('З28D/6: формула и лестница переживают экспорт → импорт до байта', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   calendarPast(s);
   const it = s.items.find(i => i.type === 'daily');
-  app.setFormula(it.id, {
-    anchor: '  после зарядки  ', when: '23:30, спальня', pair: '', identity: 'я человек, который ложится вовремя',
-    twoMin: '', friction: '', proof: ''
-  });
-  app.setLadder(it.id, 'раз\nдва\nтри');
-  it.ladder.step = 2;
-  app.ladderStep(it.id, 'back');
+  it.formula = {
+    anchor: 'после зарядки', when: '23:30, спальня', pair: '', identity: 'я человек, который ложится вовремя',
+    twoMin: '', friction: '', proof: '', mode: 'build'
+  };
+  it.ladder = { steps: ['раз', 'два', 'три'], step: 1, steppedWeek: '2026-07-13', startedAt: '2026-07-02', done: false };
+  it.ladderLog = [
+    { date: '2026-07-02', step: 0, text: 'раз', start: true },
+    { date: '2026-07-13', step: 1, text: 'два' }
+  ];
 
   const exported = JSON.stringify(app.store);         // содержимое файла экспорта
   app.store = null;                                   // «очистка localStorage»
-  const imported = app.migrate(JSON.parse(exported)); // путь importJSON
+  const imported = app.migrate(JSON.parse(exported), { external: true }); // путь importJSON
   app.store = imported;
 
   assert.deepEqual(imported, JSON.parse(exported));   // до байта данных
   const back = imported.items.find(i => i.id === it.id);
-  assert.equal(back.formula.anchor, 'после зарядки'); // trim при сохранении
+  assert.equal(back.formula.anchor, 'после зарядки');
   assert.equal(back.formula.pair, '');
+  assert.equal(back.formula.mode, 'build');
   assert.deepEqual(back.ladder.steps, ['раз', 'два', 'три']);
   assert.equal(back.ladder.step, 1);
-  // старт создания + шаг того же дня: флаг start переживает экспорт → импорт
+  assert.equal(back.ladder.steppedWeek, '2026-07-13'); // понедельник — как был
+  assert.equal(back.ladder.done, false);
+  // флаг start переживает экспорт → импорт, у второй записи его нет
   assert.equal(back.ladderLog.length, 2);
   assert.equal(back.ladderLog[0].start, true);
   assert.equal('start' in back.ladderLog[1], false);
-  assert.equal(app.activeLadderItem().id, it.id);     // домен жив после импорта
 });
 
-test('З14: формула — только текст владельца, пустая сохраняется как null', () => {
+/* Задача 28.D, п. 6.4: повторный прогон migrate ничего не меняет. Это и
+   есть гарантия «ни байта не потеряется ни при одном запуске»: миграция
+   идёт при КАЖДОМ старте, и невыдержанная идемпотентность съедала бы поля
+   постепенно, а не разом. */
+test('З28D/6: двойной прогон migrate по формуле и лестнице побайтово совпадает', () => {
   setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  const it = s.items.find(i => i.type === 'daily');
-  const param = s.items.find(i => i.type === 'param');
+  const raw = () => ({
+    schemaVersion: 16,
+    items: [{
+      id: 'i1', name: 'Пункт', value: null, unit: '', type: 'daily', area: 'min',
+      goal: null, note: '', group: '', active: true, addedAt: '2026-07-01',
+      raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+      formula: { anchor: 'якорь', when: '', pair: '', identity: '', twoMin: 'две минуты', friction: '', proof: '', mode: 'break' },
+      ladder: { steps: ['раз', 'два'], step: 1, steppedWeek: '2026-07-13', startedAt: '2026-07-01', done: true },
+      ladderLog: [
+        { date: '2026-07-01', step: 0, text: 'раз', start: true },
+        { date: '2026-07-13', step: 1, text: 'два' },
+        { date: '2026-07-14', step: 1, text: 'два', closed: true }
+      ]
+    }],
+    groups: [], days: {}, weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [],
+    exercises: [], sessions: [], notes: [], paramDecided: {}, draftOneChange: '',
+    weekStart: '2026-07-13',
+    settings: { dayBoundary: 4, dayThreshold: 0.8, calendarSince: '2026-05-04', exportedAt: null, habitSeeded: true, seed17: true }
+  });
+  const once = JSON.stringify(app.migrate(raw()));
+  const twice = JSON.stringify(app.migrate(app.migrate(raw())));
+  assert.equal(twice, once, 'второй прогон ничего не изменил');
+  const back = JSON.parse(once).items[0];
+  assert.equal(back.formula.mode, 'break', 'режим сохранён');
+  assert.equal(back.formula.twoMin, 'две минуты');
+  assert.equal(back.ladder.done, true, 'закрытая лестница осталась закрытой');
+  assert.equal(back.ladderLog.length, 3, 'все три записи журнала на месте');
+  assert.equal(back.ladderLog[2].closed, true, 'веха закрытия сохранена');
+});
 
-  assert.equal(app.setFormula(it.id, { anchor: '  ', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '   ' }), true);
-  assert.equal(it.formula, null); // все поля пусты после trim
+/* Задача 28.D, п. 6.6: дедуп двух ЖИВЫХ лестниц — последний рубеж. Завести
+   вторую в интерфейсе больше нечем, а принести её может импорт файла,
+   снятого прежней версией. */
+test('З28D/6: дедуп двух живых лестниц в migrate работает и после снятия механики', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const L = (startedAt, done) => ({ steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt, done });
+  const mk = (id, ladder) => ({
+    id, name: id, value: null, unit: '', type: 'daily', area: 'min', goal: null, note: '',
+    group: '', active: true, addedAt: '2026-06-01', raiseAfter: 0, raiseAfterWeek: null,
+    lowerAfterWeek: null, history: [], formula: null, ladder, ladderLog: []
+  });
+  const s = app.migrate({
+    schemaVersion: 16,
+    items: [mk('a', L('2026-06-10', false)), mk('b', L('2026-07-01', false)), mk('c', L('2026-06-20', true))],
+    groups: [], days: {}, weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [],
+    exercises: [], sessions: [], notes: [], paramDecided: {}, draftOneChange: '', weekStart: '2026-07-13',
+    settings: { dayBoundary: 4, dayThreshold: 0.8, calendarSince: '2026-05-04', exportedAt: null, habitSeeded: true, seed17: true }
+  }, { external: true });
+  const by = id => s.items.find(i => i.id === id);
+  assert.equal(by('a').ladder, null, 'начатая раньше снята');
+  assert.ok(by('b').ladder, 'побеждает начатая позже');
+  assert.ok(by('c').ladder, 'ЗАКРЫТАЯ в конфликте не участвует и не снимается');
+  assert.equal(by('c').ladder.done, true);
+  assert.equal(s.items.filter(i => i.ladder && !i.ladder.done).length, 1, 'живая осталась одна');
+});
 
-  app.setFormula(it.id, { anchor: 'после зарядки' });
-  // семь текстовых полей плюс режим (задача 20): ключи полей не менялись
-  assert.deepEqual(Object.keys(it.formula), ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof', 'mode']);
-  assert.equal(it.formula.anchor, 'после зарядки');
-  assert.equal(it.formula.when, '');
-  assert.equal(it.formula.mode, 'build', 'режим по умолчанию');
+/* Задача 28.D, п. 6.3: файл с формулой и лестницей импортируется без потерь
+   И БЕЗ СТРОКИ ПОТЕРЬ. Счёт «было» берётся по СЫРОМУ распарсенному файлу и
+   обязательно ДО migrate (инвариант 6) — тем же путём, что в importJSON. */
+test('З28D/6: импорт файла с формулой и лестницей потерей их не называет', () => {
+  setNow(2026, 7, 17, 12, 0);
+  const file = {
+    schemaVersion: 16,
+    items: [{
+      id: 'i1', name: 'Пункт', value: 10, unit: 'мин', type: 'daily', area: 'min',
+      goal: null, note: 'подпись', group: '', active: true, addedAt: '2026-06-01',
+      raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+      history: [{ date: '2026-06-01', value: 8 }, { date: '2026-06-20', value: 10 }],
+      formula: { anchor: 'после зарядки', when: 'утро', pair: '', identity: '', twoMin: '', friction: '', proof: '', mode: 'build' },
+      ladder: { steps: ['раз', 'два', 'три'], step: 1, steppedWeek: '2026-07-06', startedAt: '2026-06-01', done: false },
+      ladderLog: [
+        { date: '2026-06-01', step: 0, text: 'раз', start: true },
+        { date: '2026-07-06', step: 1, text: 'два' }
+      ]
+    }],
+    groups: [], days: { '2026-07-06': { i1: true } }, weekLog: [], reviews: [],
+    pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: '2026-07-13',
+    settings: { dayBoundary: 4, dayThreshold: 0.8, calendarSince: '2026-05-04', exportedAt: null, habitSeeded: true, seed17: true }
+  };
+  const raw = JSON.parse(JSON.stringify(file));
+  const was = app.dataCounts(raw);              // ДО migrate: он мутирует объект
+  const incoming = app.migrate(raw, { external: true });
+  const lost = app.droppedLine(was, app.dataCounts(incoming));
+  assert.equal(lost, '', 'строки потерь нет — терять нечего');
 
-  // один только режим формулы не создаёт: пустая остаётся null
-  assert.equal(app.setFormula(it.id, { mode: 'break' }), true);
-  assert.equal(it.formula, null);
-
-  assert.equal(app.setFormula('нет-такого', { anchor: 'x' }), false);
-  assert.equal(app.setFormula(param.id, { anchor: 'x' }), false); // формула — у ежедневных
-  assert.equal(app.setLadder(param.id, 'раз'), false);
+  const back = incoming.items[0];
+  assert.equal(back.formula.anchor, 'после зарядки');
+  assert.equal(back.formula.when, 'утро');
+  assert.deepEqual(back.ladder.steps, ['раз', 'два', 'три']);
+  assert.equal(back.ladder.step, 1);
+  assert.equal(back.ladderLog.length, 2);
+  assert.equal(back.ladderLog[0].start, true);
+  // и сам счёт совпадает по всем категориям
+  assert.deepEqual(app.dataCounts(incoming), was);
 });
 
 /* ── Задача 15. Группы и цепочки (инвариант 13) ────────────── */
@@ -2120,24 +2018,23 @@ test('З16B: подъём — ряд от двух записей, ступен�
     assert.ok(y >= 2 && y <= 42, 'значение внутри поля: ' + y);
   }
 
-  // лестница даёт ряд только у пункта без истории значений
+  // Источник ряда ОДИН — история планки. Вторым был ladderLog: пункт без
+  // истории значений получал ступеньку по журналу лестницы. Лестница снята
+  // задачей 28.D, и журнал в «Подъём» больше не идёт — сколько бы записей
+  // в нём ни лежало.
   const l = mkMin('l1', app.addDays(t, -30));
   l.ladderLog = [
     { date: app.addDays(t, -30), step: 0, text: 'первая', start: true },
-    { date: app.addDays(t, -10), step: 1, text: 'вторая' }
+    { date: app.addDays(t, -10), step: 1, text: 'вторая' },
+    { date: app.addDays(t, -5), step: 2, text: 'третья' }
   ];
-  const ls = app.riseSeries(l);
-  assert.equal(ls.kind, 'ladder');
-  assert.deepEqual(ls.points.map(p => p.value), [1, 2], 'ступени человеку — с единицы');
+  assert.equal(app.riseSeries(l), null, 'журнал лестницы визуала не даёт');
   l.history = [{ date: app.addDays(t, -30), value: 1 }, { date: t, value: 3 }];
-  assert.equal(app.riseSeries(l).kind, 'bar', 'история планки первична');
+  assert.equal(app.riseSeries(l).kind, 'bar', 'а история планки — даёт');
 
   // все записи одним днём: путь строится по индексу, деления на ноль нет
   const same = mkMin('s1', t);
-  same.ladderLog = [
-    { date: t, step: 0, text: 'а', start: true },
-    { date: t, step: 1, text: 'б' }
-  ];
+  same.history = [{ date: t, value: 1 }, { date: t, value: 2 }];
   const sd = app.risePath(app.riseSeries(same).points);
   assert.equal((sd.match(/[HV]/g) || []).length, 3);
   assert.doesNotMatch(sd, /NaN|Infinity/);
@@ -2604,7 +2501,11 @@ function filledStore() {
   app.toggleMark(t, s.items[0].id);
   app.toggleMark(app.addDays(t, -1), s.items[0].id);
   s.reviews.push({ closedAt: 1, week: app.addDays(app.weekStartOf(t), -7), keys: [], perItem: {}, trainings: {}, oneChange: '', raises: [], lowers: [], params: [] });
-  app.setLadder(s.items[0].id, 'первая\nвторая');
+  // Лестницу в интерфейсе больше не заводят (механика снята задачей 28.D),
+  // но поле живёт в store и в счёт чистки идёт — кладём его прямо, ровно
+  // так оно и лежит у владельца (тот же приём, что с заметкой ниже)
+  s.items[0].ladder = { steps: ['первая', 'вторая'], step: 0, steppedWeek: null, startedAt: app.todayKey(), done: false };
+  s.items[0].ladderLog = [{ date: app.todayKey(), step: 0, text: 'первая', start: true }];
   const ex = app.addExercise('Жим', 'кг', 40);
   app.recordSession(s.items.find(i => i.type === 'weekly').id, [{ exId: ex.id, value: 42 }], 'заметка тренировки');
   // Заводить заметку через UI больше нечем (экран снят задачей 28.C),
@@ -3116,7 +3017,7 @@ test('З19/A.2.2: пустой файл старой схемы импортир
   assert.equal(v1.items.length, 0, 'ни посева, ни «Принять душ», ни привычек v5');
 });
 
-test('З19/A.3.2: лестница на weekly и param снимается миграцией, слот свободен', () => {
+test('З19/A.3.2: лестница на weekly и param снимается миграцией, у daily остаётся', () => {
   setNow(2026, 7, 17, 12, 0);
   const ladder = () => ({ steps: ['а', 'б', 'в'], step: 1, steppedWeek: null, startedAt: '2026-06-01' });
   const s = app.migrate({
@@ -3134,8 +3035,8 @@ test('З19/A.3.2: лестница на weekly и param снимается ми�
   assert.equal(w.ladder, null, 'у недельного счётчика лестницы нет');
   assert.equal(p.ladder, null, 'у параметра тоже');
   assert.ok(d.ladder, 'у ежедневного пункта осталась');
-  assert.equal(app.activeLadderItem().id, 'd1', 'слот занимает daily-пункт');
-  // журнал не тронут: снятие лестницы ladderLog не изменяет (инвариант 12)
+  assert.deepEqual(d.ladder.steps, ['а', 'б', 'в'], 'и осталась целиком');
+  // журнал не тронут: снятие лестницы ladderLog не изменяет
   assert.equal(w.ladderLog.length, 1);
   assert.deepEqual(w.ladderLog[0], { date: '2026-06-01', step: 0, text: 'а', start: true });
 });
@@ -3348,31 +3249,6 @@ test('З19/C.1.1 (И10): migrate принуждает weekly к area min', () =>
   assert.equal('normPerWeek' in s.items[0], false, 'норма недели — только у привычек');
 });
 
-test('З19/C.1.2 (И12): снятие лестницы не трогает историю планки', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  calendarPast(s);
-  const it = s.items.find(i => i.type === 'daily' && i.area === 'min' && typeof i.value === 'number');
-  app.recordBar(it, 42);
-  const hist = JSON.stringify(it.history);
-  const days = JSON.stringify(s.days);
-
-  app.setLadder(it.id, 'а\nб\nв');
-  const log = JSON.stringify(it.ladderLog);
-  assert.equal(JSON.stringify(it.history), hist, 'создание лестницы историю не трогает');
-
-  app.setLadder(it.id, ''); // пустой текст — снятие через форму
-  assert.equal(it.ladder, null, 'лестница снята');
-  assert.equal(JSON.stringify(it.history), hist, 'снятие формой историю не трогает');
-  assert.equal(JSON.stringify(it.ladderLog), log, 'и журнал тоже');
-  assert.equal(JSON.stringify(s.days), days, 'и отметки');
-
-  // второй путь снятия — clearLadder
-  app.setLadder(it.id, 'а\nб');
-  app.clearLadder(it.id);
-  assert.equal(JSON.stringify(it.history), hist, 'clearLadder историю не трогает');
-});
-
 test('З19/C.1.3 (И18): «Вернуть» проводит копию через migrate', () => {
   fakeLocalStorage();
   setNow(2026, 7, 17, 12, 0);
@@ -3557,7 +3433,10 @@ test('З20/C.1: экспорт → очистка → импорт сохран�
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   const it = s.items.find(i => i.type === 'daily' && i.area === 'min');
-  app.setFormula(it.id, { anchor: 'рука пошла ко рту', twoMin: 'сжать кулак', mode: 'break' });
+  // Заводить формулу в интерфейсе больше нечем (механика снята задачей
+  // 28.D) — кладём её прямо в store через нормализатор, ровно так она и
+  // лежит у владельца. Экспорт и импорт при этом обязаны её сохранить.
+  it.formula = app.normFormula({ anchor: 'рука пошла ко рту', twoMin: 'сжать кулак', mode: 'break' });
   assert.equal(it.formula.mode, 'break');
 
   const exported = JSON.stringify(app.store);          // экспорт отдаёт текущий store
@@ -3573,29 +3452,6 @@ test('З20/C.1: экспорт → очистка → импорт сохран�
   assert.equal(back.formula.twoMin, 'сжать кулак');
 });
 
-test('З20/C.2: смена режима текст не изменяет и не переносит', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const s = freshStore();
-  const it = s.items.find(i => i.type === 'daily' && i.area === 'min');
-  const text = {
-    anchor: 'после зарядки', when: 'в 7:00 на кухне', pair: 'кофе', identity: 'я человек, который читает',
-    twoMin: 'одна страница', friction: 'книга на столе', proof: 'страница прочитана'
-  };
-  app.setFormula(it.id, Object.assign({}, text, { mode: 'build' }));
-  const before = Object.assign({}, it.formula);
-
-  // тот же текст, другой режим
-  app.setFormula(it.id, Object.assign({}, text, { mode: 'break' }));
-  assert.equal(it.formula.mode, 'break', 'режим сменился');
-  for (const k of ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction', 'proof']) {
-    assert.equal(it.formula[k], before[k], `поле ${k} не изменилось`);
-  }
-  // и обратно
-  app.setFormula(it.id, Object.assign({}, text, { mode: 'build' }));
-  assert.equal(it.formula.mode, 'build');
-  assert.equal(it.formula.identity, 'я человек, который читает');
-});
-
 test('З20/A.1.3: режим — свойство формулы, а не пункта', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
@@ -3603,190 +3459,22 @@ test('З20/A.1.3: режим — свойство формулы, а не пун
   assert.equal(it.formula, null, 'формулы ещё нет');
   assert.equal('mode' in it, false, 'у самого пункта поля режима нет');
 
-  app.setFormula(it.id, { anchor: 'x', mode: 'break' });
-  assert.equal('mode' in it, false, 'и после создания формулы — тоже нет');
+  it.formula = app.normFormula({ anchor: 'x', mode: 'break' });
+  assert.equal('mode' in it, false, 'и после нормализации формулы — тоже нет');
   assert.equal(it.formula.mode, 'break');
 
-  // очистка формулы уносит и режим
-  app.setFormula(it.id, { anchor: '', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '', mode: 'break' });
+  // пустая формула — null, режим уходит вместе с ней
+  it.formula = app.normFormula({ anchor: '', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '', mode: 'break' });
   assert.equal(it.formula, null, 'пустая формула — null, режим вместе с ней');
 });
 
-/* ── Задача 21. Привычка встала (инвариант 12) ─────────────── */
-
-/* Пункт с лестницей на последней ступени и обеими неделями по норме */
-function settledLadder(area) {
-  const s = freshStore();
-  calendarPast(s);
-  const it = s.items.find(i => i.type === 'daily' && i.area === (area || 'habit'));
-  app.setLadder(it.id, 'раз\nдва\nтри');
-  it.ladder.step = 2;
-  const norm = area === 'min' ? 6 : 7;
-  app.closedWeeks(2).forEach(w => setWeekMarks(it.id, w, norm));
-  return { s, it };
-}
-
-test('З21/7.1: ladderSettled — последняя ступень плюс две недели нормы', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { it } = settledLadder('habit');
-  const W = app.closedWeeks(2);
-  assert.equal(app.ladderSettled(it), true, 'последняя ступень + две недели');
-
-  // одной недели мало
-  setWeekMarks(it.id, W[0], 0);
-  assert.equal(app.ladderSettled(it), false, 'одна неделя из двух');
-  setWeekMarks(it.id, W[0], 7);
-  assert.equal(app.ladderSettled(it), true);
-
-  // не последняя ступень — сколько недель ни держи
-  it.ladder.step = 1;
-  assert.equal(app.ladderSettled(it), false, 'не последняя ступень');
-  assert.equal(app.canStepForward(it), true, 'зато шаг вперёд доступен');
-  it.ladder.step = 2;
-  assert.equal(app.ladderSettled(it), true);
-
-  // норма недели у привычки своя: при normPerWeek 5 хватает пяти отметок
-  it.normPerWeek = 5;
-  W.forEach(w => setWeekMarks(it.id, w, 5));
-  assert.equal(app.ladderSettled(it), true, 'привычка: ≥ normPerWeek');
-  W.forEach(w => setWeekMarks(it.id, w, 4));
-  assert.equal(app.ladderSettled(it), false, '4 < 5');
-
-  // лестницы нет вовсе — условия нет
-  it.ladder = null;
-  assert.equal(app.ladderSettled(it), false);
-  assert.equal(app.ladderSettled(null), false);
-});
-
-test('З21/7.1: у минимума порог 6 из 7', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { it } = settledLadder('min');
-  const W = app.closedWeeks(2);
-  assert.equal(app.ladderNorm(it), 6);
-  assert.equal(app.ladderSettled(it), true, '6 из 7 в обеих неделях');
-  setWeekMarks(it.id, W[1], 5);
-  assert.equal(app.ladderSettled(it), false, '5 из 7 — мало');
-  setWeekMarks(it.id, W[1], 7);
-  assert.equal(app.ladderSettled(it), true, '7 из 7 — тем более');
-});
-
-test('З21/7.2: done ставится только действием, автоматически — никогда', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { it } = settledLadder('habit');
-  assert.equal(it.ladder.done, false, 'создание лестницы даёт done: false');
-  assert.equal(app.ladderSettled(it), true);
-
-  // сколько ни считай и ни рисуй — done сам не появляется
-  for (let i = 0; i < 3; i++) {
-    app.ladderSettled(it); app.ladderStatus(it); app.canStepForward(it); app.activeLadderItem();
-  }
-  assert.equal(it.ladder.done, false, 'вычисления done не ставят');
-  assert.equal(app.migrate(JSON.parse(JSON.stringify(app.store))).items.find(i => i.id === it.id).ladder.done,
-    false, 'и миграция тоже не ставит');
-
-  // ставит только действие
-  assert.equal(app.closeLadder(it.id), true);
-  assert.equal(it.ladder.done, true);
-
-  // и только когда условие выполнено
-  const { it: it2 } = settledLadder('habit');
-  it2.ladder.step = 1; // не последняя ступень
-  assert.equal(app.closeLadder(it2.id), false, 'не встала — закрывать нечего');
-  assert.equal(it2.ladder.done, false);
-});
-
-test('З21/7.3: закрытие обратимо', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { it } = settledLadder('habit');
-  const before = JSON.parse(JSON.stringify(it.ladder));
-
-  assert.equal(app.closeLadder(it.id), true);
-  assert.equal(it.ladder.done, true);
-  assert.equal(app.closeLadder(it.id), false, 'повторное закрытие — нет');
-
-  assert.equal(app.reopenLadder(it.id), true);
-  assert.equal(it.ladder.done, false);
-  assert.deepEqual(it.ladder, before, 'состояние вернулось к прежнему');
-  assert.equal(app.reopenLadder(it.id), false, 'открывать нечего');
-  // и снова закрыть можно
-  assert.equal(app.closeLadder(it.id), true);
-});
-
-test('З21/7.4: закрытая лестница слот не занимает', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { s, it } = settledLadder('habit');
-  const other = s.items.find(i => i.type === 'daily' && i.id !== it.id);
-
-  // пока не закрыта — слот занят
-  assert.equal(app.activeLadderItem().id, it.id);
-  assert.equal(app.ladderBlockedBy(other).id, it.id);
-  assert.equal(app.setLadder(other.id, 'а\nб'), false, 'вторую лестницу завести нельзя');
-  assert.equal(other.ladder, null);
-
-  // закрыли — слот свободен, лестница на месте
-  app.closeLadder(it.id);
-  assert.equal(app.activeLadderItem(), null, 'живой лестницы нет');
-  assert.equal(app.closedLadderItem().id, it.id, 'а закрытая есть');
-  assert.equal(app.ladderBlockedBy(other), null);
-  assert.equal(app.setLadder(other.id, 'а\nб'), true, 'следующую завести можно');
-  assert.ok(other.ladder, 'новая лестница заведена');
-  assert.ok(it.ladder, 'старая не снята');
-  assert.equal(it.ladder.done, true);
-
-  // теперь слот снова занят новой
-  assert.equal(app.activeLadderItem().id, other.id);
-
-  // миграция конфликт разрешает только среди живых
-  const m = app.migrate(JSON.parse(JSON.stringify(s)));
-  assert.ok(m.items.find(i => i.id === it.id).ladder, 'закрытая пережила миграцию');
-  assert.ok(m.items.find(i => i.id === other.id).ladder, 'живая тоже');
-  assert.equal(m.items.filter(i => i.ladder && !i.ladder.done).length, 1, 'живая одна');
-
-  // и когда ЗАКРЫТАЯ начата позже живой: не участвуя в конфликте, она не
-  // должна победить и снять единственную живую лестницу
-  const later = JSON.parse(JSON.stringify(s));
-  later.items.find(i => i.id === it.id).ladder.startedAt = '2030-01-07';
-  later.items.find(i => i.id === other.id).ladder.startedAt = '2026-01-05';
-  const m2 = app.migrate(later);
-  assert.ok(m2.items.find(i => i.id === other.id).ladder, 'живая лестница на месте');
-  assert.equal(m2.items.find(i => i.id === other.id).ladder.done, false);
-  assert.ok(m2.items.find(i => i.id === it.id).ladder, 'закрытая тоже');
-
-  // две закрытые сосуществуют: слот они не занимают
-  const two = JSON.parse(JSON.stringify(s));
-  two.items.find(i => i.id === other.id).ladder.done = true;
-  const m3 = app.migrate(two);
-  assert.equal(m3.items.filter(i => i.ladder).length, 2, 'обе закрытые сохранены');
-  assert.equal(m3.items.filter(i => i.ladder && !i.ladder.done).length, 0, 'живых нет');
-});
-
-test('З21/7.5: закрытие пишет веху в журнал и не трогает данные', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { s, it } = settledLadder('habit');
-  const days = JSON.stringify(s.days);
-  const hist = JSON.stringify(it.history);
-  const logBefore = it.ladderLog.length;
-
-  app.closeLadder(it.id);
-  assert.equal(it.ladderLog.length, logBefore + 1, 'одна новая запись');
-  const last = it.ladderLog[it.ladderLog.length - 1];
-  assert.equal(last.closed, true);
-  assert.equal(last.date, app.todayKey());
-  assert.equal(last.step, it.ladder.step);
-  assert.equal(last.text, it.ladder.steps[it.ladder.step]);
-  assert.equal(JSON.stringify(s.days), days, 'days{} не тронуты');
-  assert.equal(JSON.stringify(it.history), hist, 'history не тронута');
-  assert.equal(app.ladderClosedAt(it), app.todayKey());
-
-  // веха неприкосновенна: шаг назад в тот же день её не затирает
-  app.reopenLadder(it.id);
-  app.ladderStep(it.id, 'back');
-  assert.equal(it.ladderLog[it.ladderLog.length - 2].closed, true, 'веха закрытия на месте');
-
-  // и переживает миграцию
-  const m = app.migrate(JSON.parse(JSON.stringify(s)));
-  assert.ok(m.items.find(i => i.id === it.id).ladderLog.some(e => e.closed === true));
-});
+/* ── Задача 21. Поле done лестницы ─────────────────────────────
+   От задачи 21 здесь остался один тест — миграционный. Прочие шесть
+   проверяли механику «привычка встала» (условие, закрытие, возврат, слот,
+   веха журнала) и сняты вместе с ней задачей 28.D. Этот остаётся, потому
+   что предмет у него другой: НОРМАЛИЗАЦИЯ поля, которое живёт в данных
+   владельца и обязано пережить любой запуск. Вместе с ним ушёл и помощник
+   settledLadder — строить «вставшую» лестницу больше незачем. */
 
 test('З21/7.6: миграция v15→v16 — done проставлен, идемпотентна, экспорт → импорт', () => {
   setNow(2026, 7, 17, 12, 0);
@@ -3826,15 +3514,17 @@ test('З21/7.6: миграция v15→v16 — done проставлен, иде
   const junk = v15(); junk.items[0].ladder.done = 'да';
   assert.equal(app.migrate(junk).items[0].ladder.done, false, 'не-true — это false');
 
-  // экспорт → импорт
-  const { s, it } = settledLadder('habit');
-  app.closeLadder(it.id);
+  // экспорт → импорт. Закрыть лестницу в интерфейсе больше нечем (механика
+  // снята задачей 28.D) — done ставится прямо в данных, как он и лежит
+  const s = app.migrate(v15());
+  s.items[0].ladder.done = true;
+  app.store = s;
   const exported = JSON.stringify(app.store);
   const back = app.migrate(JSON.parse(exported), { external: true });
   assert.deepEqual(back, JSON.parse(exported), 'состояние восстановлено');
-  const bl = back.items.find(i => i.id === it.id).ladder;
+  const bl = back.items.find(i => i.id === 'a').ladder;
   assert.equal(bl.done, true, 'закрытость пережила импорт');
-  assert.equal(JSON.stringify(bl), JSON.stringify(it.ladder), 'лестница побайтово та же');
+  assert.equal(JSON.stringify(bl), JSON.stringify(s.items[0].ladder), 'лестница побайтово та же');
 });
 
 /* ── Задача 22. Первая неделя ──────────────────────────────── */
@@ -4073,17 +3763,21 @@ function threePerfectWeeks() {
   return s;
 }
 
-test('З24/5: закрытая лестница повышение не блокирует, живая блокирует', () => {
+/* Задача 24 различала лестницы живую и закрытую: первая гасила повышение,
+   вторая нет. Задача 28.D сняла различение целиком — ни одна не гасит.
+   Тест оставлен на прежнем месте под прежним номером: он сторожит, что
+   guard не вернулся ни в одном из двух видов. */
+test('З24/5: ни живая, ни закрытая лестница повышение не блокируют', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = threePerfectWeeks();
   const it = s.items.find(i => i.type === 'daily' && i.area === 'min' && typeof i.value === 'number');
   assert.equal(app.raiseEligible(it), true, 'без лестницы право есть');
 
   it.ladder = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
-  assert.equal(app.raiseEligible(it), false, 'живая лестница — два шага за неделю');
+  assert.equal(app.raiseEligible(it), true, 'живая лестница права не отнимает');
 
   it.ladder.done = true;
-  assert.equal(app.raiseEligible(it), true, 'закрытая лестница не шагает и права не отнимает');
+  assert.equal(app.raiseEligible(it), true, 'закрытая — тем более');
 });
 
 test('З24/6: одно предложение повышения за разбор — первое по порядку items[]', () => {
@@ -4149,34 +3843,6 @@ test('З24/6.4: повышение и понижение одному пункт
   }
 });
 
-test('З24/3: строка состояния лестницы говорит счёт по норме этого пункта', () => {
-  setNow(2026, 7, 17, 12, 0); // пятница; текущая неделя началась 2026-07-13
-  const s = freshStore();
-  calendarPast(s);
-  const cur = app.currentWeekStart();
-  const prev = app.previousWeekStart();
-
-  // привычка: норма своя (normPerWeek)
-  const h = s.items.find(i => i.type === 'daily' && i.area === 'habit');
-  h.normPerWeek = 5;
-  h.ladder = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
-  markWeek(h.id, cur, 2);
-  markWeek(h.id, prev, 4);
-  assert.equal(app.ladderStatus(h), 'Эта неделя 2 из 5, прошлая 4 из 5');
-
-  // минимум: норма 6 из 7 независимо от normPerWeek
-  h.ladder = null;
-  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
-  m.ladder = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
-  markWeek(m.id, cur, 3);
-  markWeek(m.id, prev, 1);
-  assert.equal(app.ladderStatus(m), 'Эта неделя 3 из 6, прошлая 1 из 6');
-
-  // эпоха короче недели: последней завершённой нет — остаётся одна половина
-  s.settings.calendarSince = cur;
-  assert.equal(app.ladderWeekCounts(m), 'Эта неделя 3 из 6');
-});
-
 test('З24/9.2: reviewActionable — решения есть или их нет', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
@@ -4197,11 +3863,12 @@ test('З24/9.2: reviewActionable — решения есть или их нет'
   app.resetRaiseCount(app.raiseOffer());
   assert.equal(app.reviewActionable(), false, 'решение принято — карточек нет');
 
-  // шаг лестницы — тоже решение
+  // Шаг лестницы был четвёртым поводом действенности; он снят задачей 28.D.
+  // Поле ladder в данных на свёртку больше не влияет никак — ни в ту сторону,
+  // ни в другую: решать по нему нечем.
   const m = s2.items.find(i => i.type === 'daily' && i.area === 'min');
   m.ladder = { steps: ['раз', 'два'], step: 0, steppedWeek: null, startedAt: null, done: false };
-  assert.equal(app.canStepForward(m), true);
-  assert.equal(app.reviewActionable(), true, 'доступен шаг ступени');
+  assert.equal(app.reviewActionable(), false, 'лестница в данных решением не считается');
   assert.equal(prev < app.currentWeekStart(), true);
 });
 
@@ -4535,95 +4202,8 @@ function withBrokenWrite(fn) {
 /* Д1. «Открыть заново» подчинено правилу одной активной лестницы.
    Прежде проверки не было вовсе: тап давал ДВЕ живые лестницы, вторая
    была невидима, а дедуп migrate при следующем запуске снимал ту, у
-   которой startedAt старше, — то есть открытую заново ВСЕГДА. */
-test('З27/1: «Открыть заново» при занятом слоте не выполняется', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { s, h } = ladderReadyHabit();
-  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
-  app.setLadder(h.id, 'раз\nдва');
-  h.ladder.step = 1;                       // последняя ступень
-  assert.equal(app.ladderSettled(h), true);
-  assert.equal(app.closeLadder(h.id), true);
-  assert.equal(app.activeLadderItem(), null, 'слот освободился');
-
-  assert.equal(app.setLadder(m.id, 'Н1\nН2'), true); // слот занял другой пункт
-  assert.equal(app.activeLadderItem().id, m.id);
-
-  assert.equal(app.reopenLadder(h.id), false, 'открыть заново нельзя — слот занят');
-  assert.equal(h.ladder.done, true, 'закрытая осталась закрытой');
-  assert.equal(s.items.filter(i => i.ladder && !i.ladder.done).length, 1, 'живая по-прежнему одна');
-
-  // слот освободился — возврат снова доступен и обратим
-  assert.equal(app.clearLadder(m.id), true);
-  assert.equal(app.reopenLadder(h.id), true);
-  assert.equal(h.ladder.done, false);
-  assert.deepEqual(h.ladder.steps, ['раз', 'два'], 'ступени целы');
-});
-
 /* Д2. Новая лестница на пункте с ЗАКРЫТОЙ — именно новая, а не правка
    текста внутри закрытой (прежде done оставался true, step не сбрасывался,
-   стартовой записи не появлялось, а текст пройденной исчезал молча). */
-test('З27/3: setLadder на пункте с закрытой лестницей заводит новую', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { h } = ladderReadyHabit();
-  app.setLadder(h.id, 'раз\nдва');
-  h.ladder.step = 1;
-  assert.equal(app.closeLadder(h.id), true);
-  const logLen = h.ladderLog.length;
-
-  assert.equal(app.setLadder(h.id, 'Новая 1\nНовая 2\nНовая 3'), true);
-  assert.equal(h.ladder.done, false, 'done снят');
-  assert.equal(h.ladder.step, 0, 'путь читается с первой ступени');
-  assert.equal(h.ladder.startedAt, app.todayKey(), 'startedAt новый');
-  assert.equal(h.ladderLog.length, logLen + 1, 'в журнал дописана стартовая запись');
-  assert.equal(h.ladderLog[h.ladderLog.length - 1].start, true);
-  assert.equal(app.activeLadderItem().id, h.id, 'новая лестница слот ЗАНИМАЕТ');
-  assert.ok(h.ladderLog.some(e => e.closed), 'веха закрытия прежнего пути осталась историей');
-});
-
-/* Д2, вторая половина: закрытая лестница слот не держит — значит и права
-   завести новую поверх неё, пока слот у другого пункта, не даёт. */
-test('З27/3: пункт с закрытой лестницей не обходит занятый слот', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { s, h } = ladderReadyHabit();
-  const m = s.items.find(i => i.type === 'daily' && i.area === 'min');
-  app.setLadder(h.id, 'раз\nдва');
-  h.ladder.step = 1;
-  app.closeLadder(h.id);
-  app.setLadder(m.id, 'Н1\nН2');
-
-  assert.equal(app.ladderBlockedBy(h).id, m.id, 'форма скажет, кем занят слот');
-  assert.equal(app.setLadder(h.id, 'Ещё\nОдна'), false, 'новую завести нельзя');
-  assert.deepEqual(h.ladder.steps, ['раз', 'два'], 'текст закрытой не тронут');
-  assert.equal(s.items.filter(i => i.ladder && !i.ladder.done).length, 1);
-  // а носитель ЖИВОЙ лестницы сам у себя слот не занимает — правка работает
-  assert.equal(app.ladderBlockedBy(m), null);
-  assert.equal(app.setLadder(m.id, 'Н1\nН2\nН3'), true);
-  assert.equal(m.ladder.step, 0, 'правка живой step не сбрасывает (был 0)');
-});
-
-/* Д3. Шаг на последнюю ступень, сделанный на этой неделе, «вставшей»
-   привычку не делает: две недели нормы были набраны на предыдущей. */
-test('З27/6: ladderSettled требует, чтобы неделя шага прошла', () => {
-  setNow(2026, 7, 17, 12, 0);
-  const { h } = ladderReadyHabit();
-  app.setLadder(h.id, 'раз\nдва');
-  assert.equal(app.canStepForward(h), true);
-  assert.equal(app.ladderStep(h.id, 'fwd'), true);
-  assert.equal(h.ladder.step, 1, 'стоим на последней ступени');
-  assert.equal(h.ladder.steppedWeek, app.currentWeekStart());
-
-  assert.equal(app.ladderSettled(h), false, 'ступень стоит ноль дней');
-  assert.equal(app.ladderStatus(h), 'Последняя ступень');
-  assert.equal(app.closeLadder(h.id), false, 'и закрыть привычку нельзя');
-
-  // неделя прошла, обе завершённые недели по норме — теперь встала
-  advanceDays(7);
-  markWeek(h.id, app.previousWeekStart(), 7);
-  assert.equal(app.ladderSettled(h), true);
-  assert.equal(app.closeLadder(h.id), true);
-});
-
 /* Д5. Копия расходуется только после успешной записи. Прежде возврат
    снимал копию ДО save(), а успех записи никто не проверял: отказ квоты
    уничтожал практику и на диске, и в копии. */

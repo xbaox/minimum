@@ -214,7 +214,7 @@ test('init() отрабатывает: экран «Сегодня» отрис�
   assert.equal(today.querySelectorAll('input[data-act="mark"]').length, 6); // 6 дневных пунктов минимума
   assert.ok(today.querySelector('.weekcount'));                            // недельный счётчик
   assert.match(today.textContent, /Минимум выполняется даже в худший день/);
-  for (const id of ['scr-habits', 'scr-progress', 'scr-settings', 'scr-review', 'scr-detail']) {
+  for (const id of ['scr-habits', 'scr-progress', 'scr-settings', 'scr-review', 'scr-train']) {
     assert.equal(document.getElementById(id).hidden, true, id);
   }
 });
@@ -247,9 +247,9 @@ test('вкладки переключают все 4 экрана, каждый 
     for (const [tab, sid] of Object.entries(map)) {
       if (tab !== b.dataset.tab) assert.equal(document.getElementById(sid).hidden, true, sid);
     }
-    // листы разбора и детали живут поверх вкладок и сейчас закрыты
+    // листы разбора и тренировки живут поверх вкладок и сейчас закрыты
     assert.equal(document.getElementById('scr-review').hidden, true);
-    assert.equal(document.getElementById('scr-detail').hidden, true);
+    assert.equal(document.getElementById('scr-train').hidden, true);
   }
 });
 
@@ -260,10 +260,13 @@ test('З28C: вкладок четыре, пятой нет ни в размет
   assert.doesNotMatch(HTML, /data-tab="notes"/, 'кнопки вкладки нет в index.html');
   assert.doesNotMatch(HTML, /id="scr-notes"/, 'секции экрана нет в index.html');
   assert.equal((HTML.match(/<button data-tab=/g) || []).length, 4, 'в таб-баре четыре кнопки');
-  assert.equal((HTML.match(/<section class="screen"/g) || []).length, 7, 'семь секций: 4 вкладки + 3 листа');
+  // задача 28.D: лист детали снят вместе с формулой и лестницей — секций шесть
+  assert.equal((HTML.match(/<section class="screen"/g) || []).length, 6, 'шесть секций: 4 вкладки + 2 листа');
+  assert.doesNotMatch(HTML, /id="scr-detail"/, 'секции листа детали нет в index.html');
 
   const { document } = await boot();
   assert.equal(document.getElementById('scr-notes'), null);
+  assert.equal(document.getElementById('scr-detail'), null, 'и в живом документе её тоже нет');
   assert.equal(document.querySelector('#tabs button[data-tab="notes"]'), null);
 
   // переходы между оставшимися целы в обе стороны, включая возврат
@@ -1762,320 +1765,42 @@ test('строка «Резервная копия» подставляется 
   assert.match(note.textContent, /Резервная копия: /);
 });
 
-/* ── Задача 14. Формула и лестница ─────────────────────────── */
+/* ── Строка дня после снятия формулы и лестницы (задача 28.D) ── */
 
-const LADDER = { steps: ['в кровати в 23:30', '+10 минут без экрана', '+15 минут раньше'], step: 1, steppedWeek: null, startedAt: null };
-
-/* Вход в лист с «Пунктов» — из формы правки пункта (задача 14.2) */
-function openDetailFromItems(document, name) {
-  document.querySelector('#tabs button[data-tab="settings"]').click();
-  const row = [...document.querySelectorAll('#scr-settings .rowwrap')]
-    .find(r => r.querySelector('.tname').textContent === name);
-  row.querySelector('[data-act="edit-open"]').click();
-  document.querySelector('#scr-settings .card.form [data-act="item-detail"]').click();
-  return document.getElementById('scr-detail');
-}
-
-test('строка дня: тап по названию отмечает пункт, хвостовая кнопка открывает лист', async () => {
+test('З28D/10.4: строка дня — подпись из item.note, ни метки ступени, ни хвоста', async () => {
   const seed = dueSeed();
   seed.items[0].note = 'подпись владельца';
-  seed.items[0].ladder = JSON.parse(JSON.stringify(LADDER));
+  // Лестница ЛЕЖИТ В ДАННЫХ: механика снята, поле осталось. Строка дня
+  // обязана этого не заметить — ни подписью, ни разметкой.
+  seed.items[0].ladder = { steps: ['в кровати в 23:30', '+10 минут без экрана', '+15 минут раньше'], step: 1, steppedWeek: null, startedAt: null };
+  seed.items[0].ladderLog = [{ date: addKey(prevMonday(), -30), step: 0, text: 'в кровати в 23:30', start: true }];
+  seed.items[0].formula = { anchor: 'после зарядки', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '', mode: 'build' };
   const { document, window } = await boot({ seed });
   const scr = document.getElementById('scr-today');
 
-  // подписью идёт текущая ступень вместо note, метка — в хвостовой кнопке
-  assert.match(scr.textContent, /\+10 минут без экрана/);
-  assert.doesNotMatch(scr.textContent, /подпись владельца/);
-  assert.equal(scr.querySelector('.idetail .lstep').textContent, '2/3');
+  // подпись — слово владельца; ступень её больше не вытесняет
+  assert.match(scr.textContent, /подпись владельца/);
+  assert.doesNotMatch(scr.textContent, /\+10 минут без экрана/, 'ступень в строку дня не попадает');
+  assert.equal(scr.querySelector('.note').textContent, 'подпись владельца');
+  assert.equal(scr.querySelector('.lstep'), null, 'метки положения на лестнице нет');
+  assert.equal(scr.querySelector('.idetail'), null, 'хвостовой кнопки нет');
+  assert.equal(scr.querySelector('[data-act="item-detail"]'), null, 'и действия входа в лист тоже');
 
-  // название снова внутри label: тап по нему отмечает пункт (тач-зона всей строки)
+  // название внутри label: тап по нему отмечает пункт (тач-зона всей строки)
   const label = scr.querySelector('label.check');
   assert.ok(label.querySelector('.tname'), 'название внутри label');
   assert.equal(label.querySelector('input[data-act="mark"]').getAttribute('aria-label'), null,
     'имя чекбоксу даёт содержимое label, aria-label не дублируется');
   scr.querySelector('.tname').click(); // тап по названию
   assert.equal(label.classList.contains('on'), true, 'пункт отмечен');
-  assert.equal(document.getElementById('scr-detail').hidden, true, 'лист не открылся');
   assert.equal(Object.values(JSON.parse(window.localStorage.getItem(NS)).days[daysAgo(0)])[0], true);
 
-  // хвостовая кнопка открывает лист и отметку не меняет
-  scr.querySelector('[data-act="item-detail"]').click();
-  const d = document.getElementById('scr-detail');
-  assert.equal(d.hidden, false);
-  assert.equal(scr.hidden, true);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).days[daysAgo(0)][seed.items[0].id], true,
-    'отметка не изменилась');
-  assert.equal(d.querySelectorAll('.ladder li').length, 3);
-  assert.equal(d.querySelectorAll('.ladder li.cur').length, 1);
-  assert.match(d.querySelector('.ladder li.cur').textContent, /\+10 минут без экрана/);
-  // строка состояния лестницы говорит счёт по норме этого пункта (задача 24,
-  // п. 3): area min → 6 из 7. Отметок: сегодняшняя (тап выше) и две в
-  // разбираемой неделе — прежний текст «Две полные недели…» ничего не считал
-  assert.match(d.textContent, /Эта неделя 1 из 6, прошлая 2 из 6/);
-  assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true);
-  assert.equal(d.querySelector('[data-act="ladder-back"]').disabled, false);
-  // вкладка возврата остаётся подсвеченной
-  assert.equal(document.querySelector('#tabs button[data-tab="today"]').getAttribute('aria-current'), 'page');
-
-  // «Готово» возвращает на прежнюю вкладку
-  d.querySelector('[data-act="detail-done"]').click();
-  assert.equal(d.hidden, true);
-  assert.equal(document.getElementById('scr-today').hidden, false);
-  assert.equal(scr.querySelector('label.check').classList.contains('on'), true, 'отметка на месте');
-});
-
-test('хвостовая кнопка: нет без лестницы и формулы, есть при одной формуле', async () => {
-  const seed = dueSeed();
-  seed.items[0].note = 'подпись владельца';
-  seed.items.push({
-    id: 'it2', name: 'С формулой', value: null, unit: '', type: 'daily', area: 'min',
-    goal: null, note: '', group: '', active: true, addedAt: addKey(prevMonday(), -14), raiseAfter: 0,
-    history: [], formula: { anchor: 'после зарядки', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '' },
-    ladder: null, ladderLog: []
-  });
-  const { document } = await boot({ seed });
-  const rowOf = name => [...document.querySelectorAll('#scr-today .rowwrap')]
-    .find(r => r.textContent.includes(name));
-
-  const plain = rowOf('Тестовый пункт');
-  assert.equal(plain.querySelector('.idetail'), null, 'без лестницы и формулы хвоста нет');
-  assert.equal(plain.querySelector('.lstep'), null);
-  assert.match(plain.querySelector('.note').textContent, /подпись владельца/);
-
-  const withFormula = rowOf('С формулой');
-  const tail = withFormula.querySelector('.idetail');
-  assert.ok(tail, 'при формуле хвост есть');
-  assert.equal(tail.querySelector('.lstep'), null, 'метки положения без лестницы нет');
-  assert.match(tail.getAttribute('aria-label'), /^подробно: «С формулой»$/);
-
-  // в строке «Пунктов» кнопки листа нет — вход через форму правки (14.2)
-  document.querySelector('#tabs button[data-tab="settings"]').click();
-  const itemsRow = [...document.querySelectorAll('#scr-settings .rowwrap')]
-    .find(r => r.querySelector('.tname').textContent === 'Тестовый пункт');
-  assert.equal(itemsRow.querySelector('[data-act="item-detail"]'), null, 'в строке списка кнопки нет');
-  assert.equal(itemsRow.querySelectorAll('.ictl .btn').length, 2, 'в кластере только стрелки');
-
-  const d = openDetailFromItems(document, 'Тестовый пункт');
-  assert.equal(d.hidden, false);
-  assert.equal(d.querySelector('.ladder'), null, 'блока лестницы нет');
-  assert.equal(d.querySelectorAll('.fline').length, 7);
-  assert.equal(d.querySelectorAll('.fval.empty').length, 7);
-  const laws = [...d.querySelectorAll('.overline')].map(x => x.textContent);
-  assert.deepEqual(laws, ['Очевидно', 'Привлекательно', 'Легко', 'Приятно']);
-  assert.ok(d.querySelector('[data-act="ladder-open"]'));
-
-  // «Готово» возвращает на «Пункты», и форма правки осталась открытой (14.2)
-  d.querySelector('[data-act="detail-done"]').click();
-  assert.equal(document.getElementById('scr-settings').hidden, false);
-  assert.equal(d.hidden, true);
-  assert.ok(document.getElementById('e-name'), 'форма правки осталась открытой');
-  assert.equal(document.getElementById('e-name').value, 'Тестовый пункт');
-});
-
-test('«Пункты»: кнопка листа есть в форме daily, нет у weekly и param', async () => {
-  const { document, window } = await boot(); // дефолт: daily, weekly «Тренировка», param «Отбой»
-  document.querySelector('#tabs button[data-tab="settings"]').click();
-  const openEdit = name => {
-    const cancel = document.querySelector('[data-act="edit-cancel"]');
-    if (cancel) cancel.click();
-    [...document.querySelectorAll('#scr-settings .rowwrap')]
-      .find(r => r.querySelector('.tname').textContent === name)
-      .querySelector('[data-act="edit-open"]').click();
-    return document.querySelector('#scr-settings .card.form');
-  };
-
-  const daily = openEdit('Умыться');
-  const btn = daily.querySelector('[data-act="item-detail"]');
-  assert.ok(btn, 'у ежедневного пункта кнопка есть');
-  assert.match(btn.textContent, /^Формула и лестница/);
-  // стоит над кластером «Сохранить / Отмена», отделена от полей
-  assert.ok(btn.closest('.btns').classList.contains('dfoot'));
-  assert.equal(btn.closest('.btns').nextElementSibling.querySelector('[data-act="edit-save"]') !== null, true);
-
-  assert.equal(openEdit('Тренировка').querySelector('[data-act="item-detail"]'), null, 'у weekly кнопки нет');
-  assert.equal(openEdit('Отбой').querySelector('[data-act="item-detail"]'), null, 'у param кнопки нет');
-
-  // ни в одной строке списка кнопки листа нет
-  document.querySelector('[data-act="edit-cancel"]').click();
-  assert.equal(document.querySelectorAll('#scr-settings .row.item [data-act="item-detail"]').length, 0);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).schemaVersion, SCHEMA_VERSION);
-});
-
-test('лестница на привычке: «Шагнуть» по двум неделям, шаг назад, журнал', async () => {
-  const seed = dueSeed();
-  const prev = prevMonday();
-  seed.items.push({
-    id: 'h1', name: 'Отбой', value: null, unit: '', type: 'daily', area: 'habit', normPerWeek: 7,
-    goal: null, note: '', group: '', active: true, addedAt: addKey(prev, -28), raiseAfter: 0, history: [],
-    formula: null, ladder: JSON.parse(JSON.stringify({ ...LADDER, step: 0 })), ladderLog: []
-  });
-  for (let i = 0; i < 7; i++) { // две последние завершённые недели — по норме
-    for (const k of [addKey(prev, i), addKey(prev, i - 7)]) {
-      seed.days[k] = Object.assign({}, seed.days[k], { h1: true });
-    }
-  }
-  const { document, window } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="habits"]').click();
-  const scr = document.getElementById('scr-habits');
-  assert.equal(scr.querySelector('.lstep').textContent, '1/3');
-
-  scr.querySelector('[data-act="item-detail"]').click();
-  const d = document.getElementById('scr-detail');
-  assert.match(d.textContent, /Ступень держится две недели — можно шагнуть/);
-  assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, false);
-  assert.equal(d.querySelector('[data-act="ladder-back"]').disabled, true, 'на первой ступени назад некуда');
-
-  d.querySelector('[data-act="ladder-fwd"]').click();
-  assert.match(d.querySelector('.ladder li.cur').textContent, /\+10 минут без экрана/);
-  assert.match(d.textContent, /Шаг уже сделан на этой неделе/);
-  assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true, 'второй шаг за неделю закрыт');
-  // журнал: старт достроен миграцией v7→v8 (у сида ladderLog пуст), шаг — рядом
-  let saved = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'h1');
+  // и данные лестницы при этом на месте — отметка их не тронула
+  const saved = JSON.parse(window.localStorage.getItem(NS)).items[0];
+  assert.deepEqual(saved.ladder.steps, ['в кровати в 23:30', '+10 минут без экрана', '+15 минут раньше']);
   assert.equal(saved.ladder.step, 1);
-  assert.equal(saved.ladder.steppedWeek, curMonday());
-  assert.deepEqual(saved.ladderLog, [
-    { date: daysAgo(0), step: 0, text: 'в кровати в 23:30', start: true },
-    { date: daysAgo(0), step: 1, text: '+10 минут без экрана' }
-  ]);
-
-  // шаг назад доступен всегда и неделю не тратит; запись того же дня заменяется,
-  // но стартовая неприкосновенна — она остаётся первой
-  d.querySelector('[data-act="ladder-back"]').click();
-  saved = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'h1');
-  assert.equal(saved.ladder.step, 0);
-  assert.equal(saved.ladder.steppedWeek, curMonday());
-  assert.deepEqual(saved.ladderLog, [
-    { date: daysAgo(0), step: 0, text: 'в кровати в 23:30', start: true },
-    { date: daysAgo(0), step: 0, text: 'в кровати в 23:30' }
-  ]);
-  assert.equal(d.querySelector('[data-act="ladder-fwd"]').disabled, true);
-
-  // журнал шагов — типографской строкой, только в листе (задача 14.1).
-  // Старт показывается обычной ступенью; шаги того же дня схлопнулись в один
-  assert.equal(d.querySelector('.lhist').textContent, `Ступень: 1 → 1 · с ${fmtShortKey(daysAgo(0))}`);
-  assert.equal(document.getElementById('scr-habits').querySelector('.lhist'), null,
-    'на дневной экран журнал не выносится');
-
-  // лист вернулся на «Привычки», метка обновилась
-  d.querySelector('[data-act="detail-done"]').click();
-  assert.equal(document.getElementById('scr-habits').hidden, false);
-  assert.equal(scr.querySelector('.lstep').textContent, '1/3');
-});
-
-test('журнал лестницы: строки нет при пустом ladderLog, при длинной истории — последние 6', async () => {
-  // схема уже v8 — шаг миграции пропущен, журнал остаётся пустым
-  const seed = Object.assign(dueSeed(), { schemaVersion: 8 });
-  seed.items[0].ladder = JSON.parse(JSON.stringify({ ...LADDER, step: 0 }));
-  seed.items[0].ladderLog = [];
-  const { document } = await boot({ seed });
-  let d = document.getElementById('scr-detail');
-  document.querySelector('#scr-today [data-act="item-detail"]').click();
-  assert.ok(d.querySelector('.ladder'), 'блок лестницы есть');
-  assert.equal(d.querySelector('.lhist'), null, 'без записей строки нет');
-
-  // восемь переходов: показываются последние шесть, дата — первой записи
-  const seed2 = dueSeed();
-  seed2.items[0].ladder = JSON.parse(JSON.stringify({ ...LADDER, step: 0 }));
-  seed2.items[0].ladderLog = [0, 1, 2, 1, 0, 1, 2, 1].map((step, i) => ({
-    date: addKey(prevMonday(), i), step, text: 'ступень'
-  }));
-  const b = await boot({ seed: seed2 });
-  d = b.document.getElementById('scr-detail');
-  b.document.querySelector('#scr-today [data-act="item-detail"]').click();
-  const hist = d.querySelector('.lhist');
-  assert.match(hist.textContent, /^Ступень: … → 3 → 2 → 1 → 2 → 3 → 2 · с /); // последние 6, ступени с единицы
-  assert.match(hist.textContent, new RegExp(fmtShortKey(prevMonday()).replace('.', '\\.') + '$')); // дата первой записи
-  assert.equal(d.querySelector('.lhist svg, .lhist i'), null, 'без графики');
-});
-
-test('лист детали: форма формулы сохраняется и переживает смену логического дня', async () => {
-  const { document, window } = await boot();
-  // у пункта без лестницы и формулы хвоста нет — вход с «Пунктов»
-  const d = openDetailFromItems(document, 'Умыться');
-  const id = d.querySelector('[data-act="formula-open"]').dataset.id;
-
-  d.querySelector('[data-act="formula-open"]').click();
-  assert.ok(document.getElementById('fx-anchor'));
-  assert.equal(d.querySelectorAll('.card.form.formula .hint').length, 7, 'подсказки — только в форме');
-  assert.match(d.querySelector('.hint').textContent, /„После того как поставлю телефон на зарядку“ — якорь/);
-  document.getElementById('fx-anchor').value = '  после зарядки  ';
-  document.getElementById('fx-identity').value = 'я человек, который ложится вовремя';
-
-  // черновик формы переживает смену логического дня (инвариант 8)
-  shiftWindowDate(window, 24 * 3600000);
-  document.dispatchEvent(new window.Event('visibilitychange'));
-  assert.equal(document.getElementById('fx-anchor').value, '  после зарядки  ');
-  assert.equal(document.getElementById('scr-detail').hidden, false, 'лист остался открытым');
-
-  document.querySelector('[data-act="formula-save"]').click();
-  const it = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === id);
-  assert.equal(it.formula.anchor, 'после зарядки'); // trim
-  assert.equal(it.formula.identity, 'я человек, который ложится вовремя');
-  assert.equal(it.formula.proof, '');
-  assert.equal(document.getElementById('fx-anchor'), null, 'форма закрыта');
-  assert.match(d.textContent, /после зарядки/);
-  assert.equal(d.querySelectorAll('.fval.empty').length, 5); // заполнены два поля из семи
-  // «Готово» вернуло на «Пункты»; на дневном экране — только слова владельца,
-  // но появился хвост: у пункта теперь есть формула
-  d.querySelector('[data-act="detail-done"]').click();
-  assert.equal(document.getElementById('scr-settings').hidden, false);
-  document.querySelector('#tabs button[data-tab="today"]').click();
-  const scr = document.getElementById('scr-today');
-  assert.doesNotMatch(scr.textContent, /после зарядки|якорь/i);
-  const row = [...scr.querySelectorAll('.rowwrap')].find(r => r.textContent.includes('Умыться'));
-  assert.ok(row.querySelector('.idetail'), 'формула проявила хвостовую кнопку');
-});
-
-test('лист детали: форма лестницы — предзаполнение, сохранение, второй пункт заблокирован', async () => {
-  const { document, window } = await boot();
-  // вход с «Пунктов»: у пунктов пока нет ни лестницы, ни формулы
-  const openByName = name => {
-    if (!document.getElementById('scr-detail').hidden) {
-      document.querySelector('[data-act="detail-done"]').click();
-    }
-    return openDetailFromItems(document, name);
-  };
-  const d = openByName('Умыться');
-  const idA = d.querySelector('[data-act="ladder-open"]').dataset.id;
-
-  d.querySelector('[data-act="ladder-open"]').click();
-  const ta = document.getElementById('fx-steps');
-  assert.ok(ta, 'textarea лестницы');
-  assert.match(ta.value, /^В 23:30 быть в кровати\. Телефон — на зарядке вне спальни\./);
-  assert.equal(ta.value.split('\n').length, 5, 'стартовый текст — пять строк');
-  ta.value = 'раз\n\n  два  \nтри';
-  document.querySelector('[data-act="ladder-save"]').click();
-
-  let saved = JSON.parse(window.localStorage.getItem(NS));
-  let a = saved.items.find(i => i.id === idA);
-  assert.deepEqual(a.ladder.steps, ['раз', 'два', 'три']); // пустые строки отброшены, trim
-  assert.equal(a.ladder.step, 0);
-  assert.equal(a.ladder.steppedWeek, null);
-  assert.equal(a.ladder.startedAt, daysAgo(0));
-  // создание пишет стартовую запись: путь читается с первой ступени (14.2)
-  assert.deepEqual(a.ladderLog, [{ date: daysAgo(0), step: 0, text: 'раз', start: true }]);
-  assert.equal(d.querySelectorAll('.ladder li').length, 3);
-  assert.equal(d.querySelector('.lhist').textContent, `Ступень: 1 · с ${fmtShortKey(daysAgo(0))}`);
-
-  // второй пункт: слот занят — textarea и сохранение недоступны, строка объясняет
-  const busy = openByName('Принять душ');
-  busy.querySelector('[data-act="ladder-open"]').click();
-  assert.equal(document.getElementById('fx-steps').disabled, true);
-  assert.equal(busy.querySelector('[data-act="ladder-save"]').disabled, true);
-  assert.match(busy.textContent, /Лестница уже есть у пункта «Умыться»\. Снимите её там, чтобы начать здесь\./);
-
-  // снятие у носителя — вторым тапом; лестница слетает, отметки целы
-  openByName('Умыться').querySelector('[data-act="ladder-open"]').click();
-  const clear = () => document.querySelector('[data-act="ladder-clear"]');
-  assert.match(clear().textContent, /^Снять лестницу$/);
-  clear().click();
-  assert.match(clear().textContent, /Подтвердить снятие/);
-  assert.ok(JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === idA).ladder, 'первый тап не снимает');
-  clear().click();
-  saved = JSON.parse(window.localStorage.getItem(NS));
-  a = saved.items.find(i => i.id === idA);
-  assert.equal(a.ladder, null);
-  assert.equal(document.getElementById('scr-detail').querySelector('.ladder'), null);
+  assert.equal(saved.ladderLog.length, 1);
+  assert.equal(saved.formula.anchor, 'после зарядки');
 });
 
 /* ── Задача 15. Цепочки ────────────────────────────────────── */
@@ -2339,26 +2064,6 @@ test('поле «Блок»: имя не из списка (импорт) вид
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === 'c1').group, 'Чужой');
 });
 
-test('черновик правки переживает уход в лист детали и возврат (14.2, вопрос 2)', async () => {
-  const { document } = await boot();
-  document.querySelector('#tabs button[data-tab="settings"]').click();
-  [...document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]')]
-    .find(b => b.querySelector('.tname').textContent === 'Умыться').click();
-  document.getElementById('e-name').value = 'Новое имя';
-  document.getElementById('e-note').value = 'черновик подписи';
-
-  document.querySelector('#scr-settings .card.form [data-act="item-detail"]').click();
-  assert.equal(document.getElementById('scr-detail').hidden, false);
-  // в листе своя форма — её черновик не смешивается с черновиком «Пунктов»
-  document.querySelector('[data-act="formula-open"]').click();
-  document.getElementById('fx-anchor').value = 'после зарядки';
-  document.querySelector('[data-act="formula-cancel"]').click();
-  document.querySelector('[data-act="detail-done"]').click();
-
-  assert.equal(document.getElementById('e-name').value, 'Новое имя', 'начатая правка на месте');
-  assert.equal(document.getElementById('e-note').value, 'черновик подписи');
-});
-
 /* Задача 16, фаза A: линия толще, но по-прежнему идёт через центры кругов.
    Обе величины берутся из CSS и сверяются между собой — левый отступ линии
    не константа в тесте, а следствие диаметра круга и толщины линии. */
@@ -2573,7 +2278,7 @@ test('«Настройки»: секции по порядку, раскрыты
 
 /* ── Задача 16, фаза C. Разбор как три решения ─────────────── */
 
-test('разбор: три решения сверху, неделя — под свёрткой, итог одной строкой', async () => {
+test('разбор: два решения сверху, неделя — под свёрткой, итог одной строкой', async () => {
   const seed = dueSeed();
   // параметр недели: решение по нему живёт в видимой части, в «Решении 1»
   // (задача 24, п. 2), и перерисовывает разбор
@@ -2596,7 +2301,9 @@ test('разбор: три решения сверху, неделя — под 
   assert.match(scr.textContent, /Минимум закрыт 5 из 7 дней/);
 
   const h2 = [...scr.querySelectorAll(':scope > h2')].map(x => x.textContent);
-  assert.deepEqual(h2, ['Решение 1 · Планка', 'Решение 2 · Ступень', 'Решение 3 · Одно изменение']);
+  // задача 28.D: «Ступень» снята, «Одно изменение» получило её номер —
+  // дыры в нумерации не бывает
+  assert.deepEqual(h2, ['Решение 1 · Планка', 'Решение 2 · Одно изменение']);
 
   // сетка недели уехала под закрытую свёртку, но осталась в разметке
   const fold = scr.querySelector('details.sect.week');
@@ -2612,14 +2319,13 @@ test('разбор: три решения сверху, неделя — под 
   assert.equal(card.closest('details'), null, 'она вне свёртки');
   const kids = [...scr.children];
   const h1i = kids.findIndex(x => x.textContent === 'Решение 1 · Планка');
-  const h2i = kids.findIndex(x => x.textContent === 'Решение 2 · Ступень');
+  const h2i = kids.findIndex(x => x.textContent === 'Решение 2 · Одно изменение');
   const ci = kids.indexOf(card);
   assert.ok(h1i < ci && ci < h2i, 'карточка стоит внутри «Решения 1»');
 
   // решения без предложений — тихие строки, а не пустота
   assert.doesNotMatch(scr.textContent, /Планка держится, менять нечего/,
     'нерешённый параметр — это и есть решение по планке');
-  assert.match(scr.textContent, /Лестницы сейчас нет/);
   assert.ok(scr.querySelector('input[data-bind="one-change"]'));
 
   // свёртка запоминается: перерисовка разбора её не захлопывает
@@ -2672,39 +2378,6 @@ test('разбор: карточка «Сделать легче» — шаг п
   assert.equal(bs.items[0].lowerAfterWeek, curMonday());
   assert.deepEqual(bs.pendingLowers, []);
   assert.equal(b.document.getElementById('scr-review').querySelector('.card.lower'), null);
-});
-
-test('разбор: решение «Ступень» — «Шагнуть» и «Остаться» при доступном шаге', async () => {
-  const seed = dueSeed();
-  const old = addKey(prevMonday(), -14);
-  seed.items[0].ladder = { steps: ['первая', 'вторая', 'третья'], step: 0, steppedWeek: null, startedAt: old };
-  seed.items[0].ladderLog = [{ date: old, step: 0, text: 'первая', start: true }];
-  // две последние завершённые недели по 6 из 7 — шаг доступен
-  seed.days = {};
-  for (const mon of [prevMonday(), addKey(prevMonday(), -7)]) {
-    for (let i = 0; i < 6; i++) seed.days[addKey(mon, i)] = { it1: true };
-  }
-  const { document, window } = await boot({ seed });
-  openReview(document);
-  const card = document.querySelector('.card.step');
-  assert.ok(card, 'карточка ступени');
-  assert.match(card.textContent, /Следующая ступень: вторая/);
-
-  // «Остаться» — ступень не двигается, место занимает строка состояния
-  card.querySelector('[data-act="ladder-stay"]').click();
-  const scr = document.getElementById('scr-review');
-  assert.equal(scr.querySelector('.card.step'), null);
-  assert.match(scr.textContent, /можно шагнуть/);
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].ladder.step, 0);
-
-  // «Шагнуть» на свежем сиде двигает ступень и пишет журнал
-  const b = await boot({ seed });
-  openReview(b.document);
-  b.document.querySelector('.card.step [data-act="ladder-fwd"]').click();
-  const bi = JSON.parse(b.window.localStorage.getItem(NS)).items[0];
-  assert.equal(bi.ladder.step, 1);
-  assert.equal(bi.ladder.steppedWeek, curMonday());
-  assert.equal(bi.ladderLog.length, 2);
 });
 
 /* ── Задача 16, фаза D. Лист тренировки и упражнения ───────── */
@@ -3811,32 +3484,6 @@ test('C.2 (И8): смена дня блокирует click, но НЕ прер�
     'отметка со stale-экрана не применилась');
 });
 
-test('C.2 (И12): метка ступени не окрашена акцентом и не влияет на порядок пунктов', async () => {
-  const seed = dueSeed();
-  seed.items[0].ladder = { steps: ['первая', 'вторая', 'третья'], step: 1, steppedWeek: null, startedAt: daysAgo(30) };
-  seed.items[0].ladderLog = [{ date: daysAgo(30), step: 0, text: 'первая', start: true }];
-  seed.items.push({
-    id: 'it2', name: 'Второй пункт', value: null, unit: '', type: 'daily', area: 'min',
-    goal: null, note: '', group: '', active: true, addedAt: daysAgo(30), raiseAfter: 0, history: []
-  });
-  const { document } = await boot({ seed });
-  const scr = document.getElementById('scr-today');
-  const step = scr.querySelector('.lstep');
-  assert.ok(step, 'метка положения на лестнице показана');
-  assert.equal(step.textContent, '2/3');
-
-  // цвет метки — не акцентный: она операционная, а не достижение
-  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
-  const rule = (css.match(/\.lstep\s*\{([^}]*)\}/) || [])[1] || '';
-  assert.ok(rule, 'у .lstep есть правило');
-  assert.doesNotMatch(rule, /var\(--accent\)/, 'метка не окрашивается акцентом');
-
-  // порядок строк — как в items[], лестница на него не влияет
-  const names = [...scr.querySelectorAll('.rowwrap .tname')].map(x => x.textContent.split(' ')[0]);
-  assert.equal(names[0], 'Тестовый', 'пункт с лестницей остался первым — где и был в items[]');
-  assert.ok(names.includes('Второй'), 'второй пункт на месте');
-});
-
 test('C.2 (И18): чистка сбрасывает зеркало немедленно, без ожидания дебаунса', async () => {
   const idb = new IDBFactory();
   const seed = trainSeed();
@@ -3991,117 +3638,6 @@ const openDetail = (document) => {
   return document.getElementById('scr-detail');
 };
 
-test('З20/C.3: блок чтения показывает заголовки своего режима', async () => {
-  const build = await boot({ seed: formulaSeed('build') });
-  const b = openDetail(build.document);
-  const lawsBuild = [...b.querySelectorAll('.overline')].map(x => x.textContent);
-  assert.deepEqual(lawsBuild, ['Очевидно', 'Привлекательно', 'Легко', 'Приятно']);
-  assert.match(b.textContent, /Якорь/);
-  assert.match(b.textContent, /Версия на 2 минуты/);
-
-  const brk = await boot({ seed: formulaSeed('break') });
-  const k = openDetail(brk.document);
-  const lawsBreak = [...k.querySelectorAll('.overline')].map(x => x.textContent);
-  assert.deepEqual(lawsBreak, ['Невидимо', 'Непривлекательно', 'Трудно', 'Приятно']);
-  assert.match(k.textContent, /Что перехватываю/);
-  assert.match(k.textContent, /Действие-замена/);
-  assert.doesNotMatch(k.textContent, /Якорь/, 'подписи режима build не просачиваются');
-
-  // текст владельца в обоих режимах один и тот же
-  for (const scr of [b, k]) assert.match(scr.textContent, /после зарядки/);
-  // отдельной пометки о режиме в блоке чтения нет (A.2.3)
-  assert.doesNotMatch(k.textContent, /Избавляюсь от привычки/);
-});
-
-test('З20/C.2: смена режима меняет подписи и подсказки, значения полей остаются', async () => {
-  const { document, window } = await boot({ seed: formulaSeed('build') });
-  openDetail(document);
-  document.querySelector('[data-act="formula-open"]').click();
-
-  const sel = document.getElementById('fx-mode');
-  assert.ok(sel, 'переключатель режима первой строкой формы');
-  assert.equal(sel.value, 'build');
-  assert.deepEqual([...sel.options].map(o => o.textContent), ['Завожу привычку', 'Избавляюсь от привычки']);
-
-  // владелец правит поле и переключает режим, не сохраняя
-  document.getElementById('fx-anchor').value = 'рука пошла ко рту';
-  document.getElementById('fx-twoMin').value = 'сжать кулак';
-  sel.value = 'break';
-  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
-
-  const scr = document.getElementById('scr-detail');
-  assert.equal(document.getElementById('fx-mode').value, 'break', 'режим переключился');
-  assert.match(scr.textContent, /Что перехватываю/, 'подписи режима break');
-  assert.match(scr.textContent, /Невидимо/, 'заголовки законов режима break');
-  assert.equal(document.getElementById('fx-anchor').value, 'рука пошла ко рту', 'значение поля на месте');
-  assert.equal(document.getElementById('fx-twoMin').value, 'сжать кулак');
-  // в данных пока ничего не менялось — режим применяется сохранением
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].formula.mode, 'build');
-
-  // черновик переживает смену логического дня
-  shiftWindowDate(window, 26 * 3600000);
-  window.dispatchEvent(new window.Event('focus'));
-  assert.equal(document.getElementById('fx-anchor').value, 'рука пошла ко рту', 'черновик пережил смену дня');
-  assert.equal(document.getElementById('fx-mode').value, 'break', 'и режим формы тоже');
-
-  // сохранение записывает и режим, и текст
-  document.querySelector('[data-act="formula-save"]').click();
-  const f = JSON.parse(window.localStorage.getItem(NS)).items[0].formula;
-  assert.equal(f.mode, 'break');
-  assert.equal(f.anchor, 'рука пошла ко рту');
-  assert.equal(f.twoMin, 'сжать кулак');
-  assert.equal(f.identity, 'я читатель', 'нетронутые поля сохранены как были');
-});
-
-test('З20/C.2: «Отмена» режим не применяет', async () => {
-  const { document, window } = await boot({ seed: formulaSeed('build') });
-  openDetail(document);
-  document.querySelector('[data-act="formula-open"]').click();
-  const sel = document.getElementById('fx-mode');
-  sel.value = 'break';
-  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
-  document.querySelector('[data-act="formula-cancel"]').click();
-
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].formula.mode, 'build',
-    'в данных режим прежний');
-  const laws = [...document.getElementById('scr-detail').querySelectorAll('.overline')].map(x => x.textContent);
-  assert.deepEqual(laws, ['Очевидно', 'Привлекательно', 'Легко', 'Приятно'], 'блок чтения тоже прежний');
-
-  // повторное открытие формы показывает режим формулы, а не брошенный черновик
-  document.querySelector('[data-act="formula-open"]').click();
-  assert.equal(document.getElementById('fx-mode').value, 'build');
-});
-
-test('З20/C.4: все семь подсказок режима break присутствуют дословно', async () => {
-  const { document } = await boot({ seed: formulaSeed('break') });
-  openDetail(document);
-  document.querySelector('[data-act="formula-open"]').click();
-  const hints = [...document.querySelectorAll('#scr-detail .hint')].map(x => x.textContent);
-  assert.equal(hints.length, 7, 'по подсказке на каждое поле');
-  const expected = [
-    'Назови момент, а не состояние. „Когда нервничаю“ — не момент. „Когда рука пошла ко рту“ — момент, его можно заметить.',
-    'Где и когда это обычно случается. Знаешь опасную зону — можешь менять обстановку именно там.',
-    'Не абстрактный вред, а конкретное последствие с прошлой недели. Награда приходит сразу, расплата потом — записанная цена подтягивает расплату ближе.',
-    '„Я бросаю“ — человек, который борется. „Я не грызу“ — человек, который не грызёт. Разные предложения, разный результат.',
-    'За это будет ставиться отметка. Короткое, физическое, выполнимое прямо в момент срыва. Не „взять себя в руки“, а конкретное движение.',
-    'Физическая преграда, не намерение. Каждая лишняя секунда между желанием и действием — секунда, чтобы опомниться. Преграда должна работать, когда ты устал.',
-    'Наблюдаемый результат, а не „не сорвался“. Целая кожа. Пустой список желаний. Баланс не изменился.'
-  ];
-  assert.deepEqual(hints, expected, 'подсказки дословны и в порядке полей');
-
-  // подписи полей режима break — тоже дословно и в порядке законов
-  const labels = [...document.querySelectorAll('#scr-detail .card.form .field > span')].map(x => x.textContent);
-  assert.deepEqual(labels, ['Режим', 'Что перехватываю', 'Время и место', 'Что я на самом деле получаю',
-    'Кем становлюсь', 'Действие-замена', 'Что поставлю на пути', 'Что подтвердит день']);
-});
-
-test('З20: подсказки живут только в форме — в блоке чтения их нет', async () => {
-  const { document } = await boot({ seed: formulaSeed('break') });
-  const scr = openDetail(document);
-  assert.equal(scr.querySelectorAll('.hint').length, 0, 'в режиме чтения подсказок нет');
-  assert.doesNotMatch(scr.textContent, /Назови момент, а не состояние/);
-});
-
 /* ── Задача 20, C.5: сторож разметки форм ──────────────────────
    Часть B предлагала свернуть повторяющиеся фрагменты шаблонов
    (.card.form, .btns, .field) в хелперы при жёстком условии: выдаваемая
@@ -4110,9 +3646,11 @@ test('З20: подсказки живут только в форме — в бл
    поэтому хелперы не введены — но сторож нужен и без них: он ловит любую
    будущую правку шаблонов форм, случайную или в ходе такого рефакторинга.
 
-   Снимок — outerHTML всех двенадцати форм (число сверяется ассертом
-   ниже; в комментарии стояло «девяти» — счёт отстал на пять форм, задача
-   26, п. 7.1; две формы заметок ушли с экраном, задача 28.C).
+   Снимок — outerHTML всех девяти форм (число сверяется ассертом
+   ниже; в комментарии стояло «девяти» при двенадцати формах — счёт отстал
+   на пять, задача 26, п. 7.1; две формы заметок ушли с экраном, задача
+   28.C; две формы формулы и форма лестницы — с листом детали, задача 28.D,
+   и число снова сошлось на девяти, но уже других).
    Дат в формах нет, идентификаторы в сиде фиксированы,
    поэтому снимок стабилен от запуска к запуску.
    Пересобрать после осознанной правки разметки:
@@ -4175,7 +3713,7 @@ function markupSeed() {
 }
 
 test('З20/C.5: разметка форм совпадает со снимком побайтово', async () => {
-  const { document, window } = await boot({ seed: markupSeed() });
+  const { document } = await boot({ seed: markupSeed() });
   const got = {};
   const grab = (name) => {
     const form = document.querySelector('.card.form');
@@ -4224,20 +3762,9 @@ test('З20/C.5: разметка форм совпадает со снимком
   grab('ex-add');
   document.querySelector('[data-act="ex-add-cancel"]').click();
 
-  // формы листа детали: формула в обоих режимах и лестница
-  document.querySelector('#tabs button[data-tab="today"]').click();
-  document.querySelector('#scr-today [data-act="item-detail"]').click();
-  document.querySelector('[data-act="formula-open"]').click();
-  grab('formula-build');
-  const sel = document.getElementById('fx-mode');
-  sel.value = 'break';
-  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
-  grab('formula-break');
-  document.querySelector('[data-act="formula-cancel"]').click();
-  document.querySelector('[data-act="ladder-open"]').click();
-  grab('ladder');
-
-  assert.equal(Object.keys(got).length, 12, 'сняты все формы');
+  // Форм листа детали здесь больше нет: две формулы и лестница ушли
+  // вместе с листом (задача 28.D). Снимок пересобран.
+  assert.equal(Object.keys(got).length, 9, 'сняты все формы');
 
   // запись — только по явной переменной окружения (п. 3.2)
   if (process.env.MARKUP_SNAPSHOT === 'write') {
@@ -4258,153 +3785,12 @@ test('З20/C.5: разметка форм совпадает со снимком
   }
 });
 
-/* ── Задача 21. Привычка встала: экраны ────────────────────── */
-
-/* Сид с лестницей на последней ступени; обе завершённые недели по норме */
-function settledSeed(done) {
-  const seed = dueSeed();
-  const prev = prevMonday();
-  seed.settings.calendarSince = addKey(prev, -70);
-  seed.items[0].ladder = {
-    steps: ['раз', 'два', 'последняя ступень'], step: 2,
-    steppedWeek: null, startedAt: addKey(prev, -30), done: !!done
-  };
-  seed.items[0].ladderLog = [{ date: addKey(prev, -30), step: 0, text: 'раз', start: true }];
-  if (done) seed.items[0].ladderLog.push({ date: addKey(prev, -1), step: 2, text: 'последняя ступень', closed: true });
-  seed.days = {};
-  fillWeek(seed.days, 'it1', addKey(prev, -7), 7);
-  fillWeek(seed.days, 'it1', prev, 7);
-  return seed;
-}
-
-test('З21/7.7: дневной экран — подпись меняется при settled и возвращается при done', async () => {
-  const a = await boot({ seed: settledSeed(false) });
-  const rowA = a.document.querySelector('#scr-today .rowwrap');
-  assert.equal(rowA.querySelector('.note').textContent, 'Привычка встала. Можно брать новую.');
-  assert.equal(rowA.querySelector('.lstep').textContent, '3/3', 'метка положения на месте');
-  // тихо: ни акцента, ни лишних узлов
-  assert.equal(rowA.querySelectorAll('.note').length, 1);
-  assert.equal(a.document.querySelector('#scr-today .note').className, 'note');
-
-  const b = await boot({ seed: settledSeed(true) });
-  const rowB = b.document.querySelector('#scr-today .rowwrap');
-  assert.equal(rowB.querySelector('.note').textContent, 'последняя ступень',
-    'закрытая привычка снова показывает ступень');
-  assert.equal(rowB.querySelector('.lstep').textContent, '3/3', 'метка положения остаётся');
-
-  // структура строки одна и та же — новых узлов не появилось
-  const shape = row => [...row.querySelectorAll('*')].map(n => n.tagName + '.' + n.className).join('|');
-  assert.equal(shape(rowA), shape(rowB), 'разметка строки не изменилась');
-
-  // и без выдержанных недель подпись обычная
-  const plain = settledSeed(false);
-  plain.days = {};
-  const c = await boot({ seed: plain });
-  assert.equal(c.document.querySelector('#scr-today .note').textContent, 'последняя ступень');
-});
-
-test('З21/7.7: лист детали — закрытие вторым тапом, строка с датой и возврат', async () => {
-  const { document, window } = await boot({ seed: settledSeed(false) });
-  document.querySelector('#scr-today [data-act="item-detail"]').click();
-  const scr = () => document.getElementById('scr-detail');
-  assert.match(scr().textContent, /Последняя ступень держится две недели — привычка встала\./);
-
-  const btn = () => document.querySelector('[data-act="ladder-done"]');
-  assert.ok(btn(), 'кнопка «Закрыть привычку» есть');
-  assert.equal(btn().textContent, 'Закрыть привычку');
-  assert.ok(btn().classList.contains('quiet'), 'тихая кнопка, не primary');
-
-  // первый тап — подтверждение, данные не тронуты
-  btn().click();
-  assert.equal(btn().textContent, 'Подтвердить: закрыть привычку');
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].ladder.done, false);
-
-  // второй — закрытие
-  btn().click();
-  const saved = JSON.parse(window.localStorage.getItem(NS)).items[0];
-  assert.equal(saved.ladder.done, true);
-  assert.ok(saved.ladderLog.some(e => e.closed === true), 'веха в журнале');
-  assert.match(scr().textContent, /Привычка закрыта/);
-  assert.equal(document.querySelector('[data-act="ladder-done"]'), null, 'предложения больше нет');
-
-  // возврат
-  const back = document.querySelector('[data-act="ladder-reopen"]');
-  assert.ok(back, 'кнопка «Открыть заново»');
-  assert.equal(back.textContent, 'Открыть заново');
-  back.click();
-  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items[0].ladder.done, false);
-  assert.ok(document.querySelector('[data-act="ladder-done"]'), 'предложение вернулось');
-  assert.doesNotMatch(scr().textContent, /Привычка закрыта/);
-});
-
-test('З21/7.8: разбор — решение «Ступень» превращается в закрытие; заголовок остаётся', async () => {
-  const a = await boot({ seed: settledSeed(false) });
-  openReview(a.document);
-  const scrA = a.document.getElementById('scr-review');
-  const h2A = [...scrA.querySelectorAll('h2')].map(x => x.textContent);
-  assert.ok(h2A.includes('Решение 2 · Ступень'), 'решение на месте');
-  assert.match(scrA.textContent, /привычка встала/);
-  assert.ok(scrA.querySelector('[data-act="ladder-done"]'), 'кнопка закрытия');
-  assert.equal(scrA.querySelector('[data-act="ladder-fwd"]'), null, '«Шагнуть» нет');
-  assert.equal(scrA.querySelector('[data-act="ladder-stay"]'), null, '«Остаться» нет');
-
-  // закрываем прямо из разбора — тот же data-act, те же два тапа
-  scrA.querySelector('[data-act="ladder-done"]').click();
-  a.document.querySelector('[data-act="ladder-done"]').click();
-  assert.equal(JSON.parse(a.window.localStorage.getItem(NS)).items[0].ladder.done, true);
-  // заголовок остаётся: нумерация «1, 3» читалась как потеря (задача 24, п. 4)
-  const scrAfter = a.document.getElementById('scr-review');
-  const h2After = [...scrAfter.querySelectorAll('h2')].map(x => x.textContent);
-  assert.ok(h2After.includes('Решение 2 · Ступень'), 'заголовок на месте');
-  assert.equal(scrAfter.querySelector('[data-act="ladder-done"]'), null, 'предложения нет');
-  assert.match(scrAfter.textContent, /Лестница пройдена — слот свободен/);
-
-  // и при загрузке с уже закрытой — то же самое
-  const b = await boot({ seed: settledSeed(true) });
-  openReview(b.document);
-  const scrB = b.document.getElementById('scr-review');
-  const h2B = [...scrB.querySelectorAll('h2')].map(x => x.textContent);
-  assert.deepEqual(h2B.filter(x => /^Решение/.test(x)),
-    ['Решение 1 · Планка', 'Решение 2 · Ступень', 'Решение 3 · Одно изменение'], 'нумерация цела');
-  // и сказано, где заводят следующую (п. 4.4)
-  assert.match(scrB.textContent, /Настройки → Пункты → правка/);
-
-  // а без лестницы вовсе — прежняя строка
-  const noLadder = settledSeed(false);
-  noLadder.items[0].ladder = null;
-  const c = await boot({ seed: noLadder });
-  openReview(c.document);
-  const scrC = c.document.getElementById('scr-review');
-  assert.match(scrC.textContent, /Лестницы сейчас нет/);
-  assert.doesNotMatch(scrC.textContent, /слот свободен/);
-});
-
-test('З21/4.3: форма лестницы — слот, освобождённый закрытием, даёт обычную форму', async () => {
-  const seed = settledSeed(true);
-  seed.items.push({
-    id: 'it2', name: 'Другой пункт', value: null, unit: '', type: 'daily', area: 'min',
-    goal: null, note: '', group: '', active: true, addedAt: daysAgo(30), raiseAfter: 0,
-    history: [], formula: null, ladder: null, ladderLog: []
-  });
-  const { document, window } = await boot({ seed });
-  document.querySelector('#tabs button[data-tab="settings"]').click();
-  [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'it2').click();
-  // именно из формы правки: такая же кнопка есть в скрытой строке «Сегодня»
-  // у пункта с лестницей, и querySelector нашёл бы сначала её
-  document.querySelector('#scr-settings [data-act="item-detail"]').click();
-  document.querySelector('[data-act="ladder-open"]').click();
-
-  const form = document.querySelector('[data-form="ladder"]');
-  assert.ok(form, 'форма лестницы открыта');
-  assert.doesNotMatch(form.textContent, /Лестница уже есть у пункта/, 'слот свободен');
-  assert.equal(document.getElementById('fx-steps').disabled, false, 'поле доступно');
-
-  document.getElementById('fx-steps').value = 'первая\nвторая';
-  document.querySelector('[data-act="ladder-save"]').click();
-  const items = JSON.parse(window.localStorage.getItem(NS)).items;
-  assert.ok(items.find(i => i.id === 'it2').ladder, 'новая лестница заведена');
-  assert.ok(items.find(i => i.id === 'it1').ladder.done, 'закрытая не снята');
-});
+/* ── Задача 21 на экранах: снята задачей 28.D ───────────────
+   Здесь стоял сид «вставшей» лестницы (settledSeed) и тест дневного
+   экрана: подпись пункта менялась на «Привычка встала…» и возвращалась к
+   ступени при закрытии. Ни подписи-ступени, ни состояния «встала» больше
+   нет — подписью снова служит item.note, и это сторожит тест З28D/10.4
+   выше. Сид удалён вместе с единственным своим читателем. */
 
 /* ── Задача 22. Первая неделя ──────────────────────────────── */
 
@@ -5110,82 +4496,53 @@ test('З24/6: карточка повышения одна, остальным �
   assert.match(after.textContent, /Ещё 2 пункта готовы/, 'но они не потеряны');
 });
 
-test('З24/5: закрытая лестница повышение не блокирует, живая блокирует', async () => {
+/* Задача 24 различала лестницы живую и закрытую: первая гасила повышение,
+   вторая нет. Задача 28.D сняла различение целиком — карточку получает
+   первый готовый по порядку items[], что бы ни лежало у него в поле ladder. */
+test('З24/5: поле ladder карточку повышения больше не сдвигает', async () => {
   const a = await boot({ seed: reviewSeed({ params: false, ladder: { on: 'it1', value: copy(LIVE) } }) });
   openReview(a.document);
-  assert.match(reviewScr(a.document).querySelector('.card.raise').textContent, /Второй/,
-    'пункт с живой лестницей пропущен');
+  assert.match(reviewScr(a.document).querySelector('.card.raise').textContent, /Первый/,
+    'живая лестница пункт больше не пропускает');
 
   const b = await boot({ seed: reviewSeed({ params: false, ladder: { on: 'it1', value: copy(DONE) } }) });
   openReview(b.document);
   assert.match(reviewScr(b.document).querySelector('.card.raise').textContent, /Первый/,
-    'закрытая лестница право не отнимает');
+    'закрытая — тем более');
+
+  const c = await boot({ seed: reviewSeed({ params: false }) });
+  openReview(c.document);
+  assert.match(reviewScr(c.document).querySelector('.card.raise').textContent, /Первый/,
+    'и без лестницы вовсе — тот же первый по порядку');
 });
 
-test('З24/4: три заголовка решений на месте при любой лестнице', async () => {
+test('З24/4: два заголовка решений на месте при любых данных лестницы', async () => {
   const heads = d => [...reviewScr(d).querySelectorAll('h2')].map(x => x.textContent).filter(t => /^Решение/.test(t));
-  const ALL = ['Решение 1 · Планка', 'Решение 2 · Ступень', 'Решение 3 · Одно изменение'];
+  // задача 28.D: «Ступень» снята, решений два. Правило прежнее: дыры в
+  // нумерации не бывает — номер сдвинут, а не оставлен пустым
+  const ALL = ['Решение 1 · Планка', 'Решение 2 · Одно изменение'];
 
   const none = await boot({ seed: reviewSeed({}) });
   openReview(none.document);
   assert.deepEqual(heads(none.document), ALL, 'лестницы нет вовсе');
-  assert.match(reviewScr(none.document).textContent, /Лестницы сейчас нет/);
+  assert.doesNotMatch(reviewScr(none.document).textContent, /[Лл]естниц|[Сс]тупен/,
+    'о лестнице и ступени в разборе не говорится ни слова');
 
   const l = await boot({ seed: reviewSeed({ ladder: { on: 'it1', value: copy(LIVE) } }) });
   openReview(l.document);
-  assert.deepEqual(heads(l.document), ALL, 'живая лестница');
+  assert.deepEqual(heads(l.document), ALL, 'живая лестница в данных');
+  assert.doesNotMatch(reviewScr(l.document).textContent, /[Лл]естниц|[Сс]тупен/);
 
   const c = await boot({ seed: reviewSeed({ ladder: { on: 'it1', value: copy(DONE) } }) });
   openReview(c.document);
-  assert.deepEqual(heads(c.document), ALL, 'закрытая лестница — нумерация не рвётся');
-  const line = reviewScr(c.document).textContent;
-  assert.match(line, /Лестница пройдена — слот свободен/);
-  assert.match(line, /Настройки → Пункты → правка/, 'сказано, где заводят следующую');
+  assert.deepEqual(heads(c.document), ALL, 'закрытая лестница в данных');
+  assert.doesNotMatch(reviewScr(c.document).textContent, /слот свободен/);
 
-  // живая рядом с закрытой: решает живая, о свободном слоте речи нет
-  const both = reviewSeed({ ladder: { on: 'it1', value: copy(DONE) } });
-  both.items[1].ladder = copy(LIVE);
-  const bt = await boot({ seed: both });
-  openReview(bt.document);
-  assert.deepEqual(heads(bt.document), ALL);
-  assert.doesNotMatch(reviewScr(bt.document).textContent, /слот свободен/);
-});
-
-test('З24/3: «Решение 2» говорит счёт недель по норме этого пункта', async () => {
-  // шаг недоступен: в прошлой неделе 4 из 7 — карточки нет, вместо неё счёт
-  const seed = reviewSeed({ params: false, filled: 0 });
-  seed.items[0].ladder = copy(LIVE);
-  fillWeek(seed.days, 'it1', prevMonday(), 4);
-  fillWeek(seed.days, 'it1', curMonday(), 2);
-  const m = await boot({ seed });
-  openReview(m.document);
-  assert.equal(reviewScr(m.document).querySelector('.card.step'), null, 'шага нет');
-  assert.match(reviewScr(m.document).textContent, /Первый · Эта неделя 2 из 6, прошлая 4 из 6/);
-
-  // привычка считается по своей норме
-  const hseed = reviewSeed({ params: false, filled: 0 });
-  hseed.items[0].area = 'habit';
-  hseed.items[0].normPerWeek = 4;
-  hseed.items[0].value = null;
-  hseed.items[0].history = [];
-  hseed.items[0].ladder = copy(LIVE);
-  fillWeek(hseed.days, 'it1', prevMonday(), 3);
-  fillWeek(hseed.days, 'it1', curMonday(), 1);
-  const h = await boot({ seed: hseed });
-  openReview(h.document);
-  assert.match(reviewScr(h.document).textContent, /Первый · Эта неделя 1 из 4, прошлая 3 из 4/);
-
-  // шаг доступен — прежняя карточка, счёта не нужно
-  const o = await boot({ seed: reviewSeed({ params: false, ladder: { on: 'it1', value: copy(LIVE) } }) });
-  openReview(o.document);
-  assert.ok(reviewScr(o.document).querySelector('[data-act="ladder-fwd"]'), 'карточка «Шагнуть»');
-  assert.doesNotMatch(reviewScr(o.document).textContent, /Эта неделя/);
-
-  // лестницы нет вовсе — прежняя строка, счёта нет
-  const n = await boot({ seed: reviewSeed({ params: false, filled: 0 }) });
-  openReview(n.document);
-  assert.match(reviewScr(n.document).textContent, /Лестницы сейчас нет/);
-  assert.doesNotMatch(reviewScr(n.document).textContent, /Эта неделя/);
+  // и карточки шага ступени нет ни в одном из трёх состояний
+  for (const d of [none.document, l.document, c.document]) {
+    assert.equal(reviewScr(d).querySelector('.card.step'), null);
+    assert.equal(reviewScr(d).querySelector('[data-act="ladder-fwd"]'), null);
+  }
 });
 
 test('З24/2: параметр — карточка в «Решении 1», шаг пишет историю и уходит в срез', async () => {
@@ -5197,7 +4554,7 @@ test('З24/2: параметр — карточка в «Решении 1», ш�
   const kids = [...scr.children];
   const at = sel => kids.indexOf(scr.querySelector(sel));
   assert.ok(at('.card.raise') < at('.card.param'), 'параметр после планки');
-  assert.ok(kids.findIndex(x => x.textContent === 'Решение 2 · Ступень') > at('.card.param'),
+  assert.ok(kids.findIndex(x => x.textContent === 'Решение 2 · Одно изменение') > at('.card.param'),
     'и до «Решения 2»');
   assert.equal(scr.querySelector('.card.param').closest('details'), null, 'вне свёртки');
 
@@ -5275,6 +4632,151 @@ test('З24/10: у поля «Одно изменение» есть пример
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).draftOneChange, 'своё');
   window.renderReview();
   assert.equal(reviewScr(document).querySelector('input[data-bind="one-change"]').value, 'своё');
+});
+
+/* ── Задача 28.D. Лестница и формула сняты ───────────────────── */
+
+/* п. 4.4 и 10.2: свёртка недели в трёх состояниях разведки. Прежде
+   действенным решением был и шаг лестницы, и разбор, где решать было
+   нечего кроме него, показывал КАРТИНУ НЕДЕЛИ ЗАКРЫТОЙ. Лестница снята —
+   такой разбор открывает свёртку, как и всякий другой без решений. */
+test('З28D/4: свёртка недели — лестничная часть условия ушла', async () => {
+  const heads = d => [...reviewScr(d).querySelectorAll('h2')]
+    .map(x => x.textContent).filter(t => /^Решение/.test(t));
+  const NUM = ['Решение 1 · Планка', 'Решение 2 · Одно изменение'];
+
+  // A: решать нечего вовсе — свёртка открыта (как и до задачи 28.D)
+  const noneSeed = reviewSeed({ params: false, filled: 0 });
+  for (const mon of [prevMonday(), addKey(prevMonday(), -7)]) {
+    for (const it of noneSeed.items) fillWeek(noneSeed.days, it.id, mon, 5); // ни ≥6, ни ≤3
+  }
+  const a = await boot({ seed: noneSeed });
+  openReview(a.document);
+  assert.equal(reviewScr(a.document).querySelector('details.week').hasAttribute('open'), true, 'A: открыта');
+  assert.deepEqual(heads(a.document), NUM);
+
+  // B: та же неделя, но у пункта в данных ЖИВАЯ лестница, готовая шагнуть.
+  // Прежде это было решением и свёртку закрывало; теперь — нет.
+  const ladderSeed = reviewSeed({ params: false, filled: 0 });
+  for (const mon of [prevMonday(), addKey(prevMonday(), -7)]) {
+    for (const it of ladderSeed.items) fillWeek(ladderSeed.days, it.id, mon, 5);
+  }
+  ladderSeed.items[0].ladder = copy(LIVE);
+  const b = await boot({ seed: ladderSeed });
+  openReview(b.document);
+  assert.equal(reviewScr(b.document).querySelector('details.week').hasAttribute('open'), true,
+    'B: доступный шаг ступени решением больше не считается — свёртка открыта');
+  assert.deepEqual(heads(b.document), NUM);
+
+  // C: живая карточка планки — свёртка закрыта, как и была
+  const c = await boot({ seed: reviewSeed({ params: false }) });
+  openReview(c.document);
+  assert.equal(reviewScr(c.document).querySelector('details.week').hasAttribute('open'), false,
+    'C: решения важнее таблиц');
+  assert.deepEqual(heads(c.document), NUM);
+  assert.ok(reviewScr(c.document).querySelector('.card.raise'), 'и карточка повышения на месте');
+});
+
+/* п. 9.3: строка последствия стоит ПОД кнопкой. Сверху она сдвигала кнопку
+   вниз ровно между тапами (замер на 375×812: 957 → 1026 px, 69 px), и
+   второй тап приходился на новое место. jsdom раскладки не считает —
+   проверяем ПОРЯДОК УЗЛОВ, он и есть причина сдвига. */
+test('З28D/9.3: строка последствия «Закрыть неделю» стоит под кнопкой', async () => {
+  const { document } = await boot({ seed: reviewSeed({ params: false }) });
+  openReview(document);
+  const scr = reviewScr(document);
+  const btn = () => scr.querySelector('[data-act="close-week"]');
+
+  const kidsBefore = [...scr.children];
+  const iBefore = kidsBefore.indexOf(btn());
+  assert.equal(btn().textContent, 'Закрыть неделю');
+  assert.equal(scr.textContent.includes('Неделя уйдёт в архив'), false, 'до тапа последствия не названо');
+
+  btn().click(); // первый тап — взвод
+  const kids = [...scr.children];
+  const i = kids.indexOf(btn());
+  const note = [...scr.querySelectorAll('p.muted')].find(p => /Неделя уйдёт в архив/.test(p.textContent));
+  assert.ok(note, 'последствие названо между тапами');
+  assert.equal(btn().textContent, 'Подтвердить: закрыть неделю');
+  assert.ok(kids.indexOf(note) > i, 'строка НИЖЕ кнопки — точка нажатия не уезжает');
+  assert.equal(i, iBefore, 'и сама кнопка осталась на своём месте в порядке узлов');
+  // но выше «Готово»: текст обязан прочитываться до ухода с листа
+  assert.ok(kids.indexOf(note) < kids.indexOf(scr.querySelector('[data-act="review-done"]')));
+
+  btn().click(); // второй тап — неделя закрыта
+  assert.match(reviewScr(document).textContent, /Неделя закрыта/);
+});
+
+/* п. 3.4 и 10.5: листов два, и приоритет при одновременно взведённых
+   флагах пересчитан — главнее разбор. Порядок обязан совпадать в трёх
+   местах: renderAll, currentFormKey и sheetReturn. */
+test('З28D/3: листов два, разом виден не больше одного, приоритет — разбор', async () => {
+  const { document } = await boot({ seed: sheetSeed() });
+  assert.equal(document.getElementById('scr-detail'), null, 'листа детали нет');
+  const visible = () => ['scr-review', 'scr-train']
+    .filter(id => !document.getElementById(id).hidden);
+
+  assert.deepEqual(visible(), [], 'вкладка — ни одного листа');
+  document.querySelector('#scr-today [data-act="train-inc"]').click();
+  assert.deepEqual(visible(), ['scr-train'], 'лист тренировки один');
+  document.querySelector('#scr-train [data-act="train-cancel"]').click();
+  document.querySelector('#scr-today [data-act="goto-review"]').click();
+  assert.deepEqual(visible(), ['scr-review'], 'лист разбора один');
+  document.querySelector('#scr-review [data-act="review-done"]').click();
+  assert.deepEqual(visible(), [], 'и оба закрылись');
+
+  // Ничьи между флагами обычным путём не бывает — лист закрывает вкладку
+  // целиком, — но порядок разбора решений записан в трёх местах, и все три
+  // обязаны читать его одинаково. ui в контекст не экспортируется (const),
+  // поэтому сверяем источник: третье место, sheetReturn, проверено выше
+  // поведением (З26/4.1) — там разбор и тренировка возвращают свои скроллы.
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  assert.match(app, /const sheet = ui\.reviewOpen \? 'review' : \(ui\.trainOpen \? 'train' : null\)/,
+    'renderAll: разбор раньше тренировки');
+  assert.match(app, /if \(!ui\.reviewOpen && ui\.trainOpen\) return 'train:'/,
+    'currentFormKey: тот же порядок, и разбор перебивает');
+  const ret = /function sheetReturn\(\)[\s\S]*?\n}/.exec(app)[0];
+  assert.ok(ret.indexOf('ui.reviewOpen') < ret.indexOf('ui.trainOpen'),
+    'sheetReturn: и здесь разбор первым');
+  assert.doesNotMatch(app, /ui\.detailId/, 'состояния листа детали в файле не осталось');
+});
+
+/* п. 6.5: реалистичный store — сессия отметок и перерисовок формулу и
+   лестницу не трогает. Проверяем то, что лежит в localStorage: именно он
+   переживёт перезапуск. */
+test('З28D/6: сессия работы формулу и лестницу в localStorage не трогает', async () => {
+  const seed = dueSeed();
+  seed.items[0].formula = { anchor: 'после зарядки', when: '', pair: '', identity: 'я человек, который держится', twoMin: '', friction: '', proof: '', mode: 'break' };
+  seed.items[0].ladder = { steps: ['раз', 'два', 'три'], step: 1, steppedWeek: null, startedAt: addKey(prevMonday(), -30), done: false };
+  seed.items[0].ladderLog = [{ date: addKey(prevMonday(), -30), step: 0, text: 'раз', start: true }];
+  const { document, window } = await boot({ seed });
+  const before = JSON.stringify(JSON.parse(window.localStorage.getItem(NS)).items[0]);
+
+  // обычная сессия: отметка, обход вкладок, правка подписи, разбор
+  document.querySelector('#scr-today input[data-act="mark"]').click();
+  for (const t of ['habits', 'progress', 'settings', 'today']) {
+    document.querySelector(`#tabs button[data-tab="${t}"]`).click();
+  }
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  document.getElementById('e-note').value = 'новая подпись';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  openReview(document);
+  reviewScr(document).querySelector('[data-act="review-done"]').click();
+
+  const after = JSON.parse(window.localStorage.getItem(NS)).items[0];
+  assert.equal(after.note, 'новая подпись', 'правка владельца прошла');
+  const b = JSON.parse(before);
+  assert.deepEqual(after.formula, b.formula, 'формула байт в байт та же');
+  assert.deepEqual(after.ladder, b.ladder, 'лестница тоже');
+  assert.deepEqual(after.ladderLog, b.ladderLog, 'и журнал шагов');
+
+  // и «перезапуск»: тот же localStorage поднимается заново
+  const again = await boot({ raw: window.localStorage.getItem(NS) });
+  const re = JSON.parse(again.window.localStorage.getItem(NS)).items[0];
+  assert.deepEqual(re.formula, b.formula, 'после перезапуска формула на месте');
+  assert.deepEqual(re.ladder, b.ladder);
+  assert.deepEqual(re.ladderLog, b.ladderLog);
 });
 
 /* ── Задача 25. Данные без потерь ───────────────────────────── */
@@ -5464,6 +4966,43 @@ test('З28C: экран снят, а экспорт по-прежнему нес
   assert.equal(saved.notes.length, 2, 'localStorage заметок не потерял');
 });
 
+/* Задача 28.D, п. 6.2: тем же приёмом, что заметки выше. Механик формулы и
+   лестницы в интерфейсе нет, а экспорт остаётся единственным путём владельца
+   к этим данным — оборвётся он, и полей не станет молча. */
+test('З28D: механик нет, а экспорт по-прежнему несёт формулу и лестницу', async () => {
+  const seed = trainSeed();
+  seed.items[0].formula = { anchor: 'после зарядки', when: 'утро', pair: '', identity: 'я человек, который держится', twoMin: '', friction: '', proof: '', mode: 'break' };
+  seed.items[0].ladder = { steps: ['раз', 'два', 'три'], step: 1, steppedWeek: null, startedAt: addKey(prevMonday(), -30), done: false };
+  seed.items[0].ladderLog = [
+    { date: addKey(prevMonday(), -30), step: 0, text: 'раз', start: true },
+    { date: addKey(prevMonday(), -7), step: 1, text: 'два' }
+  ];
+  const { document, window } = await boot({ seed });
+
+  // в интерфейсе к ним хода нет: ни листа, ни форм, ни кнопок
+  assert.equal(document.getElementById('scr-detail'), null);
+  assert.equal(document.querySelector('[data-act="item-detail"]'), null);
+  assert.equal(document.querySelector('[data-act="formula-open"]'), null);
+  assert.equal(document.querySelector('[data-act="ladder-open"]'), null);
+
+  openData(document);
+  const file = await grabDownload(window, () => document.querySelector('[data-act="export"]').click());
+  const exported = JSON.parse(file.text);
+  assert.equal(exported.schemaVersion, 16, 'схема не поднималась');
+  const it = exported.items.find(i => i.id === seed.items[0].id);
+  assert.equal(it.formula.anchor, 'после зарядки', 'формула в файле');
+  assert.equal(it.formula.mode, 'break', 'вместе с режимом');
+  assert.deepEqual(it.ladder.steps, ['раз', 'два', 'три'], 'лестница в файле');
+  assert.equal(it.ladder.step, 1);
+  assert.equal(it.ladderLog.length, 2, 'и журнал шагов целиком');
+  assert.equal(it.ladderLog[0].start, true);
+
+  // и в хранилище они на месте после сессии без единого касания
+  const saved = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === seed.items[0].id);
+  assert.deepEqual(saved.ladder, it.ladder, 'localStorage лестницы не потерял');
+  assert.deepEqual(saved.formula, it.formula);
+});
+
 test('З28C: импорт файла с заметками их не теряет и потерей не называет', async () => {
   const { document, window } = await boot();
   const payload = otherFile({
@@ -5557,28 +5096,6 @@ test('З25/7: чистка пустого store не подменяет копи
   openData(document);
   document.querySelector('[data-act="wipe-undo"]').click();
   assert.ok(JSON.parse(window.localStorage.getItem(NS)).items.length > 0);
-});
-
-test('З25/1: ladderStay сбрасывается при закрытии разбора', async () => {
-  const seed = dueSeed();
-  const old = addKey(prevMonday(), -14);
-  seed.items[0].ladder = { steps: ['первая', 'вторая', 'третья'], step: 0, steppedWeek: null, startedAt: old };
-  seed.items[0].ladderLog = [{ date: old, step: 0, text: 'первая', start: true }];
-  seed.days = {};
-  for (const mon of [prevMonday(), addKey(prevMonday(), -7)]) {
-    for (let i = 0; i < 6; i++) seed.days[addKey(mon, i)] = { it1: true };
-  }
-  const { document } = await boot({ seed });
-  openReview(document);
-  assert.ok(reviewScr(document).querySelector('.card.step'), 'карточка ступени');
-  reviewScr(document).querySelector('[data-act="ladder-stay"]').click();
-  assert.equal(reviewScr(document).querySelector('.card.step'), null, '«Остаться» гасит карточку');
-
-  // «Готово» закрывает разбор — решение по ступени принадлежало ему одному
-  document.querySelector('[data-act="review-done"]').click();
-  openReview(document);
-  assert.ok(reviewScr(document).querySelector('.card.step'),
-    'следующий разбор снова предлагает шаг');
 });
 
 test('З25/2: взведённое подтверждение не переживает импорт — копия не подменяется одним тапом', async () => {
@@ -5797,17 +5314,16 @@ test('З26/2.1: подтверждение стоит у своей строки
   flash = document.querySelector('#scr-settings .flash');
   assert.equal(flash.closest('.rowwrap').dataset.dragId, 'f-ex');
 
-  // лист детали: форма формулы
+  // пункт. Третьей формой здесь была формула в листе детали; лист снят
+  // задачей 28.D, и его якорь ушёл вместе с ним — механизм не изменился
   document.querySelector('#tabs button[data-tab="settings"]').click();
   byId(document, 'edit-open', 'f-1').click();
-  document.querySelector('#scr-settings [data-act="item-detail"]').click();
-  document.querySelector('[data-act="formula-open"]').click();
-  document.getElementById('fx-anchor').value = 'после душа';
-  document.querySelector('[data-act="formula-save"]').click();
-  flash = document.querySelector('#scr-detail .flash');
-  assert.ok(flash, 'подтверждение в листе детали');
-  assert.ok(flash.previousElementSibling.querySelector('[data-act="formula-open"]'),
-    'сразу под кнопкой «Изменить», которой уступила место форма');
+  document.getElementById('e-name').value = 'Переименованный';
+  document.querySelector('[data-act="edit-save"]').click();
+  flash = document.querySelector('#scr-settings .flash');
+  assert.ok(flash, 'подтверждение на «Пунктах»');
+  assert.ok(flash.closest('.rowwrap').textContent.includes('Переименованный'),
+    'у той строки, которой принадлежала форма');
 });
 
 /* Таблица форм: у каждой — как открыть, какое поле испортить, что должно
@@ -5965,19 +5481,18 @@ function scrollSpy(window) {
   return { calls, at, last: () => calls[calls.length - 1] };
 }
 
+/* Листов ДВА: третий, лист детали пункта, снят задачей 28.D вместе с
+   формулой и лестницей. Правила закрытия и возврата у оставшихся прежние. */
 const SHEETS = [
-  { name: 'деталь пункта', tab: 'today', screen: 'scr-detail',
-    open: d => d.querySelector('#scr-today [data-act="item-detail"]').click(), act: 'item-detail' },
   { name: 'разбор недели', tab: 'today', screen: 'scr-review',
     open: d => d.querySelector('#scr-today [data-act="goto-review"]').click(), act: 'goto-review' },
   { name: 'тренировка', tab: 'today', screen: 'scr-train',
     open: d => d.querySelector('#scr-today [data-act="train-inc"]').click(), act: 'train-inc' }
 ];
 
-/* Сид, в котором на «Сегодня» разом есть все три входа в листы */
+/* Сид, в котором на «Сегодня» разом есть оба входа в листы */
 function sheetSeed() {
   const seed = dueSeed();
-  seed.items[0].formula = { anchor: 'после душа', when: '', pair: '', identity: '', twoMin: '', friction: '', proof: '', mode: 'build' };
   seed.items.push({
     id: 'sw', name: 'Тренировка', value: null, unit: '', type: 'weekly', area: 'min',
     goal: 3, note: '', group: '', active: true, addedAt: addKey(prevMonday(), -14),
@@ -5986,7 +5501,7 @@ function sheetSeed() {
   return seed;
 }
 
-test('З26/4.1: все три листа возвращают скролл и при закрытии таб-баром', async () => {
+test('З26/4.1: оба листа возвращают скролл и при закрытии таб-баром', async () => {
   for (const s of SHEETS) {
     const { document, window } = await boot({ seed: sheetSeed() });
     const spy = scrollSpy(window);
@@ -6033,7 +5548,7 @@ test('З26/4.2: фокус уходит в лист и возвращается 
 
 test('З26/4.3: ловушки фокуса нет — таб-бар из открытого листа достижим', async () => {
   const { document } = await boot({ seed: sheetSeed() });
-  document.querySelector('#scr-today [data-act="item-detail"]').click();
+  document.querySelector('#scr-today [data-act="goto-review"]').click();
   const tabs = [...document.querySelectorAll('#tabs button')];
   assert.equal(tabs.length, 4);
   for (const t of tabs) {
@@ -6149,7 +5664,11 @@ test('З26/5.5: ячейка цепи крупнее — доля краски �
 
 /* Полный список тач-целей приложения. Круг отметки и тумблер в него не
    входят: у них свой отклик — заливка с .pop и ход головки. */
-const TAPPABLE = ['.btn', '.banner:not(.static)', '.idetail', '.dot', '.undo',
+/* .idetail ушёл из списка вместе с хвостовой кнопкой строки дня (задача
+   28.D): тач-цели больше нет, а её правило :active снято из styles.css.
+   Сторож двусторонний — селектор, оставшийся в списке без цели на экранах,
+   валит второй тест ниже. */
+const TAPPABLE = ['.btn', '.banner:not(.static)', '.dot', '.undo',
   '.itxt', '.sect > summary', '#tabs button'];
 
 test('З26/6.1: состояние нажатия есть у каждой тач-цели, не только у .btn', () => {
@@ -6199,9 +5718,9 @@ test('З26/6.1: ни одной тач-цели без отклика на на�
   document.querySelector('#tabs button[data-tab="today"]').click();
   document.querySelector('#scr-today [data-act="miss-note"]').click(); // раскрытая подпись даёт «отметить»
   scan();
-  for (const s of ['scr-detail', 'scr-review', 'scr-train']) {
+  for (const s of ['scr-review', 'scr-train']) {
     document.querySelector('#tabs button[data-tab="today"]').click();
-    const open = { 'scr-detail': 'item-detail', 'scr-review': 'goto-review', 'scr-train': 'train-inc' }[s];
+    const open = { 'scr-review': 'goto-review', 'scr-train': 'train-inc' }[s];
     document.querySelector(`#scr-today [data-act="${open}"]`).click();
     scan();
   }
@@ -6247,8 +5766,13 @@ test('З26/7: тексты «Системы» описывают то, что п
   assert.doesNotMatch(sys, /Тело:/, 'блока «Тело» в программе нет');
   assert.doesNotMatch(sys, /Сон:/);
   assert.doesNotMatch(sys, /Развитие:/);
-  // «одно изменение за раз» названо тем, чем оно держится
-  assert.match(sys, /лестница одна и повышение планки одно за разбор/);
+  // «одно изменение за раз» названо тем, чем оно ДЕЙСТВИТЕЛЬНО держится.
+  // Прежде текст называл и лестницу («лестница одна»); механика снята
+  // задачей 28.D, и обещать её больше нельзя
+  assert.match(sys, /повышение планки одно за разбор/);
+  assert.doesNotMatch(sys, /лестниц/i, '«Система» о снятой механике не говорит');
+  assert.doesNotMatch(sys, /ступен/i);
+  assert.doesNotMatch(sys, /формул/i);
 
   // и посев действительно заводит те блоки, что названы
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
@@ -6261,14 +5785,16 @@ test('З26/7: устаревших комментариев про «два ли
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   assert.doesNotMatch(app, /Перетаскивание — отдельная задача/);
   assert.doesNotMatch(app, /он открывается и из разбора/);
-  assert.doesNotMatch(app, /два листа поверх них/);
-  assert.match(app, /три листа поверх них/);
+  // задача 28.D: листов снова два — лист детали снят вместе с формулой и
+  // лестницей. Комментарий обязан называть их число верно
+  assert.doesNotMatch(app, /три листа поверх них/);
+  assert.match(app, /ДВА листа поверх них/);
   // счёт форм в комментарии сторожа сходится с его же ассертом (было «девяти»)
   const dom = fs.readFileSync(path.join(ROOT, 'tests', 'dom.test.js'), 'utf8');
   const said = /outerHTML всех ([а-я]+) форм/.exec(dom)[1];
   const checked = /Object\.keys\(got\)\.length, (\d+),/.exec(dom)[1];
-  assert.equal(said, 'двенадцати');
-  assert.equal(checked, '12');
+  assert.equal(said, 'девяти');
+  assert.equal(checked, '9');
   // docs/plan.md помечен историческим, а не выдаёт себя за источник задач
   const plan = fs.readFileSync(path.join(ROOT, 'docs', 'plan.md'), 'utf8');
   assert.match(plan, /исторический/i);
@@ -6333,57 +5859,6 @@ function openDetailFor(document, id) {
   document.querySelector(`#scr-settings [data-act="item-detail"][data-id="${id}"]`).click();
 }
 
-test('З27/1: слот занят — «Открыть заново» не предлагается, и сказано кем', async () => {
-  const { document } = await boot({ seed: closedLadderSeed() });
-  // сперва слот свободен: кнопка есть
-  openDetailFor(document, 'cl1');
-  assert.ok(document.querySelector('#scr-detail [data-act="ladder-reopen"]'), 'слот свободен — кнопка есть');
-  document.querySelector('[data-act="detail-done"]').click();
-
-  // занимаем слот другим пунктом
-  openDetailFor(document, 'cl2');
-  document.querySelector('#scr-detail [data-act="ladder-open"]').click();
-  document.getElementById('fx-steps').value = 'Н1\nН2';
-  document.querySelector('#scr-detail [data-act="ladder-save"]').click();
-  document.querySelector('[data-act="detail-done"]').click();
-
-  // теперь у пройденной кнопки нет, а есть нейтральная строка с именем
-  openDetailFor(document, 'cl1');
-  const d = document.getElementById('scr-detail');
-  assert.equal(d.querySelector('[data-act="ladder-reopen"]'), null, 'кнопки нет — сказано ДО тапа');
-  const line = [...d.querySelectorAll('p.muted')].find(p => /слот лестницы/.test(p.textContent));
-  assert.ok(line, 'строка о занятом слоте есть');
-  assert.match(line.textContent, /«Свободный»/, 'и она называет, кем занят');
-  assert.doesNotMatch(d.textContent, /провал|нельзя|ошибк/i, 'тон нейтральный');
-});
-
-test('З27/3: замена пройденной лестницы — вторым тапом, с предупреждением', async () => {
-  const { document, window } = await boot({ seed: closedLadderSeed() });
-  openDetailFor(document, 'cl1');
-  document.querySelector('#scr-detail [data-act="ladder-open"]').click();
-
-  const form = document.querySelector('#scr-detail [data-form="ladder"]');
-  assert.match(form.textContent, /Эта лестница пройдена/, 'предупреждение до тапа');
-  document.getElementById('fx-steps').value = 'Новая 1\nНовая 2';
-
-  // первый тап только взводит подтверждение — данные не тронуты
-  document.querySelector('#scr-detail [data-act="ladder-save"]').click();
-  const btn = document.querySelector('#scr-detail [data-act="ladder-save"]');
-  assert.match(btn.textContent, /Подтвердить: начать новую/);
-  let saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.deepEqual(saved.items[0].ladder.steps, ['раз', 'два'], 'текст пройденной ещё цел');
-  assert.equal(document.getElementById('fx-steps').value, 'Новая 1\nНовая 2', 'введённое на месте');
-
-  // второй тап заводит НОВУЮ
-  document.querySelector('#scr-detail [data-act="ladder-save"]').click();
-  saved = JSON.parse(window.localStorage.getItem(NS));
-  const L = saved.items[0].ladder;
-  assert.deepEqual(L.steps, ['Новая 1', 'Новая 2']);
-  assert.equal(L.done, false, 'новая живая');
-  assert.equal(L.step, 0, 'с первой ступени');
-  assert.equal(saved.items[0].ladderLog.filter(e => e.start).length, 2, 'вторая стартовая веха');
-});
-
 test('З27/5.1: запись не удалась — «Не сохранено», а не «Сохранено»', async () => {
   const { document, window } = await boot();
   const realLS = window.localStorage;
@@ -6413,20 +5888,24 @@ test('З27/5.1: запись не удалась — «Не сохранено»
    28.C, и её место занял лист детали — он тоже section.screen и тоже
    подпадает под чистку скрытых экранов. */
 test('З27/4.1: узел подтверждения ищется на видимом экране, а не по всему документу', async () => {
-  const { document, window } = await boot();
-  // 1) сохраняем формулу — узел рождается в листе детали
+  const { document } = await boot();
+  // 1) сохраняем упражнение — узел рождается в секции «Упражнения».
+  // Прежде первым шагом стояло сохранение формулы в листе детали; лист снят
+  // задачей 28.D, и на его месте — соседняя секция того же экрана
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  document.querySelector('#scr-settings .row.item [data-act="edit-open"]').click();
-  document.querySelector('#scr-settings [data-act="item-detail"]').click();
-  document.querySelector('[data-act="formula-open"]').click();
-  document.getElementById('fx-anchor').value = 'после душа';
-  document.querySelector('[data-act="formula-save"]').click();
-  assert.ok(document.querySelector('#scr-detail .flash'), 'узел в листе детали');
+  const exSect = [...document.querySelectorAll('#scr-settings details.sect')]
+    .find(d => /Упражнения/.test(d.querySelector('summary').textContent));
+  exSect.querySelector('summary').click();
+  document.querySelector('#scr-settings [data-act="ex-add-open"]').click();
+  document.getElementById('x-add-name').value = 'Жим';
+  document.querySelector('#scr-settings [data-act="ex-add-save"]').click();
+  assert.ok(document.querySelector('#scr-settings .flash'), 'узел на «Настройках»');
 
-  // 2) уходим на «Настройки»: узлы скрытого экрана снимаются перерисовкой
-  document.querySelector('#tabs button[data-tab="settings"]').click();
-  assert.equal(document.querySelectorAll('#scr-detail .flash').length, 0,
+  // 2) уходим на «Сегодня» и обратно: узлы скрытого экрана снимаются перерисовкой
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(document.querySelectorAll('#scr-settings .flash').length, 0,
     'на скрытом экране узлов не остаётся (п. 4.2)');
+  document.querySelector('#tabs button[data-tab="settings"]').click();
 
   // 3) сохраняем пункт — находится ИМЕННО его узел
   document.querySelector('#scr-settings [data-act="edit-open"]').click();

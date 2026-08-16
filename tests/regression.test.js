@@ -124,89 +124,10 @@ test('З23/7.2: restoreWiped проводит копию как данные и�
   } finally { clearLocalStorage(); }
 });
 
-/* ── 3–5. Лестница: закрытие, статус, слот ─────────────────── */
-
-/* Пункт-привычка с лестницей на последней ступени и двумя выдержанными
-   завершёнными неделями — состояние ladderSettled (инвариант 12). */
-function settledLadder() {
-  setNow(2026, 8, 13, 12, 0);
-  const s = calendarPast(freshStore());
-  const it = s.items.find(i => i.type === 'daily' && i.area === 'habit');
-  it.normPerWeek = 7;
-  it.ladder = { steps: ['шаг 1', 'шаг 2'], step: 1, steppedWeek: null, startedAt: s.settings.calendarSince, done: false };
-  it.ladderLog = [{ date: s.settings.calendarSince, step: 0, text: 'шаг 1', start: true }];
-  const cur = app.currentWeekStart();
-  fillWeek(s, it.id, app.addDays(cur, -7), 7);
-  fillWeek(s, it.id, app.addDays(cur, -14), 7);
-  // остальные лестницы снять: слот один (инвариант 12)
-  s.items.forEach(x => { if (x !== it && x.ladder) x.ladder = null; });
-  return { s, it };
-}
-
-test('З23/7.3: ladderClosedAt — дата ПОСЛЕДНЕГО закрытия, а не первого', () => {
-  const { it } = settledLadder();
-  assert.equal(app.ladderSettled(it), true, 'условие «встала» выполнено');
-
-  assert.equal(app.closeLadder(it.id), true);
-  const first = app.todayKey();
-  assert.equal(app.ladderClosedAt(it), first);
-
-  assert.equal(app.reopenLadder(it.id), true);
-  advanceDays(3);
-  assert.equal(app.closeLadder(it.id), true);
-  const second = app.todayKey();
-
-  assert.notEqual(second, first, 'дни закрытия действительно разные');
-  assert.equal(app.ladderClosedAt(it), second,
-    'журнал читается с конца: закрыл → открыл → закрыл даёт последнюю дату');
-  assert.equal(it.ladderLog.filter(e => e.closed).length, 2, 'обе вехи закрытия в журнале');
-});
-
-test('З23/7.4: у закрытой лестницы статус не говорит «привычка встала»', () => {
-  const { it } = settledLadder();
-  assert.equal(app.ladderStatus(it), 'Последняя ступень держится две недели — привычка встала.',
-    'пока открыта — предложение закрыть');
-
-  app.closeLadder(it.id);
-  assert.equal(app.ladderStatus(it), 'Последняя ступень',
-    'закрыта — работа здесь закончена, звать закрывать нечего');
-
-  app.reopenLadder(it.id);
-  assert.equal(app.ladderStatus(it), 'Последняя ступень держится две недели — привычка встала.',
-    'открыли заново — предложение вернулось');
-});
-
-test('З23/7.5: closedLadderItem отличает закрытую лестницу от живой', () => {
-  const { it } = settledLadder();
-  assert.equal(app.closedLadderItem(), null, 'живая лестница закрытой не считается');
-  assert.equal(app.activeLadderItem(), it, 'и занимает слот');
-
-  app.closeLadder(it.id);
-  assert.equal(app.closedLadderItem(), it, 'закрытая нашлась');
-  assert.equal(app.activeLadderItem(), null, 'и слот освободила (инвариант 12)');
-});
-
-/* ── 6. Шаг назад не тратит неделю ────────────────────────── */
-test('З23/7.6: шаг назад не расходует неделю — шаг вперёд остаётся доступен', () => {
-  setNow(2026, 8, 13, 12, 0);
-  const s = calendarPast(freshStore());
-  const it = s.items.find(i => i.type === 'daily' && i.area === 'habit');
-  it.normPerWeek = 7;
-  it.ladder = { steps: ['1', '2', '3'], step: 1, steppedWeek: null, startedAt: s.settings.calendarSince, done: false };
-  it.ladderLog = [];
-  s.items.forEach(x => { if (x !== it && x.ladder) x.ladder = null; });
-  const cur = app.currentWeekStart();
-  fillWeek(s, it.id, app.addDays(cur, -7), 7);
-  fillWeek(s, it.id, app.addDays(cur, -14), 7);
-
-  assert.equal(app.canStepForward(it), true, 'до шага назад вперёд можно');
-  assert.equal(app.ladderStep(it.id, 'back'), true);
-  assert.equal(it.ladder.step, 0);
-  assert.equal(it.ladder.steppedWeek, null,
-    'шаг назад критериев не имеет и неделю не помечает');
-  assert.equal(app.canStepForward(it), true,
-    'вернуться на прежнюю ступень можно в ту же неделю: назад — не «одно изменение»');
-});
+/* Пунктов 3–6 здесь больше нет: все четыре закрывали дыры покрытия
+   лестницы (дата закрытия, статус закрытой, отличие закрытой от живой,
+   шаг назад). Механика снята задачей 28.D — сторожить в ней нечего.
+   Нумерация прочих не сдвигается: она принадлежит аудиту задачи 23. */
 
 /* ── 7. Нулевая нагрузка в сессию не идёт ─────────────────── */
 test('З23/7.7: нулевая нагрузка отбрасывается — ни в сессию, ни в историю', () => {
