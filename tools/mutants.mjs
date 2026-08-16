@@ -748,6 +748,44 @@ const MUTANTS = [
     note: 'строка последствия «Закрыть неделю» возвращается наверх — кнопка уезжает на 69 px между первым и вторым тапом',
     edits: [["  h += `<button class=\"btn primary wide\" data-act=\"close-week\">${ui.weekCloseConfirm ? 'Подтвердить: закрыть неделю' : 'Закрыть неделю'}</button>`;\n  if (ui.weekCloseConfirm) {\n    h += `<p class=\"muted\">Неделя уйдёт в архив: принятые решения, «одно изменение» и решения по параметрам очистятся. Отметки останутся.</p>`;\n  }\n  h += REVIEW_DONE;",
       "  if (ui.weekCloseConfirm) {\n    h += `<p class=\"muted\">Неделя уйдёт в архив: принятые решения, «одно изменение» и решения по параметрам очистятся. Отметки останутся.</p>`;\n  }\n  h += `<button class=\"btn primary wide\" data-act=\"close-week\">${ui.weekCloseConfirm ? 'Подтвердить: закрыть неделю' : 'Закрыть неделю'}</button>` + REVIEW_DONE;"]]
+  },
+  /* ── Задача 28.E, часть A: уход пункта отрезком жизни ────────
+     Точка невозврата всей волны: миграция active → removedAt необратима
+     асимметрично. Пять мутантов держат её и правило применимости. */
+  {
+    id: '28E-A-правило-применимости-игнорирует-removedAt',
+    file: 'app.js',
+    note: 'minDayItems снова не смотрит на день ухода — прошлое считается по всем когда-либо заведённым',
+    edits: [["    i.type === 'daily' && i.area === 'min' && livedOn(i, dayKey));",
+      "    i.type === 'daily' && i.area === 'min' && i.addedAt <= dayKey);"]]
+  },
+  {
+    id: '28E-A-миграция-не-переносит-выключенных',
+    file: 'app.js',
+    note: 'выключенный пункт получает removedAt = null — прошлое владельца сдвигается вверх при первом же запуске',
+    edits: [['    if (it.active === false && it.removedAt === null) it.removedAt = it.addedAt;',
+      '    if (false && it.active === false) it.removedAt = it.addedAt;']]
+  },
+  {
+    id: '28E-A-уход-действует-со-вчера',
+    file: 'app.js',
+    note: 'уход закрывает отрезок вчерашним днём — вчерашний знаменатель переписывается задним числом',
+    edits: [['  if (!it || !live(it)) return false;\n  it.removedAt = todayKey();',
+      '  if (!it || !live(it)) return false;\n  it.removedAt = addDays(todayKey(), -1);']]
+  },
+  {
+    id: '28E-A-возврат-позже-воскрешает-прежний-отрезок',
+    file: 'app.js',
+    note: 'возврат через неделю снимает removedAt у прежней записи — дни паузы задним числом входят в знаменатель',
+    edits: [['  if (it.removedAt === t) {\n    it.removedAt = null;',
+      '  if (true) {\n    it.removedAt = null;']]
+  },
+  {
+    id: '28E-A-убрать-одним-тапом',
+    file: 'app.js',
+    note: '«Убрать» срабатывает с первого тапа — последствие не названо, и промах по кнопке уводит пункт',
+    edits: [['      if (ui.removeConfirm !== key) { ui.removeConfirm = key; renderSettings(); break; }',
+      '      if (false) { ui.removeConfirm = key; renderSettings(); break; }']]
   }
 ];
 

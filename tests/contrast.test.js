@@ -146,7 +146,6 @@ const NEUTRAL = {
   'accent-weak': 'полупрозрачная заливка акцентом — фон, не носитель',
   tabbar: 'полупрозрачный фон таб-бара',
   'shadow-lift': 'тень (не цвет плоскости)',
-  'shadow-knob': 'тень головки тумблера',
   radius: 'радиус', 'radius-md': 'радиус', 'radius-sm': 'радиус',
   'text-base': 'кегль', 'text-sm': 'кегль', 'text-xs': 'кегль',
   'gap-section': 'ритм', 'gap-block': 'ритм'
@@ -247,7 +246,6 @@ for (const [theme, vars] of Object.entries(THEMES)) {
    намерение. Селектор переименован — тест падает с именем селектора
    (ruleBySelector), а не молча берёт undefined (п. 2.5). */
 const BOUND = [
-  { re: /^\.switch span$/, prop: 'background', what: 'трек тумблера' },
   { re: /(^|,\s*)\.field input\b/, prop: 'border', what: 'рамка поля формы' },
   { re: /(^|,\s*)\.raise-line \.num\b/, prop: 'border', what: 'рамка инпута карточки повышения' },
   { re: /^\.cdays i$/, prop: 'border-color', what: 'обводка пустой ячейки цепи' },

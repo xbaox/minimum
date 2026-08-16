@@ -45,6 +45,23 @@ function mondayOf(k) {
 const curMonday = () => mondayOf(daysAgo(0));
 const prevMonday = () => addKey(curMonday(), -7);
 
+/* Уход пункта через интерфейс (задача 28.E/A): «Настройки» → строка →
+   форма правки → «Убрать» дважды. Второй тап нужен всегда: первый только
+   взводит и печатает последствие под кнопкой. */
+function removeItemThroughUi(doc, id) {
+  doc.querySelector('#tabs button[data-tab="settings"]').click();
+  const open = [...doc.querySelectorAll('#scr-settings [data-act="edit-open"]')]
+    .find(b => b.dataset.id === id);
+  assert.ok(open, 'строка пункта ' + id);
+  open.click();
+  const rm = () => [...doc.querySelectorAll('#scr-settings [data-act="item-remove"]')]
+    .find(b => b.dataset.id === id);
+  assert.ok(rm(), 'кнопка «Убрать» в форме пункта ' + id);
+  rm().click();
+  assert.match(rm().textContent, /Подтвердить/, 'первый тап только взводит');
+  rm().click();
+}
+
 /* Отметить пункт в первых n днях календарной недели с понедельником mon */
 function fillWeek(days, id, mon, n) {
   for (let i = 0; i < n; i++) {
@@ -707,22 +724,28 @@ test('З23/5: таймер молчит, пока логический день 
     'день не сменился — перерисовки нет (syncDay возвращает false)');
 });
 
-test('тумблер активности переключает .off точечно, без перерисовки', async () => {
-  const { document, window } = await boot();
+/* Здесь стоял тест тумблера активности («переключает .off точечно, без
+   перерисовки»). Тумблер упразднён вместе с полем active (задача 28.E/A,
+   п. 2), и точечного пути на «Настройках» не осталось вовсе: «Убрать»
+   всегда идёт полной перерисовкой. Его место занял блок тестов ухода и
+   возврата ниже по файлу («З28E/A: …»). */
+
+test('З28E/A: тумблера нет ни у пункта, ни у упражнения, ни в данных', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  const input = document.querySelector('input[data-act="toggle-active"]');
-  const wrap = input.closest('.rowwrap');
-  assert.equal(wrap.classList.contains('off'), false);
-
-  input.click();
-
-  assert.equal(document.contains(wrap), true); // узел тот же — экран не перерисовывался
-  assert.equal(wrap.classList.contains('off'), true);
+  for (const d of document.querySelectorAll('#scr-settings details.sect')) {
+    if (!d.open) d.querySelector('summary').click();
+  }
+  assert.equal(document.querySelector('[data-act="toggle-active"]'), null);
+  assert.equal(document.querySelector('[data-act="ex-active"]'), null);
+  assert.equal(document.querySelector('label.switch'), null, 'контрол снят целиком');
   const saved = JSON.parse(window.localStorage.getItem(NS));
-  assert.equal(saved.items.find(i => i.id === input.dataset.id).active, false);
-
-  input.click();
-  assert.equal(wrap.classList.contains('off'), false);
+  assert.ok(saved.items.length);
+  for (const it of saved.items) {
+    assert.equal('active' in it, false, 'поля active в данных нет');
+    assert.equal(it.removedAt, null, 'зато есть отрезок жизни');
+  }
+  for (const ex of saved.exercises) assert.equal('active' in ex, false);
 });
 
 test('смена границы дня не перерисовывает «Пункты»; сдвиг дня не глушит следующий клик', async () => {
@@ -868,7 +891,7 @@ test('доступность: точка вне label, aria-expanded, имена
   assert.match(note.textContent, /1\s*из\s*2/);
 });
 
-test('доступность: имена тумблера и кнопок недельного счётчика содержат название пункта', async () => {
+test('доступность: имена кнопок строки и недельного счётчика содержат название пункта', async () => {
   const { document } = await boot();
 
   // «+» (открывает лист записи) и появившийся точечно «отменить последний»
@@ -879,10 +902,11 @@ test('доступность: имена тумблера и кнопок нед
   const undo = document.querySelector('[data-act="train-undo"]');
   assert.match(undo.getAttribute('aria-label'), /Тренировка/);
 
-  // тумблер активности пункта (в редакторе блоков тумблеров больше нет)
+  // строка пункта в «Настройках»: имя несёт кнопка правки (тумблера,
+  // чьё имя проверялось здесь, больше нет — задача 28.E/A, п. 2)
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  const sw = document.querySelector('.row.item label.switch');
-  assert.match(sw.getAttribute('aria-label'), /включён: «Умыться»/);
+  const itxt = document.querySelector('#scr-settings [data-act="edit-open"]');
+  assert.match(itxt.getAttribute('aria-label'), /изменить «Умыться»/);
 });
 
 test('доступность: сетка разбора скрыта от AT, счётчики строк — в sr-only', async () => {
@@ -1852,21 +1876,17 @@ test('блок: линия есть при двух и более активны
   assert.equal(saved.groups.every(g => !('chain' in g)), true);
 });
 
-test('блок: выключение пунктов убирает линию, когда активным остаётся один', async () => {
+test('блок: уход пунктов убирает линию, когда живым остаётся один', async () => {
   const { document } = await boot({ seed: chainSeed() });
-  const off = id => {
-    document.querySelector('#tabs button[data-tab="settings"]').click();
-    [...document.querySelectorAll('#scr-settings .row.item input[data-act="toggle-active"]')]
-      .find(i => i.dataset.id === id).click();
-    document.querySelector('#tabs button[data-tab="today"]').click();
-  };
   const scr = () => document.getElementById('scr-today');
 
-  off('c3');
+  removeItemThroughUi(document, 'c3');
+  document.querySelector('#tabs button[data-tab="today"]').click();
   assert.equal(scr().querySelectorAll('.chain').length, 1, 'двое — линия есть');
   assert.equal(scr().querySelectorAll('.cseg').length, 4);
 
-  off('c2');
+  removeItemThroughUi(document, 'c2');
+  document.querySelector('#tabs button[data-tab="today"]').click();
   assert.equal(scr().querySelectorAll('.chain').length, 0, 'один — линии нет');
   assert.equal(scr().querySelectorAll('.cseg').length, 0);
   assert.match(scr().textContent, /Свет/); // сам пункт на месте
@@ -2456,7 +2476,7 @@ test('лист тренировки: без упражнений — тихая 
   assert.equal(s.weekLog.length, 1);
 });
 
-test('«Настройки»: упражнения добавляются, правятся, двигаются и выключаются', async () => {
+test('«Настройки»: упражнения добавляются, правятся, двигаются и убираются', async () => {
   const { document, window } = await boot({ seed: trainSeed() });
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
   document.querySelector('#tabs button[data-tab="settings"]').click();
@@ -2491,13 +2511,18 @@ test('«Настройки»: упражнения добавляются, пр�
   rows()[1].querySelector('[data-act="ex-up"]').click();
   assert.deepEqual(saved().exercises.map(e => e.name), ['Тяга', 'Жим лёжа', 'Присед']);
 
-  // выключение убирает упражнение из листа тренировки, но не из настроек
-  rows()[0].querySelector('input[data-act="ex-active"]').click();
-  assert.equal(saved().exercises[0].active, false);
+  // «Убрать» уводит упражнение из листа тренировки и из списка, но не из данных
+  rows()[0].querySelector('[data-act="ex-open"]').click();
+  const rm = () => document.querySelector('[data-act="ex-remove"]');
+  rm().click();
+  assert.match(rm().textContent, /Подтвердить/, 'первый тап только взводит');
+  rm().click();
+  assert.equal(saved().exercises[0].removedAt, daysAgo(0));
+  assert.ok(document.querySelector('#scr-settings .gone-note'), 'короткий путь назад на месте');
   document.querySelector('#tabs button[data-tab="today"]').click();
   document.querySelector('[data-act="train-inc"]').click();
-  assert.equal(document.getElementById('ex-e2'), null, 'выключенного в листе нет');
-  assert.ok(document.getElementById('ex-e1'), 'включённое на месте');
+  assert.equal(document.getElementById('ex-e2'), null, 'убранного в листе нет');
+  assert.ok(document.getElementById('ex-e1'), 'живое на месте');
 });
 
 test('«Прогресс»: упражнение с двумя записями истории даёт линию подъёма', async () => {
@@ -3888,34 +3913,36 @@ test('З22/4: взведённое подтверждение гаснет пр�
   assert.equal(saved().groups.length, 1, 'блок на месте');
 });
 
-test('З22/5: подпись зачёта дня следует за тумблером без перерисовки', async () => {
+/* Прежде подпись следовала за ТУМБЛЕРОМ и обновлялась точечно, без
+   перерисовки: в этом и был дефект задачи 22. Тумблер упразднён (28.E/A),
+   уход пункта всегда перерисовывает «Настройки» целиком — и подпись
+   обязана следовать за ним ровно так же честно. */
+test('З22/5: подпись зачёта дня следует за уходом пункта', async () => {
   const { document, window } = await boot({ seed: t17Seed() });
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const note = () => document.getElementById('thr-note');
-  const before = note();
-  assert.match(before.textContent, /День зачтён, если отмечено не меньше 4 из 5\./);
+  assert.match(note().textContent, /День зачтён, если отмечено не меньше 4 из 5\./);
 
-  const toggles = () => [...document.querySelectorAll('input[data-act="toggle-active"]')];
-  toggles()[0].click();
-  assert.equal(document.getElementById('thr-note'), before, 'узел тот же — экран не перерисован');
+  const alive = () => JSON.parse(window.localStorage.getItem(NS))
+    .items.filter(i => !i.removedAt && i.type === 'daily' && i.area === 'min').length;
+
+  removeItemThroughUi(document, 'm0');
+  assert.equal(alive(), 4);
   assert.match(note().textContent, /не меньше 4 из 4\./);
   assert.equal(note().hidden, false);
 
-  // подпись совпадает с фактическим числом активных пунктов
-  const active = () => JSON.parse(window.localStorage.getItem(NS))
-    .items.filter(i => i.active && i.type === 'daily' && i.area === 'min').length;
-  toggles()[1].click();
-  assert.match(note().textContent, new RegExp('из ' + active() + '\\.'));
+  removeItemThroughUi(document, 'm1');
+  assert.match(note().textContent, new RegExp('из ' + alive() + '\\.'));
 
-  // последний выключенный пункт: подпись прячется, а не врёт
-  toggles().forEach(t => { if (t.checked) t.click(); });
-  assert.equal(active(), 0);
+  // последний убранный пункт: подпись прячется, а не врёт
+  for (const id of ['m2', 'm3', 'm4']) removeItemThroughUi(document, id);
+  assert.equal(alive(), 0);
   assert.equal(note().textContent, '');
   assert.equal(note().hidden, true);
 
-  // обратно — узел всё ещё тот же и снова говорит правду
-  toggles()[0].click();
-  assert.equal(document.getElementById('thr-note'), before);
+  // возврат — и подпись снова говорит правду
+  document.querySelector('#scr-settings [data-act="item-restore"]').click();
+  assert.equal(alive(), 1);
   assert.match(note().textContent, /не меньше 1 из 1\./);
 });
 
@@ -4297,24 +4324,23 @@ test('З23/6: недельный счётчик — запись трениро�
   assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'после отмены последней');
 });
 
-test('З23/6: тумблеры «Пунктов» — .off и подпись зачёта дня', async () => {
+/* Здесь стоял третий сторож эквивалентности — «Настройки». Его предметом
+   были ДВА точечных пути этого экрана: тумблер пункта (класс .off плюс
+   подпись зачёта дня) и тумблер упражнения. Оба ушли с полем active
+   (задача 28.E/A, п. 2), и точечных путей на «Настройках» не осталось
+   вовсе: «Убрать» и «Вернуть» идут полной перерисовкой. Сторожить
+   расхождение стало нечему.
+
+   Экранов с горячими путями снова два, и оба сторожатся выше: «Сегодня»
+   (отметка, недельный счётчик) и «Привычки» (отметка, полоса недели).
+   Само поведение ухода закреплено блоком «З28E/A» ниже. */
+
+test('З28E/A: разметка после ухода пункта совпадает с перерисовкой', async () => {
   const { document, window } = await boot({ seed: pointSeed() });
   document.querySelector('#tabs button[data-tab="settings"]').click();
-
-  // выключение пункта минимума: строка гаснет, знаменатель подписи падает.
-  // Ровно здесь жил дефект задачи 22 — подпись оставалась прежней
-  document.querySelectorAll('#scr-settings input[data-act="toggle-active"]')[0].click();
-  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings', MIRROR_EXCEPT), 'выключение пункта');
-
-  document.querySelectorAll('#scr-settings input[data-act="toggle-active"]')[0].click();
-  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings', MIRROR_EXCEPT), 'включение обратно');
-
-  // выключение упражнения — свой точечный путь, без подписи
-  const sect = [...document.querySelectorAll('#scr-settings details.sect')]
-    .find(d => /Упражнения/.test(d.querySelector('summary').textContent));
-  sect.querySelector('summary').click();
-  document.querySelector('#scr-settings input[data-act="ex-active"]').click();
-  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings', MIRROR_EXCEPT), 'выключение упражнения');
+  const id = document.querySelector('#scr-settings [data-act="edit-open"]').dataset.id;
+  removeItemThroughUi(document, id);
+  assertSame(pointVsFull(window, 'scr-settings', 'renderSettings', MIRROR_EXCEPT), 'после ухода пункта');
 });
 
 /* ══ Задача 23, п. 7: дыры покрытия уровня рендера ════════════
@@ -4956,7 +4982,9 @@ test('З28C: экран снят, а экспорт по-прежнему нес
   openData(document);
   const file = await grabDownload(window, () => document.querySelector('[data-act="export"]').click());
   const exported = JSON.parse(file.text);
-  assert.equal(exported.schemaVersion, 16, 'схема не поднималась');
+  // схема поднялась до текущей, но не заметками: их снятие её не трогало
+  // (28.C), номер сдвинул уход пункта (28.E/A, v17)
+  assert.equal(exported.schemaVersion, SCHEMA_VERSION);
   assert.equal(exported.notes.length, 2, 'обе записи в файле');
   assert.deepEqual(exported.notes.map(n => n.text), ['своя мысль', 'Начал — половину сделал.']);
   assert.equal(exported.notes[1].source, 'Гораций', 'источник выписки цел');
@@ -4988,7 +5016,8 @@ test('З28D: механик нет, а экспорт по-прежнему не
   openData(document);
   const file = await grabDownload(window, () => document.querySelector('[data-act="export"]').click());
   const exported = JSON.parse(file.text);
-  assert.equal(exported.schemaVersion, 16, 'схема не поднималась');
+  // как и выше: снятие механик схему не поднимало, номер сдвинул уход пункта
+  assert.equal(exported.schemaVersion, SCHEMA_VERSION);
   const it = exported.items.find(i => i.id === seed.items[0].id);
   assert.equal(it.formula.anchor, 'после зарядки', 'формула в файле');
   assert.equal(it.formula.mode, 'break', 'вместе с режимом');
@@ -5688,7 +5717,7 @@ test('З26/6.1: состояние нажатия есть у каждой та�
 
 /* Нативные контролы: у них свой отклик — галочка, ход головки тумблера,
    системный список select, календарь date. Заливкой их не подменяют. */
-const EXEMPT = ['input', 'select', 'label.switch', 'label.row.check', '.banner.static'];
+const EXEMPT = ['input', 'select', 'label.row.check', '.banner.static'];
 
 /* Обход живого DOM, а не сверка со списком: любая будущая тач-цель без
    отклика на нажатие валит этот тест сама, без правки списка (п. 10.6). */
@@ -5731,7 +5760,8 @@ test('З26/6.1: ни одной тач-цели без отклика на на�
 test('З26/6.3: все переходы движения — в окне 180–260 мс', () => {
   const css = CSS_SRC();
   const secs = [...css.matchAll(/transition:[^;]*?([\d.]+)s/g)].map(m => Math.round(+m[1] * 1000));
-  assert.ok(secs.length >= 10, 'переходы найдены');
+  // было 10; две ушли с тумблером (трек и головка) — задача 28.E/A, п. 2
+  assert.ok(secs.length >= 8, 'переходы найдены');
   for (const ms of secs) assert.ok(ms >= 180 && ms <= 260, `переход ${ms} мс вне окна 180–260`);
   // анимации-отклики тоже; flash-note — не переход движения, а появление,
   // удержание и уход, и конституция считает его отдельно
@@ -5971,8 +6001,9 @@ test('З27/9.1: форма блока получила черновик', async 
   document.querySelector('#tabs button[data-tab="settings"]').click();
   document.querySelector('#scr-settings [data-act="group-add-open"]').click();
   document.getElementById('g-add').value = 'Вечер';
-  // перерисовка по чужому поводу: тумблер пункта
-  document.querySelector('#scr-settings input[data-act="toggle-active"]').click();
+  // перерисовка по чужому поводу: степпер порога зачёта дня (тумблер, стоявший
+  // здесь прежде, упразднён задачей 28.E/A)
+  document.querySelector('#scr-settings [data-act="thr-inc"]').click();
   document.querySelector('#tabs button[data-tab="settings"]').click();
   assert.equal(document.getElementById('g-add').value, 'Вечер', 'имя нового блока не пропало');
 });
@@ -6641,4 +6672,141 @@ test('З28B/6.3: взведённое закрытие недели гаснет
   assert.equal(document.querySelector('[data-act="close-week"]').textContent, 'Закрыть неделю',
     'подтверждение не пережило ухода');
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).reviews.length, 0, 'ничего не записано');
+});
+
+
+/* ══ Задача 28.E, часть A: уход пункта ════════════════════════
+   Тумблер упразднён, «Убрать» живёт в форме правки и просит второго
+   тапа. Прошлое от ухода не двигается — это доказано доменным уровнем
+   (З28E/A.7.1–A.7.5); здесь предмет — разметка, порядок узлов и обе
+   дороги назад. */
+
+test('З28E/A.3: «Убрать» — второй тап, последствие ПОД кнопкой, строка уходит', async () => {
+  const { document, window } = await boot({ seed: t17Seed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const rows = () => [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')];
+  assert.equal(rows().length, 5);
+
+  rows()[0].click();
+  const rm = () => document.querySelector('#scr-settings [data-act="item-remove"]');
+  assert.ok(rm(), '«Убрать» — в форме правки, а не в строке');
+  assert.equal(document.querySelector('.row.item [data-act="item-remove"]'), null,
+    'в строке кнопки нет: на 375 px там нет места');
+  assert.equal(rm().textContent, 'Убрать');
+
+  // первый тап: взводит и печатает последствие. Узел последствия стоит
+  // ПОСЛЕ блока кнопок — иначе он сдвинул бы кнопку вниз между тапами
+  rm().click();
+  assert.equal(rm().textContent, 'Подтвердить: убрать');
+  const btns = rm().closest('.btns');
+  // «Убрать» — ОДИН в своём ряду. В общем ряду с «Сохранить» и «Отменой»
+  // надпись «Подтвердить: убрать» переносила кнопку на следующую строку
+  // flex-обёртки и уводила её вниз на 54 px (замер в браузере, 375×812) —
+  // ровно между первым и вторым тапом
+  assert.deepEqual([...btns.children].map(x => x.dataset.act), ['item-remove']);
+  assert.deepEqual([...btns.previousElementSibling.children].map(x => x.dataset.act),
+    ['edit-save', 'edit-cancel'], 'сохранение и отмена — рядом выше');
+  const what = btns.nextElementSibling;
+  assert.ok(what && what.classList.contains('muted'), 'последствие сразу за кнопками');
+  assert.match(what.textContent, /Пункт уйдёт из списков/);
+  assert.match(what.textContent, /Отметки и прошлые дни останутся как есть/);
+  // числа «во что превратится серия» не показываются никогда (A.3.3)
+  assert.doesNotMatch(what.textContent, /сери|рекорд|\d+ (день|дня|дней)/i);
+
+  // второй тап: строка ушла, на её месте — короткий путь назад
+  rm().click();
+  assert.equal(rows().length, 4, 'строка ушла из списка');
+  const note = document.querySelector('#scr-settings .gone-note');
+  assert.ok(note, 'строка «убран — Вернуть» на месте ушедшей');
+  assert.match(note.textContent, /Пункт 0 · убран/);
+  assert.equal(note.querySelector('[data-act="item-restore"]').textContent, 'Вернуть');
+  assert.equal(document.activeElement, note.querySelector('[data-act="item-restore"]'),
+    'фокус — на «Вернуть»: строка, с которой он был, исчезла');
+
+  // и данные: отметки на месте, поле проставлено сегодняшним днём
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(saved.items.find(i => i.id === 'm0').removedAt, daysAgo(0));
+  assert.ok(Object.keys(saved.days).length, 'отметки не тронуты');
+});
+
+test('З28E/A.3.4: строка «убран» — не .flash: по таймеру не гаснет', async () => {
+  const { document } = await boot({ seed: t17Seed() });
+  removeItemThroughUi(document, 'm0');
+  const note = () => document.querySelector('#scr-settings .gone-note');
+  assert.ok(note());
+  assert.equal(note().classList.contains('flash'), false, 'свой класс, не .flash');
+  await wait(T.FLASH_MS + 120); // заведомо дольше жизни подтверждения
+  assert.ok(note(), 'отмена, исчезающая через секунду, отменой не является');
+});
+
+test('З28E/A.3.5: «Убранные» — длинный путь назад, пустым не рисуется', async () => {
+  const { document } = await boot({ seed: t17Seed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const heads = () => [...document.querySelectorAll('#scr-settings h2')].map(h => h.textContent);
+  assert.equal(heads().includes('Убранные'), false, 'убирать нечего — блока нет');
+
+  removeItemThroughUi(document, 'm0');
+  // пока стоит короткий путь назад, в «Убранных» пункт не дублируется
+  assert.equal(heads().includes('Убранные'), false, 'двух «Вернуть» на одну запись нет');
+
+  // следующее действие гасит короткий путь — и появляется длинный
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  assert.equal(document.querySelector('#scr-settings .gone-note'), null);
+  assert.equal(heads().includes('Убранные'), true);
+  const gone = [...document.querySelectorAll('#scr-settings .rowwrap.gone')];
+  assert.equal(gone.length, 1);
+  assert.match(gone[0].textContent, /Пункт 0/);
+  assert.match(gone[0].querySelector('.meta').textContent, /^убран /);
+
+  // «Вернуть» из «Убранных» в тот же день — полная отмена
+  gone[0].querySelector('[data-act="item-restore"]').click();
+  assert.equal(heads().includes('Убранные'), false, 'блок опустел и исчез');
+  assert.equal([...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].length, 5);
+});
+
+test('З28E/A.8.1: уход пункта не меняет чисел «Прогресса» за прошлые дни', async () => {
+  const { document } = await boot({ seed: t17Seed() });
+  const prog = () => {
+    document.querySelector('#tabs button[data-tab="progress"]').click();
+    const scr = document.getElementById('scr-progress');
+    return {
+      days: scr.querySelectorAll('.pcard')[0].textContent,
+      rec: (scr.querySelector('.rec') || {}).textContent || '',
+      chain: [...scr.querySelectorAll('.cd')].map(c => c.className).join('|')
+    };
+  };
+  const before = prog();
+  removeItemThroughUi(document, 'm4'); // самый редкий пункт сида
+  const after = prog();
+
+  assert.equal(after.days, before.days, '«в системе» не сдвинулось');
+  assert.equal(after.rec, before.rec, 'рекорд не сдвинулся');
+  // сегодняшняя ячейка вправе измениться — уход действует с сегодня;
+  // все прежние обязаны совпасть
+  const cut = s => s.split('|').slice(0, -1).join('|');
+  assert.equal(cut(after.chain), cut(before.chain), 'цепь за прошлые дни та же');
+});
+
+test('З28E/A.4: у упражнения «Убрать» и «Убранные» тем же механизмом', async () => {
+  const { document, window } = await boot({ seed: trainSeed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const sect = [...document.querySelectorAll('#scr-settings details.sect')]
+    .find(d => /Упражнения/.test(d.querySelector('summary').textContent));
+  sect.querySelector('summary').click();
+
+  document.querySelector('#scr-settings [data-act="ex-open"]').click();
+  const rm = () => document.querySelector('#scr-settings [data-act="ex-remove"]');
+  rm().click();
+  assert.match(rm().closest('.btns').nextElementSibling.textContent, /Упражнение уйдёт из списков/);
+  rm().click();
+  assert.match(document.querySelector('#scr-settings .gone-note').textContent, /Жим · убрано/);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).exercises[0].removedAt, daysAgo(0));
+
+  // длинный путь: «Убранные» в своей секции
+  document.querySelector('#scr-settings [data-act="ex-open"]').click();
+  const gone = [...document.querySelectorAll('#scr-settings .rowwrap.gone')];
+  assert.equal(gone.length, 1);
+  gone[0].querySelector('[data-act="ex-restore"]').click();
+  assert.equal(document.querySelector('#scr-settings .rowwrap.gone'), null);
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).exercises[0].removedAt, null);
 });

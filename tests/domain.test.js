@@ -230,14 +230,14 @@ test('И3: closeWeek пишет срез завершённой недели и 
   assert.equal(app.reviewDue(), false);
 });
 
-test('И3: выключенный пункт без отметок в окне не попадает в срез, с отметками — попадает', () => {
+test('И3: убранный пункт без отметок в окне не попадает в срез, с отметками — попадает', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   calendarPast(s);
   const prev = app.previousWeekStart();
   const [a, b] = s.items.filter(i => i.type === 'daily');
-  a.active = false;                          // без отметок
-  b.active = false;
+  a.removedAt = a.addedAt;                   // без отметок
+  b.removedAt = b.addedAt;
   app.toggleMark(app.addDays(prev, 2), b.id); // с отметкой в разобранной неделе
 
   app.closeWeek();
@@ -336,7 +336,7 @@ test('И4: неделя с 5 отметками в тройке последни
   assert.equal(app.raiseEligible(item), true);
 });
 
-test('И4: повышение — активный дневной пункт минимума с числовой планкой', () => {
+test('И4: повышение — живой дневной пункт минимума с числовой планкой', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   calendarPast(s);
@@ -352,9 +352,9 @@ test('И4: повышение — активный дневной пункт м�
   assert.equal(app.raiseEligible(noValue), false); // нет числовой планки
   assert.equal(app.raiseEligible(weekly), false);  // недельный тип
   assert.equal(app.raiseEligible(habit), false);   // область привычек
-  item.active = false;
-  assert.equal(app.raiseEligible(item), false);    // выключен
-  item.active = true;
+  item.removedAt = app.todayKey();
+  assert.equal(app.raiseEligible(item), false);    // убран
+  item.removedAt = null;
   assert.equal(app.raiseEligible(item), true);
 });
 
@@ -663,22 +663,22 @@ test('З2: closeWeek guard — до calendarSince и повторный вызо
   assert.equal(s.reviews.length, 1);
 });
 
-test('З2: trainings в срезе — активные либо с ненулевым счётом за разобранную неделю', () => {
+test('З2: trainings в срезе — живые либо с ненулевым счётом за разобранную неделю', () => {
   setNow(2026, 7, 17, 12, 0);
   const s = freshStore();
   calendarPast(s);
   const prev = app.previousWeekStart();
   const w1 = s.items.find(i => i.type === 'weekly'); // активный, счёт 0
   s.items.push(
-    { ...w1, id: 'w2', name: 'Выключенный без счёта', active: false },
-    { ...w1, id: 'w3', name: 'Выключенный со счётом', active: false }
+    { ...w1, id: 'w2', name: 'Убранный без счёта', removedAt: w1.addedAt },
+    { ...w1, id: 'w3', name: 'Убранный со счётом', removedAt: w1.addedAt }
   );
   s.weekLog.push({ itemId: 'w3', date: app.addDays(prev, 3), ts: 1 }); // в разобранной неделе
   app.closeWeek();
   const t = s.reviews[0].trainings;
-  assert.equal(w1.id in t, true);  // активный с нулём — в срезе
-  assert.equal('w2' in t, false);  // выключенный без счёта — нет
-  assert.equal('w3' in t, true);   // выключенный со счётом — да
+  assert.equal(w1.id in t, true);  // живой с нулём — в срезе
+  assert.equal('w2' in t, false);  // убранный без счёта — нет
+  assert.equal('w3' in t, true);   // убранный со счётом — да
   assert.equal(t.w3.count, 1);
 });
 
@@ -950,9 +950,9 @@ test('З9: applyParamStep/keepParam — guard-матрица, одно реше�
 
   assert.equal(app.applyParamStep('нет-такого'), false); // несуществующий
   assert.equal(app.applyParamStep(habit.id), false);     // не param
-  p.active = false;
-  assert.equal(app.applyParamStep(p.id), false);         // неактивный
-  p.active = true;
+  p.removedAt = app.todayKey();
+  assert.equal(app.applyParamStep(p.id), false);         // убранный
+  p.removedAt = null;
 
   s.settings.calendarSince = app.currentWeekStart();     // разбор недоступен
   assert.equal(app.applyParamStep(p.id), false);
@@ -1038,14 +1038,14 @@ test('З9/З11: habitsSteady — 2 последние КАЛЕНДАРНЫЕ н�
   assert.equal(app.habitsSteady(), true);  // норма 5: 6 и 7 достаточно
   wk([4, 7], [7, 7]);
   assert.equal(app.habitsSteady(), false); // 4 < 5
-  h2.active = false;
+  h2.removedAt = app.todayKey();
   wk([5, 7], [0, 0]);
-  assert.equal(app.habitsSteady(), true);  // выключенная не учитывается
-  h1.active = false;
-  assert.equal(app.habitsSteady(), false); // активных привычек нет
+  assert.equal(app.habitsSteady(), true);  // убранная не учитывается
+  h1.removedAt = app.todayKey();
+  assert.equal(app.habitsSteady(), false); // живых привычек нет
 
   // A.5.5: reviews на результат не влияет ни в одну сторону
-  h1.active = true; h2.active = false;
+  h1.removedAt = null;
   wk([5, 7], [0, 0]);
   s.reviews = [];
   assert.equal(app.habitsSteady(), true, 'пустой reviews готовности не мешает');
@@ -1275,7 +1275,7 @@ test('З7: markYesterday — матрица guard\'ов, запись ровно
   const y = app.addDays(t, -1);
   const item = s.items.find(i => i.name === 'Умыться');
   const weekly = s.items.find(i => i.type === 'weekly');
-  const inactive = s.items.find(i => i.name === 'Развитие');
+  const gone = s.items.find(i => i.name === 'Развитие');
 
   assert.equal(app.markYesterday('нет-такого-id'), false); // несуществующий пункт
   assert.equal(app.markYesterday(item.id), false);         // добавлен сегодня — вчера не существовал
@@ -1283,9 +1283,9 @@ test('З7: markYesterday — матрица guard\'ов, запись ровно
   item.addedAt = y;
   weekly.addedAt = app.addDays(t, -5);
   assert.equal(app.markYesterday(weekly.id), false);       // weekly не отмечается
-  inactive.addedAt = app.addDays(t, -5);
-  inactive.active = false;
-  assert.equal(app.markYesterday(inactive.id), false);     // неактивный
+  gone.addedAt = app.addDays(t, -5);
+  gone.removedAt = t;
+  assert.equal(app.markYesterday(gone.id), false);         // убранный
 
   assert.equal(app.markYesterday(item.id), true);
   assert.equal(app.isMarked(y, item.id), true);            // ровно вчерашний ключ
@@ -1920,8 +1920,14 @@ test('З16B: день закрыт по всем активным пунктам
   s.items.push(Object.assign(mkMin('w1', app.addDays(t, -60)), { type: 'weekly', goal: 3 }));
   assert.equal(app.minDayClosed(y), true);
 
-  // выключенный пункт из расчёта выпадает
-  s.items.find(i => i.id === 'm2').active = false;
+  // пункт, убранный СЕГОДНЯ, из вчерашнего расчёта не выпадает: уход
+  // действует с сегодняшнего дня включительно (инвариант 12)
+  const m2 = s.items.find(i => i.id === 'm2');
+  m2.removedAt = t;
+  assert.deepEqual(app.minDayMarks(y), { done: 2, total: 2 }, 'вчера не сдвинулось');
+  assert.deepEqual(app.minDayMarks(t), { done: 0, total: 1 }, 'а сегодня пункта уже нет');
+  // убранный в день заведения не попадает в знаменатель ни одного дня
+  m2.removedAt = m2.addedAt;
   assert.deepEqual(app.minDayMarks(y), { done: 1, total: 1 });
 
   // пунктов нет — день не закрыт: закрывать было нечего
@@ -2087,12 +2093,12 @@ test('З16C: lowerEligible — две недели по ≤3 из 7, грани�
   calendarPast(s);
   assert.equal(app.lowerEligible(item), true);
 
-  // область привычек и выключённый пункт предложения не получают
+  // область привычек и убранный пункт предложения не получают
   const habit = s.items.find(i => i.type === 'daily' && i.area === 'habit');
   assert.equal(app.lowerEligible(habit), false);
-  item.active = false;
+  item.removedAt = app.todayKey();
   assert.equal(app.lowerEligible(item), false);
-  item.active = true;
+  item.removedAt = null;
 
   // пункт без числовой планки предложение получает — решение сводится
   // к «Оставить», кнопки шага у него нет (lowerSuggest === null)
@@ -2264,9 +2270,9 @@ test('З16D: упражнения — порядок стрелками, пра�
   assert.equal(a.unit, 'повт.');
   assert.equal(app.updateExercise(a.id, '   ', 'кг'), false, 'пустое имя не сохраняется');
   assert.equal(app.updateExercise('нет такого', 'x', ''), false);
-  assert.deepEqual(app.activeExercises().map(e => e.id), [b.id, a.id]);
-  b.active = false;
-  assert.deepEqual(app.activeExercises().map(e => e.id), [a.id]);
+  assert.deepEqual(app.liveExercises().map(e => e.id), [b.id, a.id]);
+  b.removedAt = app.todayKey();
+  assert.deepEqual(app.liveExercises().map(e => e.id), [a.id]);
 });
 
 test('З16D: миграция v11→v12 — упражнения и сессии, мусор отброшен, идемпотентно', () => {
@@ -2295,7 +2301,8 @@ test('З16D: миграция v11→v12 — упражнения и сессии
   assert.equal(typeof m2.exercises[0].id, 'string');
   assert.equal(m2.exercises[0].value, null, 'нагрузка ≤ 0 обнуляется');
   assert.deepEqual(m2.exercises[0].history, []);
-  assert.equal(m2.exercises[0].active, true);
+  assert.equal(m2.exercises[0].removedAt, null);
+  assert.equal('active' in m2.exercises[0], false, 'поле active снято миграцией');
   assert.equal(m2.sessions.length, 1, 'запись без валидной даты отброшена');
   assert.deepEqual(m2.sessions[0].entries, [{ exId: 'a', value: 12 }]);
   assert.equal(m2.sessions[0].note, '');
@@ -2379,7 +2386,10 @@ test('З28C: снятие экрана не трогает данные — note
 
   // 1) migrate ничего не теряет и не переписывает
   const m = app.migrate(JSON.parse(JSON.stringify(owner)));
-  assert.equal(m.schemaVersion, 16, 'схема осталась шестнадцатой');
+  // Схема поднялась до текущей — но не заметками: их снятие схему не
+  // трогало и не тронет (28.C), номер сдвинула другая задача (уход пункта,
+  // v17). Сторож здесь не про число, а про сохранность записей ниже.
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.equal(m.notes.length, 7, 'все семь записей на месте');
   assert.deepEqual(m.notes, before, 'ни одно поле не изменилось');
   assert.deepEqual(m.notes.filter(n => n.kind === 'quote').map(n => n.source),
@@ -3604,11 +3614,12 @@ test('З22/5: подпись зачёта дня — от числа приме�
   const s = freshStore();
   assert.match(app.thresholdNote(), /не меньше 5 из 6\./);
 
+  const t = app.todayKey();
   s.items.filter(i => i.type === 'daily' && i.area === 'min').slice(0, 3)
-    .forEach(i => { i.active = false; });
+    .forEach(i => { i.removedAt = t; });
   assert.match(app.thresholdNote(), /не меньше 3 из 3\./);
 
-  s.items.forEach(i => { i.active = false; });
+  s.items.forEach(i => { i.removedAt = t; });
   assert.equal(app.thresholdNote(), '', 'применимых пунктов нет — подписи нет');
 });
 
@@ -4415,4 +4426,287 @@ test('З27/9.1: domFormKey — формы блока и упражнения п�
   assert.equal(app.domFormKey(f('formula', 'i1')), 'formula:i1');
   assert.equal(app.domFormKey(f('ladder', 'i1')), 'ladder:i1');
   assert.equal(app.domFormKey(f('train', 'w1')), 'train:w1');
+});
+
+
+/* ══ Инвариант 12. Отрезок жизни пункта (задача 28.E/A) ═══════
+   Прошлое считается по тем, кто ЖИЛ в том дне: addedAt ≤ день и
+   (removedAt пуст или день < removedAt). Прежде фильтр читал i.active —
+   нынешнее значение — и применял его ко всем дням истории, то есть
+   сегодняшний тумблер переписывал прошлое. */
+
+/* Детерминированный ГПСЧ фикстуры регресса: без него «реалистичный store»
+   был бы либо крошечным, либо невоспроизводимым. */
+function lcg28e(seed) {
+  let x = seed >>> 0;
+  return () => { x = (x * 1664525 + 1013904223) >>> 0; return x / 4294967296; };
+}
+
+/* Реалистичный v16-store владельца: 105 дней истории, восемь пунктов
+   минимума (три ВЫКЛЮЧЕНЫ: с отметками, заведённый позже и ни разу не
+   отмеченный), две привычки, недельный счётчик и параметр. */
+function v16Fixture() {
+  const since = '2026-05-04'; // понедельник, 105-й день до 16.08.2026 включительно
+  const mk = (id, name, extra) => Object.assign({
+    id, name, value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', active: true, addedAt: since,
+    raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    formula: null, ladder: null, ladderLog: []
+  }, extra || {});
+  const items = [
+    mk('m1', 'Умыться'),
+    mk('m2', 'Душ'),
+    mk('m3', 'Подтягивания', { value: 5, unit: 'повт.', history: [{ date: since, value: 5 }] }),
+    mk('m4', 'Английский', { value: 5, unit: 'мин', addedAt: '2026-05-25' }),
+    mk('m5', 'Развитие', { active: false }),                       // выключен, отметки есть
+    mk('m6', 'Пешком', { active: false, addedAt: '2026-06-15' }),  // выключен и заведён позже
+    mk('m7', 'Растяжка', { active: false }),                       // выключен и ни разу не отмечен
+    mk('m8', 'Дневник', { addedAt: '2026-07-06' }),                // заведён поздно, активен
+    mk('h1', 'Телефон вне кровати', { area: 'habit', normPerWeek: 7 }),
+    mk('h2', 'Ногти', { area: 'habit', normPerWeek: 5, active: false }),
+    mk('w1', 'Тренировка', { type: 'weekly', goal: 3 }),
+    mk('p1', 'Отбой', {
+      type: 'param', area: 'habit', pkind: 'time', pvalue: 1380, pstep: -15,
+      history: [{ date: since, value: 1410 }, { date: '2026-06-01', value: 1380 }]
+    })
+  ];
+  const rnd = lcg28e(20260816);
+  const days = {};
+  const t = '2026-08-16';
+  let k = since;
+  while (k <= t) {
+    for (const it of items) {
+      if (it.type !== 'daily' || it.addedAt > k) continue;
+      const pr = it.id === 'm7' ? 0 : (it.id === 'm5' ? 0.55 : (it.id === 'm6' ? 0.4 : 0.86));
+      if (rnd() < pr) (days[k] || (days[k] = {}))[it.id] = true;
+    }
+    k = app.addDays(k, 1);
+  }
+  return {
+    schemaVersion: 16, items, groups: [], days,
+    weekLog: [], reviews: [], pendingRaises: [], pendingLowers: [],
+    exercises: [], sessions: [], notes: [], paramDecided: {},
+    draftOneChange: '', weekStart: t,
+    settings: {
+      dayBoundary: 4, dayThreshold: 0.8, exportedAt: null,
+      calendarSince: since, habitSeeded: true, seed17: true
+    }
+  };
+}
+
+/* Цепь дней строкой: F — зачтён, P — частичный, «.» — пусто,
+   f — впереди, p — до начала отсчёта. Сравнивать проще, чем сетку. */
+function chainString() {
+  const t = app.todayKey();
+  const since = app.store.settings.calendarSince;
+  const th = app.dayThreshold() - 1e-9;
+  let out = '';
+  for (const mon of app.chainWeeks(8)) {
+    for (let i = 0; i < 7; i++) {
+      const d = app.addDays(mon, i);
+      if (d > t) { out += 'f'; continue; }
+      if (d < since) { out += 'p'; continue; }
+      const sc = app.dayScore(d);
+      out += (sc !== null && sc >= th) ? 'F' : (sc ? 'P' : '.');
+    }
+  }
+  return out;
+}
+
+/* Эталон, снятый КОДОМ ДО ПРАВКИ (minimum-v41, схема 16) на этой самой
+   фикстуре: разведка A.0.6. Числа владельца не вправе сдвинуться после
+   миграции ни на единицу — в этом всё содержание части A. */
+const V41_STREAK = 22;
+const V41_BEST = 22;
+const V41_CHAIN = 'PFFFPFFPFPFFFFFFFFFFFPPFFFFPFFFFPFPFFFFFFFFFFFFFFFFFFFFF';
+
+test('З28E/A.7.1: миграция v16→v17 не сдвигает числа «Прогресса» ни на единицу', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const raw = v16Fixture();
+
+  // «ДО» по дням считается ПРЯВИЛОМ v41 прямо здесь, на непромигрированных
+  // данных: active && addedAt ≤ день. Эталон не переписан из вывода нового
+  // кода — он выведен из старого правила независимо
+  const t = '2026-08-16';
+  const before = [];
+  for (let k = raw.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
+    const applicable = raw.items.filter(i =>
+      i.type === 'daily' && i.area === 'min' && i.active && i.addedAt <= k);
+    const done = applicable.filter(i => raw.days[k] && raw.days[k][i.id]).length;
+    before.push(done + '/' + applicable.length);
+  }
+  assert.equal(before.length, 105, 'эпоха на 105 дней');
+
+  // «ПОСЛЕ»: миграция и те же числа новым правилом
+  const m = app.migrate(raw);
+  app.store = m;
+  assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
+  assert.equal(m.schemaVersion, 17, 'схема поднята до семнадцатой');
+
+  const after = [];
+  for (let k = m.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
+    const x = app.minDayMarks(k);
+    after.push(x.done + '/' + x.total);
+  }
+  assert.deepEqual(after, before, 'dayScore по каждому дню эпохи — тот же');
+
+  assert.equal(app.dayStreak(), V41_STREAK, 'серия та же, что до миграции');
+  assert.equal(app.bestStreak(), V41_BEST, 'рекорд тот же');
+  assert.equal(chainString(), V41_CHAIN, 'цепь дней та же');
+
+  // и сама конверсия: выключенные стали убранными с дня заведения,
+  // поле active снято у всех
+  for (const it of m.items) assert.equal('active' in it, false);
+  assert.equal(m.items.find(i => i.id === 'm5').removedAt, '2026-05-04');
+  assert.equal(m.items.find(i => i.id === 'm6').removedAt, '2026-06-15');
+  assert.equal(m.items.find(i => i.id === 'm1').removedAt, null);
+
+  // повторный прогон ничего не меняет
+  assert.equal(JSON.stringify(app.migrate(JSON.parse(JSON.stringify(m)))), JSON.stringify(m));
+});
+
+test('З28E/A.7.2: уход пункта не двигает прошлое — серия, рекорд и цепь те же', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const m = app.migrate(v16Fixture());
+  app.store = m;
+  const was = { streak: app.dayStreak(), best: app.bestStreak(), chain: chainString() };
+
+  // уходит пункт с САМОЙ РЕДКОЙ историей — прежде именно он и «чинил» прошлое
+  assert.equal(app.removeItem('m4'), true);
+  assert.equal(m.items.find(i => i.id === 'm4').removedAt, app.todayKey());
+
+  assert.equal(app.bestStreak(), was.best, 'рекорд не сдвинулся');
+  assert.equal(chainString().slice(0, -1), was.chain.slice(0, -1), 'вчера и раньше — та же цепь');
+  // сегодняшний день — единственный, который вправе измениться: уход
+  // действует с сегодняшнего дня включительно
+  const t = app.todayKey();
+  assert.equal(app.minDayItems(app.addDays(t, -1)).some(i => i.id === 'm4'), true, 'вчера пункт был');
+  assert.equal(app.minDayItems(t).some(i => i.id === 'm4'), false, 'сегодня его уже нет');
+  assert.ok(app.dayStreak() >= was.streak, 'серия не могла укоротиться от ухода');
+});
+
+test('З28E/A.7.3: уход и возврат в тот же день — полная отмена', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const m = app.migrate(v16Fixture());
+  app.store = m;
+  const snap = JSON.stringify(m.items);
+
+  assert.equal(app.removeItem('m1'), true);
+  const back = app.restoreItem('m1');
+  assert.equal(back.id, 'm1', 'та же запись, а не новая');
+  assert.equal(m.items.filter(i => i.name === 'Умыться').length, 1, 'дублей не завелось');
+  assert.equal(JSON.stringify(m.items), snap, 'состояние побайтово прежнее');
+});
+
+test('З28E/A.7.4: возврат позже — новая запись, дни паузы не в знаменателе', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const m = app.migrate(v16Fixture());
+  app.store = m;
+  const pause = app.todayKey();
+  assert.equal(app.removeItem('m3'), true);
+
+  advanceDays(3);
+  const t2 = app.todayKey();
+  const back = app.restoreItem('m3');
+  assert.notEqual(back.id, 'm3', 'новый id');
+  assert.equal(back.addedAt, t2);
+  assert.equal(back.removedAt, null);
+  assert.equal(back.name, 'Подтягивания');
+  assert.equal(back.value, 5);
+  assert.deepEqual(back.history, [{ date: t2, value: 5 }], 'история прежнего отрезка при нём и осталась');
+  assert.equal(m.items.find(i => i.id === 'm3').history.length, 1, 'у прежней записи история цела');
+  // новая запись встала сразу за прежней — порядок блока не потерян
+  assert.equal(m.items.indexOf(back), m.items.findIndex(i => i.id === 'm3') + 1);
+
+  // дни паузы: ни прежняя запись, ни новая в знаменателе не стоят
+  for (let k = pause; k < t2; k = app.addDays(k, 1)) {
+    const ids = app.minDayItems(k).map(i => i.id);
+    assert.equal(ids.includes('m3'), false, 'убранный не в знаменателе ' + k);
+    assert.equal(ids.includes(back.id), false, 'вернувшийся тоже: его тогда не было');
+  }
+  assert.equal(app.minDayItems(t2).some(i => i.id === back.id), true, 'сегодня он снова считается');
+  // и вчерашний день до ухода по-прежнему знает прежнюю запись
+  assert.equal(app.minDayItems(app.addDays(pause, -1)).some(i => i.id === 'm3'), true);
+});
+
+test('З28E/A.7.5: заведён и убран в один день — не в знаменателе ни одного дня', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const m = app.migrate(v16Fixture());
+  app.store = m;
+  const t = app.todayKey();
+  m.items.push({
+    id: 'oneday', name: 'Однодневка', value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', removedAt: null, addedAt: t,
+    raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    formula: null, ladder: null, ladderLog: []
+  });
+  assert.equal(app.minDayItems(t).some(i => i.id === 'oneday'), true, 'пока живёт — считается');
+  assert.equal(app.removeItem('oneday'), true);
+
+  for (let k = m.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
+    assert.equal(app.minDayItems(k).some(i => i.id === 'oneday'), false, 'ни в одном дне: ' + k);
+  }
+  assert.equal(app.livedOn(m.items.find(i => i.id === 'oneday'), t), false);
+});
+
+test('З28E/A.7.6: отказ записи откатывает поле — ни ухода, ни возврата', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const m = app.migrate(v16Fixture());
+  app.store = m;
+
+  // localStorage, который не принимает запись: save() возвращает false
+  const mem = {};
+  let deny = false;
+  global.localStorage = {
+    getItem: k => (k in mem ? mem[k] : null),
+    setItem: (k, v) => { if (deny) throw new Error('quota'); mem[k] = String(v); },
+    removeItem: k => { delete mem[k]; }
+  };
+  try {
+    deny = true;
+    assert.equal(app.removeItem('m1'), false, 'уход не выполнен');
+    assert.equal(m.items.find(i => i.id === 'm1').removedAt, null, 'поле откачено');
+
+    deny = false;
+    assert.equal(app.removeItem('m1'), true);
+    const n = m.items.length;
+
+    // возврат в тот же день при отказе записи: поле возвращается на место
+    deny = true;
+    assert.equal(app.restoreItem('m1'), null);
+    assert.equal(m.items.find(i => i.id === 'm1').removedAt, app.todayKey(), 'по-прежнему убран');
+    assert.equal(m.items.length, n, 'записей не прибавилось');
+
+    // возврат ПОЗЖЕ при отказе записи: новая запись не остаётся в списке
+    advanceDays(2);
+    assert.equal(app.restoreItem('m1'), null);
+    assert.equal(m.items.length, n, 'новая запись откачена');
+
+    // упражнения — тем же механизмом
+    m.exercises.push({ id: 'x1', name: 'Жим', unit: 'кг', value: 40, history: [], removedAt: null, addedAt: '2026-05-04' });
+    assert.equal(app.removeExercise('x1'), false);
+    assert.equal(m.exercises.find(e => e.id === 'x1').removedAt, null);
+  } finally {
+    delete global.localStorage;
+  }
+});
+
+test('З28E/A: убранный пункт не двигается стрелками и не участвует в порядке', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const m = app.migrate(v16Fixture());
+  app.store = m;
+  const order = () => m.items.filter(i => i.area === 'min' && !i.group).map(i => i.id);
+
+  // m5, m6, m7 убраны миграцией; соседями живых они не считаются
+  assert.equal(app.canMoveItem('m5', 'up'), false);
+  assert.equal(app.canMoveItem('m5', 'down'), false);
+  assert.equal(app.moveItem('m5', 'up'), false);
+  assert.equal(app.reorderItem('m5', 0), false);
+
+  const was = order();
+  assert.equal(app.moveItem('m8', 'up'), true); // перепрыгивает через убранные
+  const now = order();
+  assert.notDeepEqual(now, was);
+  assert.deepEqual(now.filter(id => ['m5', 'm6', 'm7'].includes(id)),
+    was.filter(id => ['m5', 'm6', 'm7'].includes(id)), 'убранные остались на своих местах');
 });

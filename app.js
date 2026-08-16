@@ -84,7 +84,7 @@ function timing(name, def) {
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — постоянный баннер над экраном
@@ -116,13 +116,13 @@ function nextCalendarMonday(k) {
 function seedHabits(today) {
   const habit = (name) => ({
     id: uid(), name, value: null, unit: '', type: 'daily', area: 'habit', normPerWeek: 7,
-    goal: null, note: '', group: '', active: true, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    goal: null, note: '', group: '', removedAt: null, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
     formula: null, ladder: null, ladderLog: []
   });
   return [
     { id: uid(), name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
       pkind: 'time', pvalue: 0, pstep: -15, goal: null, note: '', group: '',
-      active: true, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [{ date: today, value: 0 }],
+      removedAt: null, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [{ date: today, value: 0 }],
       formula: null, ladder: null, ladderLog: [] },
     habit('Перестать грызть ногти'),
     habit('Ловить импульс трат → алгоритм')
@@ -161,7 +161,7 @@ function programItems(today) {
   return SEED_ITEMS.map(([name, value, unit, group, type, goal, note, extra]) => {
     const it = {
       id: uid(), name, value, unit, type, area: 'min', goal, note, group,
-      active: true, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+      removedAt: null, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
       // числовому пункту — стартовая запись истории планки (инвариант 5)
       history: (typeof value === 'number') ? [{ date: today, value }] : [],
       formula: null, ladder: null, ladderLog: []
@@ -399,7 +399,20 @@ function migrate(s, opts) {
     it.type = it.type === 'weekly' ? 'weekly' : (it.type === 'param' ? 'param' : 'daily');
     it.area = it.area === 'habit' ? 'habit' : 'min';
     if (it.type === 'weekly') it.area = 'min'; // недельный счётчик принадлежит только минимуму (инвариант 10)
-    if (typeof it.active !== 'boolean') it.active = true;
+    // Отрезок жизни пункта (задача 28.E/A): addedAt — день, с которого он
+    // есть, removedAt — день, с которого его уже нет, либо null. Нормализация
+    // безусловная и стоит рядом с addedAt: это вторая половина одной пары.
+    it.removedAt = isDayKey(it.removedAt) ? it.removedAt : null;
+    // v16 → v17: выключенный пункт становится убранным С ДНЯ ЗАВЕДЕНИЯ, поле
+    // active снимается. Числа владельца при этом не сдвигаются ни на единицу:
+    // прежнее правило применимости выбрасывало выключенный пункт из ВСЕХ дней,
+    // и пустой отрезок [addedAt, addedAt) выбрасывает его ровно так же.
+    // Шаг безусловный, как и прочие нормализации: экспорт версии v16,
+    // импортированный позже, обязан пройти его тем же путём. Идемпотентен —
+    // после первого прогона поля active в данных нет вовсе. Рукотворный
+    // removedAt при active === false не переписывается: он точнее.
+    if (it.active === false && it.removedAt === null) it.removedAt = it.addedAt;
+    delete it.active;
     if (typeof it.name !== 'string') it.name = '';
     if (typeof it.unit !== 'string') it.unit = '';
     if (typeof it.note !== 'string') it.note = '';
@@ -529,8 +542,11 @@ function migrate(s, opts) {
       exIds.add(ex.id);
       if (typeof ex.name !== 'string') ex.name = '';
       if (typeof ex.unit !== 'string') ex.unit = '';
-      if (typeof ex.active !== 'boolean') ex.active = true;
       if (!isDayKey(ex.addedAt)) ex.addedAt = today;
+      // тот же отрезок жизни, что у пункта, и тот же шаг v16 → v17
+      ex.removedAt = isDayKey(ex.removedAt) ? ex.removedAt : null;
+      if (ex.active === false && ex.removedAt === null) ex.removedAt = ex.addedAt;
+      delete ex.active;
       ex.value = numOr(ex.value, null);
       if (ex.value !== null && ex.value <= 0) ex.value = null; // нагрузка всегда > 0
       if (!Array.isArray(ex.history)) ex.history = [];
@@ -605,7 +621,7 @@ function migrate(s, opts) {
     if (s.items.length && !s.items.some(i => i.name === 'Принять душ')) {
       const shower = {
         id: uid(), name: 'Принять душ', value: null, unit: '', type: 'daily', area: 'min',
-        goal: null, note: '', group: 'Тело', active: true,
+        goal: null, note: '', group: 'Тело', removedAt: null,
         addedAt: dateKeyShift(new Date(), s.settings.dayBoundary), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
         // вставка идёт после валидации пунктов — каноническая форма задаётся здесь
         formula: null, ladder: null, ladderLog: []
@@ -1013,8 +1029,121 @@ function plural(n, one, few, many) {
 
 /* ── Домены: отметки, счётчики, недели ─────────────────────── */
 
-const activeDaily = () => store.items.filter(i => i.active && i.type === 'daily');
-const activeWeekly = () => store.items.filter(i => i.active && i.type === 'weekly');
+/* ── Отрезок жизни пункта (инвариант 12, задача 28.E/A) ────────
+   Пункт живёт от addedAt до removedAt: первый день — тот, в который он
+   заведён, последний — накануне того, в который убран. Поле active
+   упразднено вместе с тумблером: два контрола с одним последствием и были
+   той перегруженностью, на которую жаловался владелец, а после правки
+   правила применимости они бы ещё и разошлись — «Убрать» перестал бы
+   двигать прошлое, тумблер продолжил бы.
+
+   Две функции, и путать их нельзя. live() — «есть сейчас»: по ней
+   строятся списки дневных экранов и механики, работающие с настоящим.
+   livedOn() — «был в том дне»: по ней и только по ней считается прошлое. */
+const live = x => !x.removedAt;
+
+function livedOn(x, dayKey) {
+  return x.addedAt <= dayKey && (!x.removedAt || dayKey < x.removedAt);
+}
+
+const liveDaily = () => store.items.filter(i => live(i) && i.type === 'daily');
+const liveWeekly = () => store.items.filter(i => live(i) && i.type === 'weekly');
+
+/* ── Уход и возврат ────────────────────────────────────────────
+   Словарь задачи 28.E/A: «удалить» — стереть, «убрать» — увести из виду.
+   Удаляется только то, от чего не зависит ни одно прошлое число (блок:
+   deleteGroup давно воплощает это правило). Пункт и упражнение убираются:
+   факт остаётся, из виду уходит.
+
+   Уход действует с СЕГОДНЯШНЕГО дня включительно: removedAt = todayKey(),
+   и livedOn перестаёт видеть пункт начиная с этого дня. Вчера и раньше не
+   двигается никогда.
+
+   Отказ записи откатывает поле целиком (A.1.8) — как всякая замещающая
+   операция: в памяти не должно остаться того, чего нет на диске. */
+function removeItem(id) {
+  const it = store.items.find(x => x.id === id);
+  if (!it || !live(it)) return false;
+  it.removedAt = todayKey();
+  if (save()) return true;
+  it.removedAt = null;
+  return false;
+}
+
+/* Возврат В ТОТ ЖЕ ДЕНЬ — полная отмена: отрезок не разрывался ни на день,
+   и разрывать его записью нечем. ПОЗЖЕ — новая запись с новым id и
+   сегодняшним addedAt: иначе дни паузы задним числом вошли бы в
+   знаменатель тех дней, в которые пункта не было. Отметки и история
+   принадлежат прежнему отрезку и остаются при нём.
+
+   Новая запись встаёт СРАЗУ ЗА прежней, а не в конец списка: порядок
+   внутри блока — решение владельца, и возврат не повод его терять.
+   Мёртвые поля формулы и лестницы (задача 28.D) в неё не копируются:
+   вторая живая лестница противоречила бы канонической форме, которую
+   стережёт дедуп migrate. */
+function restoreItem(id) {
+  const at = store.items.findIndex(x => x.id === id);
+  const it = at < 0 ? null : store.items[at];
+  if (!it || live(it)) return null;
+  const t = todayKey();
+  if (it.removedAt === t) {
+    it.removedAt = null;
+    if (save()) return it;
+    it.removedAt = t;
+    return null;
+  }
+  const copy = {
+    id: uid(), name: it.name, value: it.value, unit: it.unit,
+    type: it.type, area: it.area, goal: it.goal, note: it.note, group: it.group,
+    removedAt: null, addedAt: t, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+    history: [], formula: null, ladder: null, ladderLog: []
+  };
+  if (it.type === 'daily' && it.area === 'habit') copy.normPerWeek = it.normPerWeek || 7;
+  if (it.type === 'param') {
+    copy.pkind = it.pkind; copy.pvalue = it.pvalue; copy.pstep = it.pstep;
+    copy.history = [{ date: t, value: it.pvalue }]; // порог — та же планка (инвариант 5)
+  } else if (typeof copy.value === 'number') {
+    copy.history = [{ date: t, value: copy.value }];
+  }
+  store.items.splice(at + 1, 0, copy);
+  if (save()) return copy;
+  store.items.splice(at + 1, 1);
+  return null;
+}
+
+/* Упражнения: то же поле и тот же механизм (A.4.1). Правка тривиальна —
+   в прошлых числах «Прогресса» упражнения не участвуют вовсе, у них
+   только история нагрузки, а она принадлежит своей записи. */
+function removeExercise(id) {
+  const ex = findExercise(id);
+  if (!ex || !live(ex)) return false;
+  ex.removedAt = todayKey();
+  if (save()) return true;
+  ex.removedAt = null;
+  return false;
+}
+
+function restoreExercise(id) {
+  const at = store.exercises.findIndex(x => x.id === id);
+  const ex = at < 0 ? null : store.exercises[at];
+  if (!ex || live(ex)) return null;
+  const t = todayKey();
+  if (ex.removedAt === t) {
+    ex.removedAt = null;
+    if (save()) return ex;
+    ex.removedAt = t;
+    return null;
+  }
+  const copy = {
+    id: uid(), name: ex.name, unit: ex.unit, value: ex.value,
+    history: typeof ex.value === 'number' ? [{ date: t, value: ex.value }] : [],
+    removedAt: null, addedAt: t
+  };
+  store.exercises.splice(at + 1, 0, copy);
+  if (save()) return copy;
+  store.exercises.splice(at + 1, 1);
+  return null;
+}
 
 function isMarked(dayKey, itemId) {
   return !!(store.days[dayKey] && store.days[dayKey][itemId]);
@@ -1062,7 +1191,7 @@ function missedYesterday(item, tKey) {
    за вчера через точку-маркер. Только вчера, только установка — не снятие. */
 function markYesterday(itemId) {
   const item = store.items.find(i => i.id === itemId);
-  if (!item || !item.active || item.type !== 'daily') return false;
+  if (!item || !live(item) || item.type !== 'daily') return false;
   const y = addDays(todayKey(), -1);
   if (!(item.addedAt <= y)) return false;
   if (isMarked(y, item.id)) return false;
@@ -1111,7 +1240,7 @@ function undoTrain(itemId) {
    правилам планки (recordBar). Сессия — факт тренировки: день,
    значения упражнений и заметка. */
 
-const activeExercises = () => store.exercises.filter(e => e.active);
+const liveExercises = () => store.exercises.filter(live);
 
 function findExercise(id) {
   return store.exercises.find(e => e.id === id) || null;
@@ -1124,7 +1253,7 @@ function addExercise(name, unit, value) {
   const ex = {
     id: uid(), name: nm, unit: (unit || '').trim(), value: v,
     history: v === null ? [] : [{ date: todayKey(), value: v }],
-    active: true, addedAt: todayKey()
+    removedAt: null, addedAt: todayKey()
   };
   store.exercises.push(ex);
   save();
@@ -1142,10 +1271,23 @@ function updateExercise(id, name, unit) {
   return true;
 }
 
+/* Соседи упражнения по перестановке — только живые: убранное стоит в
+   «Убранных», в порядке не участвует, но своё место в массиве сохраняет.
+   Тот же приём, что у siblingIndexes для пунктов (инвариант 17). */
+function exerciseIndexes() {
+  const out = [];
+  store.exercises.forEach((x, i) => { if (live(x)) out.push(i); });
+  return out;
+}
+
 function moveExercise(id, dir) {
   const i = store.exercises.findIndex(e => e.id === id);
-  const j = i + (dir === 'up' ? -1 : 1);
-  if (i < 0 || j < 0 || j >= store.exercises.length) return false;
+  if (i < 0) return false;
+  const idxs = exerciseIndexes();
+  const at = idxs.indexOf(i);
+  if (at < 0) return false; // убранное не двигается: его строки в списке нет
+  const j = idxs[at + (dir === 'up' ? -1 : 1)];
+  if (j === undefined) return false;
   const t = store.exercises[i];
   store.exercises[i] = store.exercises[j];
   store.exercises[j] = t;
@@ -1226,7 +1368,7 @@ function currentOneChange() {
 
 /* Критерий повышения: 3 последние закрытые недели, в каждой ≥6 из 7 */
 function raiseEligible(item) {
-  if (item.type !== 'daily' || !item.active || item.area !== 'min') return false; // повышение — только минимум
+  if (item.type !== 'daily' || !live(item) || item.area !== 'min') return false; // повышение — только минимум
   if (!(typeof item.value === 'number' && isFinite(item.value) && item.value > 0)) return false;
   // Здесь стоял guard «пункт с живой лестницей повышения не получает»: шаг
   // ступени и шаг планки в одну неделю были бы двумя изменениями за раз.
@@ -1244,7 +1386,7 @@ function raiseEligible(item) {
    Значения планки критерий не требует: пункт без числа тоже может
    не держаться — решение по нему сводится к «Оставить». */
 function lowerEligible(item) {
-  if (item.type !== 'daily' || !item.active || item.area !== 'min') return false;
+  if (item.type !== 'daily' || !live(item) || item.area !== 'min') return false;
   const W = closedWeeks(2);
   if (W.length < 2) return false;
   // пункт должен существовать во ВСЕХ рассматриваемых неделях (A.4.1):
@@ -1371,12 +1513,12 @@ function paramDecision(itemId) {
    части, в «Решении 1» (задача 24, п. 2) — порог параметра меняется тем
    же recordBar и той же историей, что планка пункта. Решённые остаются
    под свёрткой тихой строкой итога: это уже read-only справка. */
-const pendingParams = () => store.items.filter(i => i.type === 'param' && i.active && !paramDecision(i.id));
+const pendingParams = () => store.items.filter(i => i.type === 'param' && live(i) && !paramDecision(i.id));
 
 /* Одно решение на параметр за разбор (инвариант 10); шаг применяется немедленно */
 function applyParamStep(itemId) {
   const item = store.items.find(i => i.id === itemId);
-  if (!item || item.type !== 'param' || !item.active) return false;
+  if (!item || item.type !== 'param' || !live(item)) return false;
   if (!reviewDue() || paramDecision(itemId)) return false;
   const from = item.pvalue;
   item.pvalue = paramStepTarget(item);
@@ -1388,7 +1530,7 @@ function applyParamStep(itemId) {
 
 function keepParam(itemId) {
   const item = store.items.find(i => i.id === itemId);
-  if (!item || item.type !== 'param' || !item.active) return false;
+  if (!item || item.type !== 'param' || !live(item)) return false;
   if (!reviewDue() || paramDecision(itemId)) return false;
   store.paramDecided[itemId] = { week: previousWeekStart(), from: item.pvalue, to: null };
   save();
@@ -1442,7 +1584,7 @@ function habitStreak(item) {
    полугодовой давности давали её при пустых последних неделях
    (аудит, находка 5). reviews — архив, а не источник. */
 function habitsSteady() {
-  const habits = store.items.filter(i => i.type === 'daily' && i.area === 'habit' && i.active);
+  const habits = store.items.filter(i => i.type === 'daily' && i.area === 'habit' && live(i));
   if (!habits.length) return false;
   const W = closedWeeks(2);
   if (W.length < 2) return false;
@@ -1551,7 +1693,9 @@ function siblingIndexes(item) {
   const g = groupNameOf(item);
   const out = [];
   store.items.forEach((x, i) => {
-    if (x.area === item.area && groupNameOf(x) === g) out.push(i);
+    // убранный пункт в списке не стоит и соседом не считается: стрелка
+    // перепрыгивает его, а его собственное место в items[] не меняется
+    if (live(x) && x.area === item.area && groupNameOf(x) === g) out.push(i);
   });
   return out;
 }
@@ -1563,6 +1707,7 @@ function moveItem(id, dir) {
   if (i < 0) return false;
   const idxs = siblingIndexes(store.items[i]);
   const at = idxs.indexOf(i);
+  if (at < 0) return false; // убранный пункт не двигается: его строки в списке нет
   const j = idxs[at + (dir === 'up' ? -1 : 1)];
   if (j === undefined) return false;
   const t = store.items[i];
@@ -1577,14 +1722,15 @@ function canMoveItem(id, dir) {
   const i = store.items.findIndex(x => x.id === id);
   if (i < 0) return false;
   const idxs = siblingIndexes(store.items[i]);
-  return idxs[idxs.indexOf(i) + (dir === 'up' ? -1 : 1)] !== undefined;
+  const at = idxs.indexOf(i);
+  return at >= 0 && idxs[at + (dir === 'up' ? -1 : 1)] !== undefined;
 }
 
 /* Перестановка перетаскиванием: пункт встаёт на позицию to среди своих
    соседей по блоку, порядок остальных не меняется. */
 function reorderItem(id, to) {
   const item = store.items.find(x => x.id === id);
-  if (!item) return false;
+  if (!item || !live(item)) return false;
   const idxs = siblingIndexes(item);
   const list = idxs.map(i => store.items[i]);
   const from = list.indexOf(item);
@@ -1606,10 +1752,15 @@ function reorderGroup(name, to) {
 }
 
 function reorderExercise(id, to) {
-  const from = store.exercises.findIndex(e => e.id === id);
-  if (from < 0 || to < 0 || to >= store.exercises.length || to === from) return false;
-  const [e] = store.exercises.splice(from, 1);
-  store.exercises.splice(to, 0, e);
+  const ex = findExercise(id);
+  if (!ex || !live(ex)) return false;
+  const idxs = exerciseIndexes();
+  const list = idxs.map(i => store.exercises[i]);
+  const from = list.indexOf(ex);
+  if (from < 0 || to < 0 || to >= list.length || to === from) return false;
+  list.splice(from, 1);
+  list.splice(to, 0, ex);
+  idxs.forEach((pos, k) => { store.exercises[pos] = list[k]; });
   save();
   return true;
 }
@@ -1620,12 +1771,23 @@ function reorderExercise(id, to) {
    отметок, а не по срезам. Всё это живёт только на «Прогрессе» —
    экране, который открывают намеренно. */
 
-/* Пункты минимума, существовавшие в этот день: активные сейчас и
-   заведённые не позже дня (addedAt ≤ день). Пункт, добавленный
-   сегодня, прошлые дни не переписывает. */
+/* Пункты минимума, ЖИВШИЕ в этот день (инвариант 12). Единственная
+   содержательная правка задачи 28.E/A — здесь; всё остальное наследуется.
+
+   Прежде фильтр читал i.active — НЫНЕШНЕЕ значение — и применял его ко
+   всем дням истории: сегодняшний тумблер переписывал прошлое. Замер на
+   фикстуре 28 дней (разведка A.0.2): выключение одного пункта из шести
+   превращало серию из 9 дней в 26, рекорд из 9 в 26, а цепь из «22
+   полных, 4 частичных» в «26 полных, 0 частичных» — без единой новой
+   отметки. Правило применимости и было дефектом, а не отсутствие
+   удаления, которого просил владелец.
+
+   Теперь день читается по отрезку жизни: пункт заведён не позже этого
+   дня и не убран раньше или в этот день (livedOn). Уход действует с
+   сегодняшнего дня включительно — вчера и раньше не двигается никогда. */
 function minDayItems(dayKey) {
   return store.items.filter(i =>
-    i.type === 'daily' && i.area === 'min' && i.active && i.addedAt <= dayKey);
+    i.type === 'daily' && i.area === 'min' && livedOn(i, dayKey));
 }
 
 /* Сколько таких пунктов отмечено: 0 — день пуст, меньше всех —
@@ -1901,14 +2063,14 @@ function closeWeek() {
   for (const it of store.items) {
     if (it.type !== 'daily') continue;
     const marks = keys.map(k => isMarked(k, it.id));
-    if (!it.active && !marks.some(Boolean)) continue; // выключенные без отметок в окне не попадают в срез
+    if (!live(it) && !marks.some(Boolean)) continue; // убранные без отметок в окне не попадают в срез
     perItem[it.id] = { name: it.name, marks, count: marks.filter(Boolean).length };
   }
   const weekEnd = keys[6];
   const trainings = {};
   for (const w of store.items.filter(i => i.type === 'weekly')) {
     const count = store.weekLog.filter(e => e.itemId === w.id && e.date >= week && e.date <= weekEnd).length;
-    if (!w.active && !count) continue; // как и в perItem: выключенные без счёта не попадают
+    if (!live(w) && !count) continue; // как и в perItem: убранные без счёта не попадают
     trainings[w.id] = { name: w.name, count, goal: w.goal };
   }
   store.reviews.push({
@@ -2383,6 +2545,15 @@ const ui = {
   // и открытие соседней формы того же экрана его затирало (задача 28.B, п. 4).
   formDraft: {},        // черновик открытой формы: значения, фокус, каретка
   weekCloseConfirm: false, // «Закрыть неделю» — вторым тапом (задача 28.B, п. 6)
+  // «Убрать» — тоже вторым тапом (задача 28.E/A). Одна форма на «Настройках»
+  // открыта за раз, поэтому и поле одно на пункты и упражнения: в нём ключ
+  // взведённой кнопки ('item:<id>' | 'ex:<id>'), а не голый флаг
+  removeConfirm: null,
+  // Только что убранное: на месте строки стоит «{имя} · убран — Вернуть».
+  // Это НЕ .flash: тот гаснет через FLASH_MS, а отмена, исчезающая через
+  // секунду, отменой не является (A.3.4). Живёт до следующего действия
+  // владельца — как ui.importNote, и снимается там же
+  goneNote: null,
   groupRename: null,    // имя блока с раскрытой правкой
   groupDelete: null,    // блок ждёт подтверждения удаления вторым тапом
   groupAdd: false,      // открыто поле «Добавить блок»
@@ -2530,6 +2701,10 @@ const FLASH_MS = timing('FLASH_MS', 1200);
    (задача 27, Д4). Экран всегда ровно один — hidden снимает renderAll. */
 const visibleFlash = () => document.querySelector('main .screen:not([hidden]) .flash:not(.keep)');
 
+/* Строка «убран — Вернуть» — тем же правилом: только на видимом экране.
+   Нужна keepInPlace, который держит точку нажатия на месте (A.3.4). */
+const goneNoteEl = () => document.querySelector('main .screen:not([hidden]) .gone-note');
+
 function armFlash() {
   if (!prefersReducedMotion()) return;
   // строку отказа (.flash.keep) не трогаем: она обязана дождаться правки
@@ -2595,11 +2770,14 @@ function holdScrollTarget(anchorTop, nodeTop, scrollY) {
   return Math.max(0, (scrollY || 0) + dy);
 }
 
-function keepInPlace(btn, render) {
+/* find — чем искать узел, который должен встать на место кнопки. По
+   умолчанию это подтверждение .flash; у ухода пункта якорь другой —
+   строка «убран» со своим классом (A.3.4), и подменяется он здесь. */
+function keepInPlace(btn, render, find) {
   const y = btn ? btn.getBoundingClientRect().top : null;
   render();
   if (y === null) return;
-  const n = visibleFlash();
+  const n = (find || visibleFlash)();
   if (!n) return;
   const to = holdScrollTarget(y, n.getBoundingClientRect().top, window.scrollY);
   if (to !== null) window.scrollTo(0, to);
@@ -2681,7 +2859,7 @@ function renderAll() {
 function renderToday() {
   const t = todayKey();
   ui.renderedDayKey = t;
-  const items = activeDaily().filter(i => i.area === 'min');
+  const items = liveDaily().filter(i => i.area === 'min');
   const done = items.filter(i => isMarked(t, i.id)).length;
   const total = items.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -2712,7 +2890,7 @@ function renderToday() {
 
   // area у недельного счётчика не проверяется: migrate принудительно ставит
   // ему min (инвариант 10), другого значения в данных не бывает (C.5.4)
-  for (const w of activeWeekly()) {
+  for (const w of liveWeekly()) {
     const n = trainCount(w.id);
     h += `
       <div class="weekcount">
@@ -2818,7 +2996,7 @@ function habitWeekRow(it, t) {
 function renderHabits() {
   const t = todayKey();
   ui.renderedDayKey = t;
-  const habits = activeDaily().filter(i => i.area === 'habit');
+  const habits = liveDaily().filter(i => i.area === 'habit');
   const done = habits.filter(i => isMarked(t, i.id)).length;
   const total = habits.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -2841,7 +3019,7 @@ function renderHabits() {
     h += `<p class="muted">Привычек пока нет — добавить можно в Настройках → Пункты.</p>`;
   }
 
-  const params = store.items.filter(i => i.type === 'param' && i.active);
+  const params = store.items.filter(i => i.type === 'param' && live(i));
   if (params.length) {
     h += `<p class="g-label">Порог недели</p>`;
     for (const p of params) {
@@ -3044,7 +3222,7 @@ function renderProgress() {
   const rise = riseBlocks();
   h += pcard('Подъём', rise || `<p class="muted">Появится, когда планка изменится во второй раз.</p>`);
 
-  const inOrder = area => groupedItems(activeDaily().filter(i => i.area === area))
+  const inOrder = area => groupedItems(liveDaily().filter(i => i.area === area))
     .reduce((acc, sec) => acc.concat(sec.items), []);
   const listed = inOrder('min').concat(inOrder('habit'));
   // ряд нулей — не картина, а её отсутствие (задача 22, п. 3.1): пока ни у
@@ -3086,7 +3264,7 @@ function renderTrain() {
   // Поля листа — те же черновиковые поля, что в формах: обёртка несёт
   // data-form, и snapshotOpenForm находит их по общему правилу.
   h += `<div data-form="train" data-id="${esc(ui.trainId || '')}">`;
-  const list = activeExercises();
+  const list = liveExercises();
   if (!list.length) {
     h += `<p class="muted">Упражнений пока нет — добавить можно в Настройках → Упражнения.</p>`;
   }
@@ -3124,19 +3302,16 @@ function renderTrain() {
    планки дня реально проигрываются. Структурные изменения идут
    через полную перерисовку экрана. */
 
-/* Подпись зачёта дня в «Настройках» — тот же горячий путь, что и тумблер
-   пункта: узел уже в DOM, меняется только текст (задача 22, п. 5) */
-function updateThresholdNote() {
-  const n = el('thr-note');
-  if (!n) return;
-  const s = thresholdNote();
-  n.textContent = s;
-  n.hidden = !s;
-}
+/* Здесь стояла updateThresholdNote — точечное обновление подписи зачёта
+   дня. Её единственным вызывающим был тумблер пункта, который менял число
+   применимых пунктов, не перерисовывая экран. Тумблер упразднён (задача
+   28.E/A, п. 2), а «Убрать» всегда идёт полной перерисовкой «Настроек»:
+   подпись пересчитывает сам renderSettings. Узел #thr-note остаётся —
+   его печатает разметка секции. */
 
 function updateDayline() {
   const t = todayKey();
-  const items = activeDaily().filter(i => i.area === 'min');
+  const items = liveDaily().filter(i => i.area === 'min');
   const done = items.filter(i => isMarked(t, i.id)).length;
   const total = items.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -3152,7 +3327,7 @@ function updateDayline() {
 
 function updateHabitsDayline() {
   const t = todayKey();
-  const habits = activeDaily().filter(i => i.area === 'habit');
+  const habits = liveDaily().filter(i => i.area === 'habit');
   const done = habits.filter(i => isMarked(t, i.id)).length;
   const total = habits.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -3242,7 +3417,7 @@ function reviewActionable() {
   if (!reviewDue()) return false;
   if (raiseOffer()) return true;
   const keys = windowKeys();
-  const inWeek = it => it.active || keys.some(k => isMarked(k, it.id));
+  const inWeek = it => live(it) || keys.some(k => isMarked(k, it.id));
   if (store.items.some(it => it.type === 'daily' && it.area === 'min' && inWeek(it) && lowerEligible(it))) return true;
   return pendingParams().length > 0;
 }
@@ -3286,7 +3461,7 @@ function renderReview() {
   }
 
   const keys = windowKeys();
-  const inWeek = it => it.active || keys.some(k => isMarked(k, it.id));
+  const inWeek = it => live(it) || keys.some(k => isMarked(k, it.id));
   const minItems = store.items.filter(it => it.type === 'daily' && it.area === 'min' && inWeek(it));
   const habitItems = store.items.filter(it => it.type === 'daily' && it.area === 'habit' && inWeek(it));
 
@@ -3409,7 +3584,7 @@ function renderReview() {
   // в видимую часть, а картина недели — справка, а не действие.
   let wk = `<h2>Минимум</h2>`;
   wk += weekGrid(minItems);
-  for (const w of store.items.filter(i => i.type === 'weekly' && i.active)) {
+  for (const w of store.items.filter(i => i.type === 'weekly' && live(i))) {
     // счёт разбираемой недели — тот же интервал, что уйдёт в срез closeWeek
     const n = store.weekLog.filter(e => e.itemId === w.id && e.date >= keys[0] && e.date <= keys[6]).length;
     wk += `<p class="line">${esc(w.name)}: ${n} из ${w.goal || 0}</p>`;
@@ -3437,7 +3612,7 @@ function renderReview() {
   // итог принятого решения по параметру — read-only строка; нерешённые
   // стоят карточками выше, в «Решении 1» (решение чужой недели карточку
   // не гасит: paramDecision привязан к разбираемой неделе)
-  for (const p of store.items.filter(i => i.type === 'param' && i.active)) {
+  for (const p of store.items.filter(i => i.type === 'param' && live(i))) {
     const decided = paramDecision(p.id);
     if (!decided) continue;
     wk += `<p class="muted">${esc(p.name)}: ${decided.to === null
@@ -3618,6 +3793,7 @@ function settingsFormsClosed() {
   ui.editNorm = null;
   ui.groupPick = null;
   ui.groupNew = false;
+  ui.removeConfirm = null; // взведённое «Убрать» принадлежало закрытой форме
 }
 
 function openSettingsForm(apply) {
@@ -3701,18 +3877,97 @@ function groupEditor() {
   return h;
 }
 
+/* ── Уход из виду: две дороги назад (задача 28.E/A, п. 3) ──────
+   КОРОТКАЯ — строка на месте только что убранного: «{имя} · убран —
+   Вернуть». Своим классом, а не .flash: тот гаснет через FLASH_MS, а
+   отмена, исчезающая через секунду, отменой не является (A.3.4). Живёт
+   до следующего действия владельца, как ui.importNote.
+   ДЛИННАЯ — блок «Убранные» внизу своей области. Пустым не рисуется.
+
+   Род слова разный: пункт убран, упражнение убрано. */
+const GONE_WORD = { item: 'убран', ex: 'убрано' };
+
+/* Что произойдёт — названо МЕЖДУ тапами и названо нейтрально: последствие,
+   без тревоги и без уговоров. Числа «во что превратится серия» здесь нет и
+   быть не может — это была бы инструкция по накрутке (A.3.3). */
+const REMOVE_WHAT = {
+  item: 'Пункт уйдёт из списков. Отметки и прошлые дни останутся как есть.',
+  ex: 'Упражнение уйдёт из списков. Записанные тренировки и история нагрузки останутся как есть.'
+};
+
+/* Хвост формы правки: свои кнопки, «Убрать» и под ними — последствие.
+
+   Строка последствия стоит ПОД кнопкой, а не над ней (правило задачи 28.D,
+   п. 9.3): сверху она сдвигала бы «Убрать» вниз ровно в тот момент, когда
+   владелец готовится ко второму тапу.
+
+   «Убрать» живёт в СВОЁМ ряду, отдельно от «Сохранить» и «Отмены». Замер в
+   браузере (375×812): в общем ряду надпись «Подтвердить: убрать» переносила
+   кнопку на следующую строку flex-обёртки и уводила её вниз на 54 px — тот
+   же дефект, от которого лечили «Закрыть неделю». В собственном ряду ширина
+   надписи ни на что не влияет: ряд один, переносить нечего. Заодно ряд
+   разводит сохранение и уход визуально. */
+function removeFoot(kind, id, buttons) {
+  const armed = ui.removeConfirm === kind + ':' + id;
+  return `
+      <div class="btns">
+        ${buttons}
+      </div>
+      <div class="btns">
+        <button class="btn quiet" data-act="${kind}-remove" data-id="${esc(id)}">${armed ? 'Подтвердить: убрать' : 'Убрать'}</button>
+      </div>
+      ${armed ? `<p class="muted">${REMOVE_WHAT[kind]}</p>` : ''}`;
+}
+
+function goneNote(x, kind) {
+  return `<p class="gone-note">${esc(x.name)} · ${GONE_WORD[kind]}` +
+    `<button type="button" class="undo" data-act="${kind}-restore" data-id="${esc(x.id)}"` +
+    ` aria-label="вернуть «${esc(x.name)}»">Вернуть</button></p>`;
+}
+
+/* Только что убранное здесь не повторяется: оно стоит строкой на своём
+   прежнем месте, и двух «Вернуть» на одну запись быть не должно. */
+function goneBlock(list, kind) {
+  const gone = list.filter(x => !live(x) && ui.goneNote !== x.id);
+  if (!gone.length) return '';
+  let h = `<h2>Убранные</h2><div class="list">`;
+  for (const x of gone) {
+    h += `
+      <div class="rowwrap gone">
+        <div class="row item">
+          <span class="gtxt">
+            <span class="tname">${esc(x.name)}</span>
+            <span class="meta">${GONE_WORD[kind]} ${esc(fmtShort(x.removedAt))}</span>
+          </span>
+          <span class="ictl">
+            <button class="btn quiet" data-act="${kind}-restore" data-id="${esc(x.id)}" aria-label="вернуть «${esc(x.name)}»">Вернуть</button>
+          </span>
+        </div>
+      </div>`;
+  }
+  return h + `</div>`;
+}
+
 /* Редактор упражнений (задача 16D): та же механика, что у пунктов —
-   строка с именем раскрывает правку, стрелки задают порядок, тумблер
-   выключает. Нагрузку правит запись тренировки, не форма. */
+   строка с именем раскрывает правку, стрелки задают порядок, «Убрать» в
+   форме уводит из виду. Нагрузку правит запись тренировки, не форма. */
 function exerciseEditor() {
   let h = '';
   if (!store.exercises.length) {
     h += `<p class="muted">Упражнений пока нет.</p>`;
   }
-  store.exercises.forEach((ex, i) => {
+  // границы стрелок считаются по ВИДИМОМУ списку: убранное в порядке не
+  // участвует, но своё место в store.exercises сохраняет (exerciseIndexes)
+  const shown = liveExercises();
+  store.exercises.forEach((ex) => {
+    if (!live(ex)) {
+      if (ui.goneNote === ex.id) h += goneNote(ex, 'ex');
+      return;
+    }
+    const i = shown.indexOf(ex);
     const meta = [valUnit(ex)].filter(Boolean).join(' · ');
     h += `
-      <div class="rowwrap drag-row${ex.active ? '' : ' off'}" data-drag="ex" data-drag-id="${esc(ex.id)}">
+      <div class="rowwrap drag-row" data-drag="ex" data-drag-id="${esc(ex.id)}">
         <div class="row item">
           <button class="itxt" data-act="ex-open" data-id="${esc(ex.id)}" aria-label="изменить «${esc(ex.name)}»">
             <span class="tname">${esc(ex.name)}</span>
@@ -3721,21 +3976,15 @@ function exerciseEditor() {
           </button>
           <span class="ictl">
             <button class="btn icon quiet" data-act="ex-up" data-id="${esc(ex.id)}"${i === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
-            <button class="btn icon quiet" data-act="ex-down" data-id="${esc(ex.id)}"${i === store.exercises.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
-            <label class="switch" aria-label="включено: «${esc(ex.name)}»">
-              <input type="checkbox" data-act="ex-active" data-id="${esc(ex.id)}"${ex.active ? ' checked' : ''}>
-              <span></span>
-            </label>
+            <button class="btn icon quiet" data-act="ex-down" data-id="${esc(ex.id)}"${i === shown.length - 1 ? ' disabled' : ''} aria-label="ниже">&darr;</button>
           </span>
         </div>
         ${ui.exEditingId === ex.id ? `
         <div class="card form" data-form="ex-edit" data-id="${esc(ex.id)}">
           <label class="field"><span>Название</span><input type="text" id="x-name" value="${esc(ex.name)}"></label>
           <label class="field"><span>Единица</span><input type="text" id="x-unit" value="${esc(ex.unit)}" placeholder="кг, повт."></label>
-          <div class="btns">
-            <button class="btn primary" data-act="ex-save" data-id="${esc(ex.id)}">Сохранить</button>
-            <button class="btn quiet" data-act="ex-cancel">Отмена</button>
-          </div>
+          ${removeFoot('ex', ex.id, `<button class="btn primary" data-act="ex-save" data-id="${esc(ex.id)}">Сохранить</button>
+            <button class="btn quiet" data-act="ex-cancel">Отмена</button>`)}
         </div>` : ''}
         ${flashAt('ex:' + ex.id)}
       </div>`;
@@ -3751,6 +4000,7 @@ function exerciseEditor() {
         </div>
       </div>`
     : `<button class="btn wide" data-act="ex-add-open">Добавить упражнение</button>`;
+  h += goneBlock(store.exercises, 'ex');
   return h;
 }
 
@@ -3922,11 +4172,17 @@ function renderSettings() {
     body += `<h2>${title}</h2>`;
     body += `<div class="list">`;
     items.forEach((it) => {
+      // убранный пункт из списка ушёл. Тот, что убран ПРЯМО СЕЙЧАС, оставляет
+      // на своём месте короткий путь назад и в «Убранных» не дублируется
+      if (!live(it)) {
+        if (ui.goneNote === it.id) body += goneNote(it, 'item');
+        return;
+      }
       const vu = it.type === 'param' ? `порог ${fmtParam(it)}` : valUnit(it);
       const meta = [vu, it.type === 'weekly' ? `цель ${it.goal || 0} / нед.` : '', (it.group || '').trim()]
         .filter(Boolean).join(' · ');
       body += `
-      <div class="rowwrap drag-row${it.active ? '' : ' off'}" data-drag="item" data-drag-id="${esc(it.id)}" data-dgroup="${esc((it.group || '').trim())}">
+      <div class="rowwrap drag-row" data-drag="item" data-drag-id="${esc(it.id)}" data-dgroup="${esc((it.group || '').trim())}">
         <div class="row item">
           <button class="itxt" data-act="edit-open" data-id="${esc(it.id)}" aria-label="изменить «${esc(it.name)}»">
             <span class="tname">${esc(it.name)}</span>
@@ -3937,10 +4193,6 @@ function renderSettings() {
           <span class="ictl">
             <button class="btn icon quiet" data-act="move-up" data-id="${esc(it.id)}"${canMoveItem(it.id, 'up') ? '' : ' disabled'} aria-label="выше">&uarr;</button>
             <button class="btn icon quiet" data-act="move-down" data-id="${esc(it.id)}"${canMoveItem(it.id, 'down') ? '' : ' disabled'} aria-label="ниже">&darr;</button>
-            <label class="switch" aria-label="включён: «${esc(it.name)}»">
-              <input type="checkbox" data-act="toggle-active" data-id="${esc(it.id)}"${it.active ? ' checked' : ''}>
-              <span></span>
-            </label>
           </span>
         </div>
         ${ui.editingId === it.id ? editForm(it) : ''}
@@ -3951,6 +4203,7 @@ function renderSettings() {
     body += (ui.addOpen && ui.addArea === area)
       ? addForm()
       : `<button class="btn wide" data-act="add-open" data-area="${area}">${addLabel}</button>`;
+    body += goneBlock(items, 'item');
   }
 
   // граница дня — механика самих пунктов, поэтому живёт в их секции
@@ -4088,11 +4341,11 @@ function editForm(it) {
   // предупреждение о том, что у пункта с лестницей подпись на дневных
   // экранах вытесняется ступенью. Обе механики сняты задачей 28.D: ссылке
   // некуда вести, а подпись снова показывается всегда и как есть.
-  const foot = `
-      <div class="btns">
-        <button class="btn primary" data-act="edit-save" data-id="${esc(it.id)}">Сохранить</button>
-        <button class="btn quiet" data-act="edit-cancel">Отмена</button>
-      </div>
+  // «Убрать» живёт В ФОРМЕ, а не в строке: на 375 px строка занята именем,
+  // стрелками и метой — места под ещё одну цель в ней нет (A.3.1)
+  const foot = removeFoot('item', it.id,
+    `<button class="btn primary" data-act="edit-save" data-id="${esc(it.id)}">Сохранить</button>
+        <button class="btn quiet" data-act="edit-cancel">Отмена</button>`) + `
     </div>`;
   if (it.type === 'param') {
     // вид фиксируется при создании (инвариант 10) — не селект, а тихая строка
@@ -4291,6 +4544,7 @@ function resetConfirms() {
   ui.mirrorKeepConfirm = false;
   ui.groupDelete = null;
   ui.weekCloseConfirm = false;
+  ui.removeConfirm = null;
 }
 
 /* ── Перетаскивание (задача 16F) ───────────────────────────────
@@ -4458,6 +4712,9 @@ function onClick(e) {
   if (syncDay()) return; // stale-экран: действие не применяется (инвариант 8)
   const hadImportNote = ui.importNote !== null;
   ui.importNote = null; // строка «Импортировано…» живёт до следующего действия
+  // и строка «убран — Вернуть» тоже: короткий путь назад открыт до
+  // следующего действия владельца, а не до таймера (A.3.4)
+  ui.goneNote = null;
   // и якорь подтверждения тоже: не отданный прошлым рендером, он не должен
   // всплыть позже у чужого действия (задача 26, п. 2.1)
   ui.savedAt = null;
@@ -4532,7 +4789,7 @@ function onClick(e) {
       break;
 
     case 'train-save': {
-      const list = activeExercises();
+      const list = liveExercises();
       const entries = list.map(ex => {
         const inp = el('ex-' + ex.id);
         return { exId: ex.id, value: inp ? parsePositive(inp.value) : null };
@@ -4763,6 +5020,46 @@ function onClick(e) {
       renderSettings();
       break;
 
+    /* Уход пункта — вторым тапом (A.3.2). Первый взводит и печатает
+       последствие ПОД кнопкой, поэтому сама кнопка с места не двигается.
+       Второй убирает и оставляет на месте строки короткий путь назад.
+
+       Отказ записи говорит строкой у той же кнопки и формы не закрывает:
+       removeItem уже откатил поле, и в памяти ровно то же, что на диске. */
+    case 'item-remove':
+    case 'ex-remove': {
+      const kind = act === 'item-remove' ? 'item' : 'ex';
+      const key = kind + ':' + id;
+      if (ui.removeConfirm !== key) { ui.removeConfirm = key; renderSettings(); break; }
+      ui.removeConfirm = null;
+      if (!(kind === 'item' ? removeItem(id) : removeExercise(id))) {
+        refuse(b, 'Не убрано: хранилище недоступно');
+        break;
+      }
+      dropOpenDraft();               // форма ушла вместе со строкой
+      settingsFormsClosed();
+      ui.goneNote = id;
+      // строка «убран» встаёт туда, где стояла кнопка: форма схлопывается,
+      // и без этого точка нажатия уехала бы вверх (механика keepInPlace)
+      keepInPlace(b, renderSettings, goneNoteEl);
+      const back = goneNoteEl();
+      if (back) { const u = back.querySelector('.undo'); if (u) u.focus(); }
+      break;
+    }
+
+    /* Возврат. В тот же день — полная отмена, позже — новая запись
+       (restoreItem/restoreExercise, инвариант 12). Обе дороги назад,
+       короткая и длинная, ведут сюда. */
+    case 'item-restore':
+    case 'ex-restore': {
+      const kind = act === 'item-restore' ? 'item' : 'ex';
+      const made = kind === 'item' ? restoreItem(id) : restoreExercise(id);
+      if (!made) { refuse(b, 'Не возвращено: хранилище недоступно'); break; }
+      flashWrite(kind + ':' + made.id); // подтверждение — у вернувшейся строки
+      keepInPlace(b, renderSettings);
+      break;
+    }
+
     case 'norm-dec':
     case 'norm-inc': {
       if (!item) break;
@@ -4911,14 +5208,14 @@ function onClick(e) {
           note, group: readGroupField('f', ''),
           type: 'param', area: 'habit', pkind, pvalue,
           pstep: Math.round(st),
-          goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+          goal: null, removedAt: null, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
           history: [{ date: todayKey(), value: pvalue }]
         };
       } else if (ui.addArea === 'habit') {
         item = {
           id: uid(), name, value: null, unit: '', note, group: readGroupField('f', ''),
           type: 'daily', area: 'habit', normPerWeek: 7, // каноническая форма привычки (инвариант 11)
-          goal: null, active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: []
+          goal: null, removedAt: null, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: []
         };
       } else {
         const type = el('f-type').value === 'weekly' ? 'weekly' : 'daily';
@@ -4941,7 +5238,7 @@ function onClick(e) {
           note,
           group: readGroupField('f', ''),
           type, area: 'min', goal,
-          active: true, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+          removedAt: null, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
           history: (typeof value === 'number') ? [{ date: todayKey(), value }] : []
         };
       }
@@ -5079,23 +5376,10 @@ function onChange(e) {
     // узел вне экранов (задача 27.1, п. 5.2), и горячий путь остаётся горячим
     toggleMark(todayKey(), t.dataset.id);
     updateTodayMark(t);
-  } else if (act === 'ex-active') {
-    const ex = findExercise(t.dataset.id);
-    if (ex) {
-      ex.active = t.checked;
-      save();
-      const wrap = t.closest('.rowwrap');
-      if (wrap) wrap.classList.toggle('off', !ex.active);
-    }
-  } else if (act === 'toggle-active') {
-    const item = store.items.find(i => i.id === t.dataset.id);
-    if (item) {
-      item.active = t.checked;
-      save();
-      const wrap = t.closest('.rowwrap');
-      if (wrap) wrap.classList.toggle('off', !item.active); // переход тумблера играет
-      updateThresholdNote(); // применимых пунктов стало другое число (задача 22, п. 5)
-    }
+  // Здесь стояли тумблеры пункта и упражнения (data-act toggle-active и
+  // ex-active) с точечным обновлением класса .off и подписи зачёта дня.
+  // Поле active упразднено вместе с ними (задача 28.E/A, п. 2): уход из
+  // виду — теперь «Убрать» в форме правки, и он всегда полная перерисовка.
   } else if (act === 'boundary') {
     store.settings.dayBoundary = Number(t.value) || 0;
     save();
@@ -5185,6 +5469,7 @@ async function init() {
   document.querySelectorAll('#tabs button').forEach(b =>
     b.addEventListener('click', () => {
       ui.importNote = null;
+      ui.goneNote = null; // короткий путь назад не переживает уход с экрана
       // лист закрывается и таб-баром: если владелец вернулся на ту же
       // вкладку, с которой лист открыт, вернуть её скролл и фокус — как
       // это делает «Готово» (задача 26, п. 4.1). Замер снимается ДО close*.
@@ -5228,7 +5513,7 @@ if (typeof module !== 'undefined' && module.exports) {
     // планка вниз (задача 16C)
     lowerEligible, lowerSuggest, acceptLower, keepBar,
     // упражнения и тренировки (задача 16D)
-    activeExercises, findExercise, addExercise, updateExercise, moveExercise, recordSession,
+    liveExercises, findExercise, addExercise, updateExercise, moveExercise, recordSession,
     // чистка и её отмена (задача 16.1)
     WIPE_KEY, emptyStore, wipeStats, wipedCopy, wipeAll, restoreWiped, dropWiped,
     // копия перед замещением, нечитаемые данные и счёт потерь (задача 25)
@@ -5241,6 +5526,8 @@ if (typeof module !== 'undefined' && module.exports) {
     fmtParam, paramDecision, applyParamStep, keepParam, habitsSteady,
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, canMoveItem, reorderItem, reorderGroup, reorderExercise,
+    // уход и возврат (инвариант 12, задача 28.E/A)
+    live, livedOn, removeItem, restoreItem, removeExercise, restoreExercise,
     recordBar, parsePositive, isDayKey, load,
     mirrorRead, mirrorWrite, flushMirror,
     closedWeeks, itemWeekCount,
