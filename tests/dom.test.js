@@ -230,7 +230,10 @@ test('init() отрабатывает: экран «Сегодня» отрис�
   assert.ok(today.innerHTML.length > 0);
   assert.equal(today.querySelectorAll('input[data-act="mark"]').length, 6); // 6 дневных пунктов минимума
   assert.ok(today.querySelector('.weekcount'));                            // недельный счётчик
-  assert.match(today.textContent, /Минимум выполняется даже в худший день/);
+  // кредо-строка снята (задача 28.E/B, п. 2.3): она стояла за сгибом. Её
+  // место в шапке заняла строка дня — одна из набора, любая
+  assert.equal(today.querySelector('.creed'), null, 'кредо «Сегодня» снято');
+  assert.ok(today.querySelector('header.page .dline'), 'строка дня — в шапке');
   for (const id of ['scr-habits', 'scr-progress', 'scr-settings', 'scr-review', 'scr-train']) {
     assert.equal(document.getElementById(id).hidden, true, id);
   }
@@ -250,7 +253,9 @@ test('вкладки переключают все 4 экрана, каждый 
     settings: 'scr-settings'
   };
   const marker = {
-    today: /Минимум выполняется/,
+    // маркером «Сегодня» была кредо-строка; она снята (28.E/B), и на её
+    // место взят недельный счётчик — блок, который есть только здесь
+    today: /Полноценная тренировка/,
     habits: /Не спеши — доверься накопительному эффекту/,
     progress: /В системе/,
     settings: /Граница дня/
@@ -6809,4 +6814,60 @@ test('З28E/A.4: у упражнения «Убрать» и «Убранные�
   gone[0].querySelector('[data-act="ex-restore"]').click();
   assert.equal(document.querySelector('#scr-settings .rowwrap.gone'), null);
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).exercises[0].removedAt, null);
+});
+
+
+test('З28E/B.2: строка дня — третьей в шапке «Сегодня» и только там', async () => {
+  const { document, window } = await boot();
+  const scr = document.getElementById('scr-today');
+  const head = scr.querySelector('header.page');
+  assert.deepEqual([...head.children].map(n => n.className), ['overline', '', 'dline'],
+    'день недели → дата → строка дня');
+  assert.equal(head.children[1].tagName, 'H1');
+  const line = head.querySelector('.dline');
+  assert.ok(window.dayLine, 'функция выбора доступна');
+  assert.equal(line.textContent, window.dayLine(window.todayKey()));
+  // набор объявлен через const и в window не попадает (vm-контекст) —
+  // сверяем с исходником app.js: строка действительно из набора
+  assert.ok(APP.includes("  '" + line.textContent + "',"), 'строка — из набора');
+
+  // над планкой и над списком: ниже она читалась бы как оценка сделанного
+  const after = [...scr.children];
+  assert.ok(after.indexOf(head) < after.findIndex(n => n.classList.contains('dayline')));
+  assert.ok(after.indexOf(head) < after.findIndex(n => n.classList.contains('list')));
+
+  // ни кавычек, ни aria-live, ни своей роли
+  assert.doesNotMatch(line.textContent, /[«»"]/);
+  assert.equal(line.getAttribute('aria-live'), null);
+  assert.equal(line.getAttribute('role'), null);
+
+  // на других экранах строки нет
+  for (const t of ['habits', 'progress', 'settings']) {
+    document.querySelector(`#tabs button[data-tab="${t}"]`).click();
+    assert.equal(document.querySelector(`#scr-${t} .dline`), null, t);
+  }
+  // и на листах тоже
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('#scr-today [data-act="train-inc"]').click();
+  assert.equal(document.querySelector('#scr-train .dline'), null);
+  document.querySelector('[data-act="train-cancel"]').click();
+  assert.equal(document.querySelectorAll('.dline').length, 1, 'узел один на всё приложение');
+});
+
+test('З28E/B.6.2: строка не меняется от тапа по кругу', async () => {
+  const { document } = await boot();
+  const line = () => document.querySelector('#scr-today .dline').textContent;
+  const was = line();
+  const boxes = [...document.querySelectorAll('#scr-today input[data-act="mark"]')];
+  for (const b of boxes) { b.click(); assert.equal(line(), was, 'отметка строку не трогает'); }
+  for (const b of boxes) { b.click(); assert.equal(line(), was, 'снятие — тоже'); }
+});
+
+test('З28E/B.2.3: кредо снято с «Сегодня» и осталось на «Привычках»', async () => {
+  const { document } = await boot();
+  assert.equal(document.querySelector('#scr-today .creed'), null);
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const creed = document.querySelector('#scr-habits .creed');
+  assert.ok(creed, 'на «Привычках» кредо видно всегда — замер 468 px при сгибе 753');
+  assert.match(creed.textContent, /Не спеши — доверься накопительному эффекту/);
 });

@@ -786,6 +786,44 @@ const MUTANTS = [
     note: '«Убрать» срабатывает с первого тапа — последствие не названо, и промах по кнопке уводит пункт',
     edits: [['      if (ui.removeConfirm !== key) { ui.removeConfirm = key; renderSettings(); break; }',
       '      if (false) { ui.removeConfirm = key; renderSettings(); break; }']]
+  },
+  /* ── Задача 28.E, часть B: строка дня ────────────────────────
+     Исключение из запрета на лозунги держится своими границами: один
+     экран, закрытый набор, выбор — чистая функция от ключа дня. */
+  {
+    id: '28E-B-выбор-берёт-daysInSystem',
+    file: 'app.js',
+    note: 'строка дня снова считается от числа дней в системе — правка «начала отсчёта» её перебрасывает',
+    edits: [['  const n = diffDays(key, DAY_LINE_EPOCH);',
+      '  const n = daysInSystem();']]
+  },
+  {
+    id: '28E-B-строка-читает-практику',
+    file: 'app.js',
+    note: 'выбор начинает зависеть от отметок — строка меняется от тапа по кругу',
+    edits: [['  const n = diffDays(key, DAY_LINE_EPOCH);',
+      '  const n = diffDays(key, DAY_LINE_EPOCH) + Object.keys(store.days).length;']]
+  },
+  {
+    id: '28E-B-строка-на-втором-экране',
+    file: 'app.js',
+    note: 'строка дня появляется и на «Привычках» — исключение из запрета на лозунги перестаёт быть одним',
+    edits: [["      <p class=\"overline\">Программа роста</p>\n      <h1>Привычки</h1>",
+      "      <p class=\"overline\">Программа роста</p>\n      <h1>Привычки</h1>\n      <p class=\"dline\">${esc(dayLine(t))}</p>"]]
+  },
+  {
+    id: '28E-B-набор-сцеплен-с-днём-недели',
+    file: 'app.js',
+    note: 'сдвиг на круг снят: длина набора кратна семи, и каждая строка навсегда садится на один день недели',
+    edits: [['  const i = ((n + Math.floor(n / len)) % len + len) % len;',
+      '  const i = ((n % len) + len) % len;']]
+  },
+  {
+    id: '28E-B-кредо-вернулось-на-сегодня',
+    file: 'app.js',
+    note: 'кредо-строка возвращается вниз «Сегодня» — за сгиб, где её никто не видит, и вторым лозунгом на экране',
+    edits: [["  el('scr-today').innerHTML = h;",
+      "  h += `<p class=\"creed\">Минимум выполняется даже в худший день.</p>`;\n  el('scr-today').innerHTML = h;"]]
   }
 ];
 

@@ -4710,3 +4710,102 @@ test('З28E/A: убранный пункт не двигается стрелк�
   assert.deepEqual(now.filter(id => ['m5', 'm6', 'm7'].includes(id)),
     was.filter(id => ['m5', 'm6', 'm7'].includes(id)), 'убранные остались на своих местах');
 });
+
+
+/* ══ Задача 28.E, часть B: строка дня ═════════════════════════
+   Единственное исключение из запрета на лозунги приложения. Выбор —
+   чистая функция от ключа логического дня и только от него. */
+
+test('З28E/B.5.1: одна и та же строка весь день, разная в разные дни', () => {
+  setNow(2026, 8, 16, 5, 0);
+  const morning = app.dayLine(app.todayKey());
+  setNow(2026, 8, 16, 23, 59);
+  assert.equal(app.dayLine(app.todayKey()), morning, 'весь логический день — одна строка');
+  // 00:30 следующих суток — ещё этот же логический день (инвариант 1)
+  setNow(2026, 8, 17, 0, 30);
+  assert.equal(app.dayLine(app.todayKey()), morning, 'до границы дня строка не меняется');
+  setNow(2026, 8, 17, 12, 0);
+  assert.notEqual(app.dayLine(app.todayKey()), morning, 'новый день — новая строка');
+});
+
+test('З28E/B.5.2: выбор не зависит от days{}, calendarSince и чистки', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const s = freshStore();
+  const t = app.todayKey();
+  const was = app.dayLine(t);
+
+  // отметка по кругу
+  const it = s.items.find(i => i.type === 'daily');
+  app.toggleMark(t, it.id);
+  assert.equal(app.dayLine(t), was, 'тап по кругу строку не меняет');
+
+  // начало отсчёта — правится владельцем, и строка не вправе за ним ходить
+  s.settings.calendarSince = app.addDays(app.weekStartOf(t), -700);
+  assert.equal(app.dayLine(t), was);
+  s.settings.calendarSince = app.addDays(app.weekStartOf(t), 700);
+  assert.equal(app.dayLine(t), was, 'пустая эпоха тоже ничего не меняет');
+
+  // и число дней в системе — тем более: прежний quoteOfDay брал именно его
+  assert.notEqual(app.daysInSystem(), 0 - 1);
+  const before = app.daysInSystem();
+  s.settings.calendarSince = app.addDays(app.weekStartOf(t), -70);
+  assert.notEqual(app.daysInSystem(), before);
+  assert.equal(app.dayLine(t), was, 'daysInSystem на выбор не влияет');
+
+  // чистка: другой store, тот же день — та же строка
+  fakeLocalStorage();
+  app.store = app.emptyStore(4, 0.8);
+  assert.equal(app.dayLine(t), was, 'чистка строку не трогает');
+  clearLocalStorage();
+
+  // и вообще без store
+  const keep = app.store;
+  app.store = null;
+  assert.equal(app.dayLine(t), was, 'функция не читает store вовсе');
+  app.store = keep;
+});
+
+test('З28E/B.5.3: набор — 91 строка, дублей нет, за строкой не закреплён день недели', () => {
+  const L = app.DAY_LINES;
+  // Промпт задачи называл 90 и перечислял 91: набор взят дословно, счёт
+  // доложен архитектору. 91 = 7 × 13 — голый остаток намертво привязал бы
+  // строку к одному дню недели, и привязку снимает сам выбор
+  assert.equal(L.length, 91);
+  assert.equal(new Set(L).size, L.length, 'дублей нет');
+  for (const line of L) {
+    assert.equal(typeof line, 'string');
+    assert.equal(line.trim(), line);
+    assert.ok(line.length > 0 && line.length <= 90, line);
+    assert.doesNotMatch(line, /[«»"]/, 'без кавычек: это не цитата — ' + line);
+  }
+  assert.equal(L[0], 'Минимум выполняется даже в худший день.', 'кредо «Сегодня» — первый элемент');
+
+  // круг: каждая строка ровно один раз
+  let k = app.DAY_LINE_EPOCH;
+  const cycle = new Set();
+  for (let n = 0; n < L.length; n++) { cycle.add(app.dayLine(k)); k = app.addDays(k, 1); }
+  assert.equal(cycle.size, L.length, 'за круг набор проходится целиком');
+
+  // и главное: за семь кругов каждая строка бывает во все дни недели
+  const seen = new Map();
+  k = app.DAY_LINE_EPOCH;
+  for (let n = 0; n < L.length * 7; n++) {
+    const line = app.dayLine(k);
+    if (!seen.has(line)) seen.set(line, new Set());
+    seen.get(line).add(app.weekStartOf(k) === k ? 0 : app.diffDays(k, app.weekStartOf(k)));
+    k = app.addDays(k, 1);
+  }
+  assert.equal(seen.size, L.length);
+  for (const [line, dows] of seen) {
+    assert.equal(dows.size, 7, 'строка сцепилась с днями недели: ' + line);
+  }
+
+  // соседние дни не повторяются
+  k = '2025-01-01';
+  for (let n = 0; n < 800; n++) {
+    assert.notEqual(app.dayLine(k), app.dayLine(app.addDays(k, 1)), 'повтор подряд у ' + k);
+    k = app.addDays(k, 1);
+  }
+  // дни до якоря считаются тем же правилом, без NaN и без выхода за границы
+  assert.ok(L.includes(app.dayLine('2019-03-07')));
+});
