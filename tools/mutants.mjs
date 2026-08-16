@@ -582,8 +582,11 @@ const MUTANTS = [
     id: '27.1-9.4-добавить-блок-не-закрывает-правку',
     file: 'app.js',
     note: '9.4: «Добавить блок» снова оставляет открытой правку блока — на экране две формы блока разом',
-    edits: [["    case 'group-add-open': ui.groupAdd = true; ui.groupRename = null; ui.groupDelete = null; renderSettings(); break;",
-      "    case 'group-add-open': ui.groupAdd = true; ui.groupDelete = null; renderSettings(); break;"]]
+    // якорь перевыставлен в задаче 28.B: обработчик переписан на общее
+    // правило openSettingsForm, и прежняя строка из кода ушла. Предмет
+    // мутанта тот же — «Добавить блок» перестаёт закрывать правку блока
+    edits: [["    case 'group-add-open': openSettingsForm(() => { ui.groupAdd = true; }); break;",
+      "    case 'group-add-open': ui.groupAdd = true; renderSettings(); break;"]]
   },
   {
     id: '27.1-9.5-hstrip-обводка-невидима',
@@ -654,6 +657,53 @@ const MUTANTS = [
     file: 'app.js',
     note: 'чистка в непроверенной сессии снова не сбрасывает зеркало и не говорит об этом',
     edits: [["      ${mirrorReady ? '' : (mirrorOffer", "      ${true ? '' : (mirrorOffer"]]
+  },
+
+  /* ── Задача 28.B: мёртвое и тихое ──────────────────────────── */
+  {
+    id: '28B-1-скачок-подписи-вернулся',
+    file: 'styles.css',
+    note: 'высота подписи планки снова зависит от крупного <b> — список прыгает на 7,25 px в момент закрытия дня',
+    edits: [['  height: 34px;\n  line-height: 34px;\n', '']]
+  },
+  {
+    id: '28B-2-мёртвая-ветка-восстановлена',
+    file: 'app.js',
+    note: 'ветка создания кнопки «отменить последний» возвращена — недостижимый код снова в файле',
+    edits: [['  if (!n && hasUndo) next.remove();',
+      '  if (n && !hasUndo) {\n    const it = store.items.find(x => x.id === id);\n    const btn = document.createElement(\'button\');\n    btn.className = \'undo\';\n    btn.dataset.act = \'train-undo\';\n    btn.dataset.id = id;\n    btn.textContent = \'отменить последний\';\n    wc.after(btn);\n  } else if (!n && hasUndo) {\n    next.remove();\n  }']]
+  },
+  {
+    id: '28B-3-фокус-по-всему-документу',
+    file: 'app.js',
+    note: 'focusSrc снова ищет кнопку-источник во всём документе и попадает на скрытый экран',
+    edits: [['  const list = [...document.querySelectorAll(`main .screen:not([hidden]) [data-act="${src.act}"]`)];',
+      '  const list = [...document.querySelectorAll(`[data-act="${src.act}"]`)];']]
+  },
+  {
+    id: '28B-4-формы-не-гасят-друг-друга',
+    file: 'app.js',
+    note: 'открытие второй формы «Настроек» больше не закрывает первую — на экране снова две',
+    edits: [['function settingsFormsClosed() {\n  ui.editingId = null;', 'function settingsFormsClosed() {\n  if (true) return;\n  ui.editingId = null;']]
+  },
+  {
+    id: '28B-4-снимок-после-смены-ui',
+    file: 'app.js',
+    note: 'снимок черновика делается ПОСЛЕ закрытия прежней формы — ключ уже чужой, набранное не снимается',
+    edits: [['  snapshotOpenForm();     // набранное в прежней форме — в слот, ДО смены ui\n  settingsFormsClosed();',
+      '  settingsFormsClosed();\n  snapshotOpenForm();']]
+  },
+  {
+    id: '28B-5-потеря-категории-не-называется',
+    file: 'app.js',
+    note: 'блоки, weekLog, история, значения сессий и решения по параметрам снова вне счёта — импорт молчит о потере',
+    edits: [["  ['groups', 'блок', 'блока', 'блоков'],\n  ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],\n  ['history', 'запись истории', 'записи истории', 'записей истории'],\n  ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],\n  ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']\n", '']]
+  },
+  {
+    id: '28B-6-неделя-закрывается-одним-тапом',
+    file: 'app.js',
+    note: 'закрытие недели снова срабатывает с первого тапа — самая тяжёлая необратимость без подтверждения',
+    edits: [['      if (!ui.weekCloseConfirm) { ui.weekCloseConfirm = true; renderReview(); break; }\n', '']]
   }
 ];
 

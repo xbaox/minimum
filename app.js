@@ -2507,10 +2507,27 @@ function dataCounts(s) {
       for (const id of Object.keys(d)) if (d[id] === true) marks++;
     }
   }
+  // Категории пересчитаны по тому, что migrate ДЕЙСТВИТЕЛЬНО роняет
+  // (задача 28.B, п. 5.1), а не по тому, что удобно считать. Прежде счёт
+  // шёл по семи верхнеуровневым спискам, и файл, у которого миграция
+  // выбрасывала три блока, две записи weekLog, две записи истории, два
+  // значения сессии и решение по параметру, проходил с ПУСТОЙ строкой
+  // потерь: ни одно из этих чисел в счёт не входило (замер разведки 0.5).
+  const arr = v => (Array.isArray(v) ? v : []);
+  const sum = (list, get) => arr(list).reduce((n, x) => n + (x && typeof x === 'object' ? arr(get(x)).length : 0), 0);
+  const params = (s && s.paramDecided && typeof s.paramDecided === 'object' && !Array.isArray(s.paramDecided))
+    ? Object.keys(s.paramDecided).length : 0;
   return {
     items: len(s && s.items), days: Object.keys(days).length, marks,
     notes: len(s && s.notes), reviews: len(s && s.reviews),
-    exercises: len(s && s.exercises), sessions: len(s && s.sessions)
+    exercises: len(s && s.exercises), sessions: len(s && s.sessions),
+    groups: len(s && s.groups),
+    weekLog: len(s && s.weekLog),
+    // история планки и история нагрузки — одна сущность (обе пишет recordBar,
+    // инвариант 5), поэтому и категория потерь одна
+    history: sum(s && s.items, x => x.history) + sum(s && s.exercises, x => x.history),
+    entries: sum(s && s.sessions, x => x.entries),
+    params
   };
 }
 
@@ -2521,7 +2538,12 @@ const COUNT_WORDS = [
   ['notes', 'заметка', 'заметки', 'заметок'],
   ['reviews', 'разбор', 'разбора', 'разборов'],
   ['exercises', 'упражнение', 'упражнения', 'упражнений'],
-  ['sessions', 'тренировка', 'тренировки', 'тренировок']
+  ['sessions', 'тренировка', 'тренировки', 'тренировок'],
+  ['groups', 'блок', 'блока', 'блоков'],
+  ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],
+  ['history', 'запись истории', 'записи истории', 'записей истории'],
+  ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],
+  ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']
 ];
 
 /* «2 дня, 8 отметок» — перечисление того, чего в файле больше, чем доедет.
@@ -2600,7 +2622,7 @@ function importJSON(file) {
     ui.editingId = null;
     ui.editNorm = null;
     ui.addOpen = false;
-    ui.formDraft = null;
+    ui.formDraft = {};
     ui.missOpen = {};
     ui.raiseEdit = {};
     ui.groupRename = null;
@@ -2610,7 +2632,7 @@ function importJSON(file) {
     // заметки принадлежали прежним данным — форма и черновик
     ui.noteAdd = false;
     ui.noteEditingId = null;
-    ui.noteDraft = null;
+    ui.noteDraft = {};
     ui.exEditingId = null;
     ui.exAddOpen = false;
     // Взведённые подтверждения относились к ПРЕЖНИМ данным и после подмены
@@ -2654,15 +2676,19 @@ const ui = {
   importNote: null,     // строка «Импортировано: …», исчезает при следующем действии
   renderedDayKey: null, // логический день, для которого отрисован интерфейс (инвариант 8)
   renderedTab: null,    // последний отрисованный вид (вкладка или лист) — скролл сбрасывается только при его смене
-  formDraft: null,      // черновик открытой формы: значения, фокус, каретка
+  // Черновики форм — по одному ХРАНИЛИЩУ на экран, внутри по ключу формы:
+  // { 'edit:i1': { fields, focus } }. Прежде слот держал ровно один черновик,
+  // и открытие соседней формы того же экрана его затирало (задача 28.B, п. 4).
+  formDraft: {},        // черновик открытой формы: значения, фокус, каретка
   detailId: null,       // открытый лист детали пункта (поверх вкладки)
   detailForm: null,     // форма в листе: 'formula' | 'ladder' | null
   detailScroll: 0,      // позиция скролла вкладки, с которой открыт лист
   ladderConfirm: false, // «Снять лестницу» ждёт подтверждения вторым тапом
   ladderDoneConfirm: false, // «Закрыть привычку» — тоже вторым тапом (задача 21)
   ladderNewConfirm: false, // замена ПРОЙДЕННОЙ лестницы новой — вторым тапом (задача 27.1, п. 3.2)
+  weekCloseConfirm: false, // «Закрыть неделю» — вторым тапом (задача 28.B, п. 6)
   formulaMode: null,    // режим в открытой форме формулы (null — как у самой формулы)
-  detailDraft: null,    // черновик формы листа — отдельный слот от «Пунктов» (14.2, вопрос 2)
+  detailDraft: {},    // черновик формы листа — отдельный слот от «Пунктов» (14.2, вопрос 2)
   groupRename: null,    // имя блока с раскрытой правкой
   groupDelete: null,    // блок ждёт подтверждения удаления вторым тапом
   groupAdd: false,      // открыто поле «Добавить блок»
@@ -2684,7 +2710,7 @@ const ui = {
   // заметок: снимается в начале renderTrain, возвращается в конце.
   // Прежде здесь лежала строка ui.trainNote с комментарием «переживает
   // перерисовку» — ввод в неё не попадал вовсе, и обещание было ложным.
-  trainDraft: null,
+  trainDraft: {},
   // кнопка, открывшая лист: закрытие любым путём вернёт ей фокус (п. 4.2)
   sheetSrc: null,       // { act, id } | null
   exEditingId: null,    // упражнение с раскрытой правкой
@@ -2693,7 +2719,7 @@ const ui = {
   noteKind: 'note',     // вид новой записи: 'note' | 'quote' (задача 17)
   noteEditingId: null,  // заметка с раскрытой правкой
   noteDelete: null,     // заметка ждёт подтверждения удаления вторым тапом
-  noteDraft: null,      // черновик формы заметки — свой слот, как у листа детали
+  noteDraft: {},      // черновик формы заметки — свой слот, как у листа детали
   wipeOpen: false,      // раскрыто предупреждение «Начать с чистого листа» (16.1)
   wipeFailed: false,    // чистка не выполнена: копию некуда положить или запись отказала (19, C.6.4)
   restoreFailed: false, // то же у возврата — молчать о нём нельзя (задача 27, Д7)
@@ -3567,20 +3593,18 @@ function updateWeekCount(id) {
   const wc = plus.closest('.weekcount');
   const num = wc.querySelector('.wnum b');
   if (num) num.textContent = n;
+  // Ветка СОЗДАНИЯ кнопки «отменить последний» снята как недостижимая
+  // (задача 28.B, п. 2). Единственный вызывающий — обработчик 'train-undo',
+  // то есть сама эта кнопка: чтобы её нажать, она обязана существовать,
+  // значит hasUndo при входе всегда true, а счёт после undoTrain только
+  // убывает. Доказано не рассуждением: ветка была заминирована throw'ом
+  // в изолированной копии и не выстрелила ни разу на 452 тестах, тогда как
+  // ветка удаления на том же прогоне выстрелила сразу.
+  // hasUndo остаётся: он проверяет, что снимается ИМЕННО кнопка этого
+  // пункта, а не случайный сосед, — это валидация узла, а не мёртвый код.
   const next = wc.nextElementSibling;
   const hasUndo = !!(next && next.classList.contains('undo') && next.dataset.id === id);
-  if (n && !hasUndo) {
-    const it = store.items.find(x => x.id === id);
-    const btn = document.createElement('button');
-    btn.className = 'undo';
-    btn.dataset.act = 'train-undo';
-    btn.dataset.id = id;
-    btn.textContent = 'отменить последний';
-    btn.setAttribute('aria-label', `отменить последний: «${it ? it.name : ''}»`);
-    wc.after(btn);
-  } else if (!n && hasUndo) {
-    next.remove();
-  }
+  if (!n && hasUndo) next.remove();
 }
 
 /* ── Лист детали пункта (инвариант 12) ─────────────────────────
@@ -4046,7 +4070,17 @@ function renderReview() {
       <div class="sect-b">${wk}</div>
     </details>`;
 
-  h += `<button class="btn primary wide" data-act="close-week">Закрыть неделю</button>` + REVIEW_DONE;
+  // Закрытие недели — самая тяжёлая необратимость приложения: срез уходит в
+  // архив, а принятые решения, поле «одного изменения» и решения по
+  // параметрам чистятся. Один тап для этого мало (задача 28.B, п. 6):
+  // «Стереть», «Удалить блок» и «Закрыть привычку» давно просят второго,
+  // а эта кнопка стояла вплотную над «Готово» и срабатывала с первого.
+  // Последствие названо между тапами и названо нейтрально: что произойдёт,
+  // без тревоги и без уговоров.
+  if (ui.weekCloseConfirm) {
+    h += `<p class="muted">Неделя уйдёт в архив: принятые решения, «одно изменение» и решения по параметрам очистятся. Отметки останутся.</p>`;
+  }
+  h += `<button class="btn primary wide" data-act="close-week">${ui.weekCloseConfirm ? 'Подтвердить: закрыть неделю' : 'Закрыть неделю'}</button>` + REVIEW_DONE;
 
   el('scr-review').innerHTML = h;
 }
@@ -4132,9 +4166,16 @@ const draftSlot = key => (isDetailKey(key) ? 'detailDraft'
 const formScope = key => (isDetailKey(key) ? '#scr-detail'
   : (isNoteKey(key) ? '#scr-notes' : (isTrainKey(key) ? '#scr-train' : '#scr-settings')));
 
+/* Черновик формы по ключу. Хранилище — по одному на экран (`draftSlot`),
+   внутри — запись на каждую форму этого экрана (задача 28.B, п. 4.3):
+   прежде запись была ОДНА, и открытие соседней формы того же экрана
+   затирало набранное в первой. Ключ хранится ключом объекта, а не полем
+   записи, — сверять его на восстановлении больше не нужно. */
+const draftOf = key => ui[draftSlot(key)][key] || null;
+
 function snapshotOpenForm() {
   const key = currentFormKey();
-  if (!key) return; // ничего не открыто — оба слота живут до смены своей формы
+  if (!key) return; // ничего не открыто — черновики живут до своей формы
   const slot = draftSlot(key);
   // Форма ищется на том экране, которому принадлежит ключ, и именно ТА,
   // чей ключ совпал. Прежде бралась ПЕРВАЯ форма экрана — а на «Настройках»
@@ -4147,10 +4188,11 @@ function snapshotOpenForm() {
   for (const f of document.querySelectorAll(formScope(key) + ' [data-form]')) {
     if (domFormKey(f) === key) { form = f; break; }
   }
-  if (!form) {
-    if (ui[slot] && ui[slot].key !== key) ui[slot] = null; // открыли другую форму
-    return;
-  }
+  // Формы ещё нет в разметке — её открывают прямо сейчас, текущий рендер её
+  // только напечатает. Снимать нечего, и чистить тоже: черновики соседних
+  // форм лежат по своим ключам и этой не мешают. Прежде здесь стояла чистка
+  // «открыли другую форму», и набранное в первой пропадало (28.B, п. 4.3).
+  if (!form) return;
   const fields = {};
   for (const inp of form.querySelectorAll('input[id], select[id], textarea[id]')) {
     if (inp.dataset.act) continue; // управляемые ui-состоянием контролы (select типа) — не черновик
@@ -4160,15 +4202,58 @@ function snapshotOpenForm() {
   const focus = (ae && form.contains(ae) && ae.id)
     ? { id: ae.id, start: ae.selectionStart ?? null, end: ae.selectionEnd ?? null }
     : null;
-  const base = (ui[slot] && ui[slot].key === key) ? ui[slot].fields : null;
-  ui[slot] = { key, fields: Object.assign({}, base, fields), focus };
+  const base = draftOf(key);
+  ui[slot][key] = { fields: Object.assign({}, base && base.fields, fields), focus };
+}
+
+/* ── Формы «Настроек»: одна за раз (задача 28.B, п. 4) ─────────
+   На экране четыре семейства форм — пункт, добавление пункта, блок и
+   упражнение, — и слот черновика у них ОДИН (`formDraft`, он же один на
+   экран по инварианту). Гасили друг друга они несимметрично: `edit-open`
+   снимал только `addOpen`, `group-add-open` — только правку блока, а
+   обратно не гасило ничто. Замер: в 20 сочетаниях из 30 на экране
+   оставалось ДВЕ открытые формы, и в 18 набранное в первой пропадало.
+
+   Правило теперь одно на всех: сначала снимок того, что открыто, потом
+   закрытие ВСЕХ форм экрана, потом открытие нужной. Порядок обязателен —
+   снимок читает `currentFormKey()`, и если ui уже переписан, ключ укажет
+   на новую форму, а набранное в прежней не будет снято вовсе (именно так
+   оно и терялось: черновик снимается только при перерисовке). */
+function settingsFormsClosed() {
+  ui.editingId = null;
+  ui.addOpen = false;
+  ui.groupRename = null;
+  ui.groupAdd = false;
+  ui.groupDelete = null;
+  ui.exEditingId = null;
+  ui.exAddOpen = false;
+  // производные состояния открытой формы принадлежат ей, не экрану
+  ui.editNorm = null;
+  ui.groupPick = null;
+  ui.groupNew = false;
+}
+
+function openSettingsForm(apply) {
+  snapshotOpenForm();     // набранное в прежней форме — в слот, ДО смены ui
+  settingsFormsClosed();
+  apply();
+  renderSettings();
+}
+
+/* «Отмена» — осознанный отказ от набранного, а не переключение: черновик
+   снимается явно. Иначе повторное открытие той же формы вернуло бы то,
+   от чего владелец только что отказался (снимок теперь делается при
+   открытии соседней формы, а прежде не делался вовсе). */
+function dropOpenDraft() {
+  const key = currentFormKey();
+  if (key) delete ui[draftSlot(key)][key];
 }
 
 function restoreOpenForm() {
   const key = currentFormKey();
   if (!key) return;
-  const draft = ui[draftSlot(key)];
-  if (!draft || draft.key !== key) return;
+  const draft = draftOf(key);
+  if (!draft) return;
   for (const [fid, v] of Object.entries(draft.fields)) {
     const inp = el(fid);
     if (inp) inp.value = v;
@@ -4771,7 +4856,14 @@ function focusSheet(id) {
    ПОСЛЕ возврата скролла: кнопка тогда уже на экране и фокус его не двинет. */
 function focusSrc(src) {
   if (!src) return;
-  const list = [...document.querySelectorAll(`[data-act="${src.act}"]`)];
+  // Кнопка ищется в пределах ВИДИМОГО экрана — тот же приём, что у
+  // visibleFlash (задача 27.1, Д4), и тот же класс дефекта: renderAll рисует
+  // одну текущую вкладку, а прочие экраны сохраняют прежнюю разметку. Баннер
+  // разбора (`goto-review`) стоит и на «Сегодня», и на «Прогрессе», и data-id
+  // у него нет ни там, ни там — выборка по всему документу отдавала list[0],
+  // то есть узел «Сегодня». Замер: разбор, открытый с «Прогресса», возвращал
+  // фокус на кнопку внутри scr-today при hidden = true (задача 28.B, п. 3).
+  const list = [...document.querySelectorAll(`main .screen:not([hidden]) [data-act="${src.act}"]`)];
   const btn = src.id ? list.find(x => x.dataset.id === src.id) : list[0];
   if (btn && typeof btn.focus === 'function') btn.focus({ preventScroll: true });
 }
@@ -4782,7 +4874,7 @@ function openDetail(id) {
   ui.detailId = id;
   ui.detailForm = null;
   ui.ladderConfirm = false;
-  ui.detailDraft = null;
+  ui.detailDraft = {};
   ui.missOpen = {}; // раскрытая подпись «вчера» принадлежит дневному экрану
   renderAll();
   focusSheet('scr-detail');
@@ -4792,7 +4884,7 @@ function closeDetail() {
   ui.detailId = null;
   ui.detailForm = null;
   ui.ladderConfirm = false;
-  ui.detailDraft = null;
+  ui.detailDraft = {};
   ui.formulaMode = null;
   ui.ladderDoneConfirm = false;
   ui.sheetSrc = null; // источник принадлежал закрытому листу
@@ -4816,7 +4908,7 @@ function closeTrain() {
   ui.trainOpen = false;
   ui.trainId = null;
   ui.trainFrom = null;
-  ui.trainDraft = null; // черновик принадлежал закрытому листу
+  ui.trainDraft = {}; // черновик принадлежал закрытому листу
   ui.sheetSrc = null;
 }
 
@@ -4836,6 +4928,7 @@ function resetConfirms() {
   ui.ladderConfirm = false;
   ui.ladderDoneConfirm = false;
   ui.ladderNewConfirm = false;
+  ui.weekCloseConfirm = false;
 }
 
 /* ── Перетаскивание (задача 16F) ───────────────────────────────
@@ -5093,23 +5186,23 @@ function onClick(e) {
       if (reopenLadder(id)) renderAll();
       break;
 
-    case 'formula-open': ui.detailForm = 'formula'; ui.detailDraft = null; ui.formulaMode = null; renderAll(); break;
-    case 'formula-cancel': ui.detailForm = null; ui.detailDraft = null; ui.formulaMode = null; renderAll(); break;
+    case 'formula-open': ui.detailForm = 'formula'; ui.detailDraft = {}; ui.formulaMode = null; renderAll(); break;
+    case 'formula-cancel': ui.detailForm = null; ui.detailDraft = {}; ui.formulaMode = null; renderAll(); break;
     case 'formula-save': {
       const values = {};
       for (const k of FORMULA_KEYS) values[k] = el('fx-' + k) ? el('fx-' + k).value : '';
       values.mode = ui.formulaMode || formulaMode(item && item.formula);
       setFormula(id, values);
       ui.detailForm = null;
-      ui.detailDraft = null;
+      ui.detailDraft = {};
       ui.formulaMode = null;
       flashWrite('formula:' + id);
       keepInPlace(b, renderAll);
       break;
     }
 
-    case 'ladder-open': ui.detailForm = 'ladder'; ui.ladderConfirm = false; ui.ladderNewConfirm = false; ui.detailDraft = null; renderAll(); break;
-    case 'ladder-cancel': ui.detailForm = null; ui.ladderConfirm = false; ui.ladderNewConfirm = false; ui.detailDraft = null; renderAll(); break;
+    case 'ladder-open': ui.detailForm = 'ladder'; ui.ladderConfirm = false; ui.ladderNewConfirm = false; ui.detailDraft = {}; renderAll(); break;
+    case 'ladder-cancel': ui.detailForm = null; ui.ladderConfirm = false; ui.ladderNewConfirm = false; ui.detailDraft = {}; renderAll(); break;
     case 'ladder-save': {
       const steps = el('fx-steps') ? el('fx-steps').value : '';
       // замена ПРОЙДЕННОЙ лестницы — вторым тапом: её ступени исчезнут,
@@ -5124,7 +5217,7 @@ function onClick(e) {
       ui.detailForm = null;
       ui.ladderConfirm = false; // незавершённое подтверждение не переживает форму
       ui.ladderNewConfirm = false;
-      ui.detailDraft = null;
+      ui.detailDraft = {};
       flashWrite('ladder:' + id);
       keepInPlace(b, renderAll);
       break;
@@ -5134,7 +5227,7 @@ function onClick(e) {
       clearLadder(id);
       ui.ladderConfirm = false;
       ui.detailForm = null;
-      ui.detailDraft = null;
+      ui.detailDraft = {};
       renderAll();
       break;
     }
@@ -5144,7 +5237,7 @@ function onClick(e) {
       ui.trainScroll = window.scrollY || 0;
       ui.trainFrom = ui.tab;
       ui.trainId = id;
-      ui.trainDraft = null; // новый лист — чистые поля
+      ui.trainDraft = {}; // новый лист — чистые поля
       // прежний лист остаётся в DOM скрытым; чистим разметку, иначе снимок
       // черновика подхватит его поля как «текущие» (у листа тот же ключ)
       el('scr-train').innerHTML = '';
@@ -5211,7 +5304,7 @@ function onClick(e) {
       ui.noteKind = b.dataset.kind === 'quote' ? 'quote' : 'note';
       ui.noteEditingId = null;
       ui.noteDelete = null;
-      ui.noteDraft = null;
+      ui.noteDraft = {};
       renderNotes();
       break;
 
@@ -5219,7 +5312,7 @@ function onClick(e) {
       ui.noteEditingId = id;
       ui.noteAdd = false;
       ui.noteDelete = null;
-      ui.noteDraft = null;
+      ui.noteDraft = {};
       renderNotes();
       break;
 
@@ -5227,7 +5320,7 @@ function onClick(e) {
       ui.noteAdd = false;
       ui.noteEditingId = null;
       ui.noteDelete = null;
-      ui.noteDraft = null;
+      ui.noteDraft = {};
       renderNotes();
       break;
 
@@ -5250,7 +5343,7 @@ function onClick(e) {
       ui.noteAdd = false;
       ui.noteEditingId = null;
       ui.noteDelete = null;
-      ui.noteDraft = null;
+      ui.noteDraft = {};
       keepInPlace(b, renderNotes);
       break;
     }
@@ -5260,12 +5353,12 @@ function onClick(e) {
       deleteNote(id);
       ui.noteDelete = null;
       ui.noteEditingId = null;
-      ui.noteDraft = null;
+      ui.noteDraft = {};
       renderNotes();
       break;
 
-    case 'ex-add-open': ui.exAddOpen = true; ui.exEditingId = null; renderSettings(); break;
-    case 'ex-add-cancel': ui.exAddOpen = false; renderSettings(); break;
+    case 'ex-add-open': openSettingsForm(() => { ui.exAddOpen = true; }); break;
+    case 'ex-add-cancel': dropOpenDraft(); ui.exAddOpen = false; renderSettings(); break;
     case 'ex-add-save': {
       const name = el('x-add-name') ? el('x-add-name').value.trim() : '';
       if (!name) { refuse(b, 'Название не заполнено'); break; } // безымянное упражнение не заводится
@@ -5281,8 +5374,8 @@ function onClick(e) {
       keepInPlace(b, renderSettings);
       break;
     }
-    case 'ex-open': ui.exEditingId = id; ui.exAddOpen = false; renderSettings(); break;
-    case 'ex-cancel': ui.exEditingId = null; renderSettings(); break;
+    case 'ex-open': openSettingsForm(() => { ui.exEditingId = id; }); break;
+    case 'ex-cancel': dropOpenDraft(); ui.exEditingId = null; renderSettings(); break;
     case 'ex-save': {
       const name = el('x-name') ? el('x-name').value.trim() : '';
       if (!name) { refuse(b, 'Название не заполнено'); break; }
@@ -5360,6 +5453,8 @@ function onClick(e) {
     case 'param-keep': if (keepParam(id)) motionLeave(b.closest('.card'), renderReview); break;
 
     case 'close-week':
+      if (!ui.weekCloseConfirm) { ui.weekCloseConfirm = true; renderReview(); break; }
+      ui.weekCloseConfirm = false;
       if (closeWeek()) ui.justClosed = true;
       renderReview();
       window.scrollTo(0, 0); // длинный экран разбора схлопывается — наверх
@@ -5389,12 +5484,17 @@ function onClick(e) {
       if (btn && !btn.disabled) btn.focus();
       break;
     }
-    case 'group-open':
-      ui.groupRename = ui.groupRename === b.dataset.name ? null : b.dataset.name; // раскрыт один
-      ui.groupDelete = null;
-      renderSettings();
+    case 'group-open': {
+      // тап по раскрытой строке её сворачивает — цель считается ДО того,
+      // как settingsFormsClosed обнулит ui.groupRename
+      const next = ui.groupRename === b.dataset.name ? null : b.dataset.name;
+      openSettingsForm(() => { ui.groupRename = next; });
       break;
-    case 'group-cancel': ui.groupRename = null; ui.groupDelete = null; renderSettings(); break;
+    }
+    case 'group-cancel':
+      dropOpenDraft();
+      ui.groupRename = null; ui.groupDelete = null; renderSettings();
+      break;
     // Отказ больше не молчит и не закрывает форму: пустое или занятое имя
     // прежде уносило правку целиком — форма закрывалась, введённое пропадало
     // (задача 26, пп. 2.3–2.4)
@@ -5420,8 +5520,8 @@ function onClick(e) {
     }
     // раскрыт один: «Добавить блок» закрывает открытую правку блока, как
     // «Добавить упражнение» закрывает правку упражнения (задача 27, п. 7.4)
-    case 'group-add-open': ui.groupAdd = true; ui.groupRename = null; ui.groupDelete = null; renderSettings(); break;
-    case 'group-add-cancel': ui.groupAdd = false; renderSettings(); break;
+    case 'group-add-open': openSettingsForm(() => { ui.groupAdd = true; }); break;
+    case 'group-add-cancel': dropOpenDraft(); ui.groupAdd = false; renderSettings(); break;
     case 'group-add-save': {
       const inp = el('g-add');
       const nm = inp ? inp.value.trim() : '';
@@ -5435,11 +5535,12 @@ function onClick(e) {
     }
 
     case 'edit-open':
-      ui.editingId = id; ui.addOpen = false; ui.editNorm = null; ui.groupDelete = null;
-      ui.groupPick = null; ui.groupNew = false; // поле «Блок» открывается на значении пункта
-      renderSettings();
+      // поле «Блок» открывается на значении пункта: groupPick/groupNew
+      // гасит settingsFormsClosed вместе с прочими формами экрана
+      openSettingsForm(() => { ui.editingId = id; });
       break;
     case 'edit-cancel':
+      dropOpenDraft();
       ui.editingId = null; ui.editNorm = null; ui.groupPick = null; ui.groupNew = false;
       renderSettings();
       break;
@@ -5547,18 +5648,19 @@ function onClick(e) {
     }
 
     case 'add-open': {
-      ui.addOpen = true; ui.editingId = null; ui.addType = 'daily';
-      ui.addArea = b.dataset.area === 'habit' ? 'habit' : 'min';
-      ui.addPkind = 'time';
-      ui.groupPick = null; ui.groupNew = false;
+      const area = b.dataset.area === 'habit' ? 'habit' : 'min';
       // Подсказка «одна новая привычка за раз» видима все 14 дней после
       // добавления пункта — но считается только по добавленному владельцем
       const newest = ownerNewestItem();
-      ui.addHint = !!(newest && diffDays(todayKey(), newest.addedAt) < 14);
-      renderSettings();
+      const hint = !!(newest && diffDays(todayKey(), newest.addedAt) < 14);
+      openSettingsForm(() => {
+        ui.addOpen = true; ui.addType = 'daily'; ui.addArea = area; ui.addPkind = 'time';
+        ui.addHint = hint;
+      });
       break;
     }
     case 'add-cancel':
+      dropOpenDraft();
       ui.addOpen = false; ui.addHint = false; ui.groupPick = null; ui.groupNew = false;
       renderSettings();
       break;
@@ -5661,9 +5763,9 @@ function onClick(e) {
       ui.exAddOpen = false;
       ui.noteAdd = false;
       ui.noteEditingId = null;
-      ui.formDraft = null;
-      ui.detailDraft = null;
-      ui.noteDraft = null;
+      ui.formDraft = {};
+      ui.detailDraft = {};
+      ui.noteDraft = {};
       ui.missOpen = {};
       ui.raiseEdit = {};
       closeDetail();

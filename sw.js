@@ -1,7 +1,7 @@
 /* МИНИМУМ — service worker. Cache-first, полный офлайн после первой загрузки.
    При обновлении файлов поднимите VERSION — старый кэш будет удалён. */
 
-const VERSION = 'minimum-v38';
+const VERSION = 'minimum-v39';
 
 const ASSETS = [
   './',

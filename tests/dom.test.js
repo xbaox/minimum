@@ -317,7 +317,7 @@ test('назревший разбор: баннер на «Сегодня», с�
   const closeBtn = document.querySelector('[data-act="close-week"]');
   assert.ok(closeBtn);
 
-  closeBtn.click();
+  closeWeekThroughUi(document); // вторым тапом (задача 28.B, п. 6)
 
   // лист остаётся открытым и показывает состояние ожидания (задача 16B:
   // с таб-бара разбор ушёл, повторно открыть его после закрытия нечем —
@@ -911,7 +911,7 @@ test('ретро-отметка видна в сетке разбора и вх�
   assert.match(document.querySelector('.g-name .sr-only').textContent, /отмечено 1 из 7/);
   assert.equal(document.querySelectorAll('.grid i.on').length, 1);
 
-  document.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(document);
   const saved = JSON.parse(window.localStorage.getItem(NS));
   const r = saved.reviews[saved.reviews.length - 1];
   assert.equal(r.week, curMonday()); // разобрана бывшая текущая неделя
@@ -932,7 +932,7 @@ test('разбор показывает счёт тренировок разоб
   assert.match(document.querySelector('.wnum b').textContent, /1/); // «Сегодня» — текущая неделя
   openReview(document);
   assert.match(document.getElementById('scr-review').textContent, /Тренировка: 1 из 3/); // разбираемая неделя
-  document.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(document);
   const saved = JSON.parse(window.localStorage.getItem(NS));
   assert.equal(saved.reviews[0].trainings.w1.count, 1); // экран и срез согласованы
 });
@@ -972,7 +972,7 @@ test('«Изменение этой недели» в обоих состоян�
   wait.draftOneChange = evilChange;
   const a = await boot({ seed: wait });
   openReview(a.document);
-  a.document.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(a.document);
   let scr = a.document.getElementById('scr-review');
   assert.match(scr.textContent, /Разбор откроется/);
   assert.match(scr.textContent, /Изменение этой недели: „раньше <script>window\.__oc=1<\/script> ложиться“/);
@@ -993,7 +993,7 @@ test('«Изменение этой недели» в обоих состоян�
   empty.draftOneChange = '   ';
   const c = await boot({ seed: empty });
   openReview(c.document);
-  c.document.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(c.document);
   assert.doesNotMatch(c.document.getElementById('scr-review').textContent, /Изменение этой недели/);
 });
 
@@ -1093,7 +1093,7 @@ test('разбор: секции «Минимум» и «Привычки», к�
 
   // закрытие пишет params и чистит решения
   openReview(document);
-  document.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(document);
   saved = JSON.parse(window.localStorage.getItem(NS));
   const r = saved.reviews[saved.reviews.length - 1];
   assert.deepEqual(r.params, [{ id: 'pt', from: 0, to: 1425 }]);
@@ -1233,7 +1233,7 @@ test('разбор: решение чужой недели не гасит ка�
   // решение этой недели принимается и попадает в срез; чужое — нет
   scr.querySelector('[data-act="param-keep"]').click();
   await settle(); // отложенный уход карточки завершается перерисовкой
-  document.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(document);
   const saved = JSON.parse(window.localStorage.getItem(NS));
   const r = saved.reviews[saved.reviews.length - 1];
   assert.deepEqual(r.params, [{ id: 'pt', from: 90, to: null }]);
@@ -1402,7 +1402,7 @@ test('тексты ожидания разбора: полная дата пон
   // ожидание достижимо закрытием недели: лист остаётся открытым (задача 16B)
   const a = await boot({ seed: dueSeed() });
   openReview(a.document);
-  a.document.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(a.document);
   const textA = a.document.getElementById('scr-review').textContent;
   const monA = addKey(curMonday(), 7);
   assert.ok(textA.includes('Разбор откроется в понедельник, ' + fmtDayKey(monA)), textA);
@@ -3156,6 +3156,17 @@ function openData(document) {
 }
 
 /* Полный путь чистки: предупреждение → «Стереть» → подтверждение */
+/* Закрытие недели требует второго тапа (задача 28.B, п. 6): первый только
+   взводит и печатает строку последствия. Узел после первого тапа пересоздан
+   перерисовкой — ищем его заново. */
+function closeWeekThroughUi(doc) {
+  const btn = () => doc.querySelector('[data-act="close-week"]');
+  assert.ok(btn(), 'кнопка «Закрыть неделю»');
+  btn().click();
+  assert.match(btn().textContent, /Подтвердить/, 'первый тап только взводит');
+  btn().click();
+}
+
 function wipeThroughUi(document) {
   openData(document);
   document.querySelector('[data-act="wipe-open"]').click();
@@ -3870,7 +3881,7 @@ test('C.2 (И3): черновик «одного изменения» пишет
   assert.equal(document.querySelector('[data-bind="one-change"]').value, 'ложиться раньше');
 
   // и уходит в срез при закрытии недели
-  document.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(document);
   const st = JSON.parse(window.localStorage.getItem(NS));
   assert.equal(st.reviews[st.reviews.length - 1].oneChange, 'ложиться раньше');
   assert.equal(st.draftOneChange, '', 'после закрытия черновик чист');
@@ -5359,7 +5370,7 @@ test('З24/2: параметр — карточка в «Решении 1», ш�
     'итог решения — read-only строка под свёрткой');
 
   // и уходит в срез недели
-  after.querySelector('[data-act="close-week"]').click();
+  closeWeekThroughUi(after);
   const closed = JSON.parse(window.localStorage.getItem(NS));
   assert.deepEqual(closed.reviews[0].params, [{ id: 'pp', from: 1380, to: 1365 }]);
 });
@@ -6586,6 +6597,10 @@ test('З27/5.3: «Вернуть» при отказе говорит строк
 });
 
 
+/* Переписан в задаче 28.B, п. 4: прежде тест закреплял мир, в котором на
+   «Настройках» открыты ДВЕ формы разом и обе стоят в разметке. Теперь форма
+   на экране одна, и предмет проверки тот же по смыслу — правка блока не
+   крадёт набранное в форме пункта, — но проверяется возвратом к ней. */
 test('З27/9.1: раскрытая правка блока не крадёт черновик формы пункта', async () => {
   const { document } = await boot();
   document.querySelector('#tabs button[data-tab="settings"]').click();
@@ -6593,8 +6608,12 @@ test('З27/9.1: раскрытая правка блока не крадёт ч�
   document.getElementById('e-name').value = 'Умыться ХОЛОДНОЙ ВОДОЙ';
   // секция «Блоки» стоит ВЫШЕ «Пунктов»: прежде её форма находилась первой
   document.querySelector('#scr-settings [data-act="group-open"]').click();
+  assert.equal(document.getElementById('e-name'), null, 'форма пункта закрыта: на экране одна форма');
+  assert.ok(document.querySelector('#scr-settings [data-form="group-edit"]'), 'открыта правка блока');
+  // возврат к форме пункта: набранное на месте
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
   assert.equal(document.getElementById('e-name').value, 'Умыться ХОЛОДНОЙ ВОДОЙ',
-    'черновик формы пункта пережил перерисовку по чужому поводу');
+    'черновик формы пункта пережил открытие чужой формы');
 });
 
 test('З27/9.1: форма блока получила черновик', async () => {
@@ -7073,4 +7092,203 @@ test('З28A/5.3: три прежних исхода стартового чте�
   const c = await boot({ idb: hungIdb });
   assert.equal(c.window.localStorage.getItem(NS), null);
   assert.equal(await c.window.flushMirror(), false);
+});
+
+/* ── Задача 28.B: мёртвое и тихое ─────────────────────────────── */
+
+/* 8.1. Скачок под пальцем. jsdom лэйаут не считает, поэтому проверяется
+   правило, а не пиксели: строчный бокс подписи задан в CSS длиной, значит
+   от исчезновения крупного <b> не зависит. Пиксели замерены в браузере. */
+test('З28B/1: строчный бокс подписи планки задан длиной и от <b> не зависит', async () => {
+  const rule = (CSS_SRC().match(/\.bar-note\s*\{[^}]*\}/s) || [''])[0];
+  // высота задана ЖЁСТКО: одного line-height мало — строчный бокс с
+  // 22-пиксельным глифом выше, чем без него, при том же интерлиньяже
+  // (замер: остаточные 2 px). Блок обязан отдавать в раскладку константу
+  assert.match(rule, /height:\s*\d+px/, '.bar-note несёт фиксированную высоту');
+  assert.match(rule, /line-height:\s*\d+px/, 'и интерлиньяж в пикселях');
+  // числовой (наследуемый) он быть не может: в <b> пересчитался бы от 22px
+  assert.doesNotMatch(rule, /line-height:\s*[\d.]+;/, 'не безразмерный: он наследуется в <b>');
+  // новой ступени кегля не заведено — высота и интерлиньяж кеглем не являются
+  assert.doesNotMatch(rule, /font-size:\s*\d+px/, 'кегль остался токеном');
+});
+
+test('З28B/1.1: закрытие дня не меняет высоту подписи и не двигает список', async () => {
+  const { document } = await boot();
+  const note = () => document.querySelector('#scr-today .bar-note');
+  const boxes = [...document.querySelectorAll('#scr-today input[data-act="mark"]')];
+  boxes.slice(0, boxes.length - 1).forEach(b => b.click());
+  const before = note().outerHTML;
+  assert.match(before, /<b>/, 'до закрытия в подписи крупное число');
+  boxes[boxes.length - 1].click();
+  assert.doesNotMatch(note().outerHTML, /<b>/, 'после закрытия числа нет');
+  assert.match(note().textContent, /День закрыт/);
+  // высота держится правилом CSS, а не разметкой: узел тот же, класс добавлен
+  assert.ok(note().classList.contains('ok'));
+});
+
+test('З28B/1.3: «Привычки» лечатся тем же правилом — своей подписи у них нет', async () => {
+  // один и тот же селектор .bar-note обслуживает оба дневных экрана
+  assert.equal((CSS_SRC().match(/\.bar-note\s*\{/g) || []).length, 1, 'правило одно на оба экрана');
+  const { document } = await boot();
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const note = document.querySelector('#scr-habits .bar-note');
+  assert.ok(note, 'у «Привычек» та же подпись того же класса');
+  document.querySelectorAll('#scr-habits input[data-act="mark"]').forEach(b => b.click());
+  assert.doesNotMatch(note.outerHTML, /<b>/, 'и та же болезнь была бы без правила');
+});
+
+/* 8.2. Мёртвая ветка снята. Утверждение о НЕДОСТИЖИМОМ коде поведением не
+   проверяется по определению: восстановленная ветка ничего не меняет, и
+   поведенческий тест её не увидит (мутант 28B-2 без этого теста выживает).
+   Поэтому сторож здесь исходный — того же рода, что счёт градиентов и
+   разрешённых кеглей в CSS. */
+test('З28B/2: в updateWeekCount не осталось ветки создания кнопки', () => {
+  const fn = (APP.match(/function updateWeekCount\([\s\S]*?\n\}/) || [''])[0];
+  assert.ok(fn, 'функция найдена');
+  assert.doesNotMatch(fn, /createElement/, 'кнопка не создаётся: ветка была недостижима');
+  assert.match(fn, /if \(!n && hasUndo\) next\.remove\(\);/, 'осталась одна ветка — снятие');
+  assert.doesNotMatch(fn, /else if/, 'условие соседней ветки схлопнуто');
+});
+
+/* 8.2. Оставшиеся пути живы. */
+test('З28B/2: счётчик тренировок — «отменить последний» снимается на нуле', async () => {
+  const seed = trainSeed();
+  const { document, window } = await boot({ seed });
+  const plus = () => document.querySelector('#scr-today [data-act="train-inc"]');
+  const undo = () => document.querySelector('#scr-today [data-act="train-undo"]');
+  const num = () => document.querySelector('#scr-today .wnum b').textContent;
+
+  plus().click();
+  document.querySelector('[data-act="train-save"]').click();
+  assert.equal(num(), '1');
+  assert.ok(undo(), 'кнопка отмены есть при счёте 1');
+
+  undo().click();                       // счёт 1 → 0: ветка удаления
+  assert.equal(num(), '0');
+  assert.equal(undo(), null, 'на нуле кнопка снята');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).weekLog.length, 0);
+
+  // и обратно: счёт снова растёт, кнопка возвращается ПЕРЕРИСОВКОЙ
+  plus().click();
+  document.querySelector('[data-act="train-save"]').click();
+  assert.equal(num(), '1');
+  assert.ok(undo(), 'кнопка вернулась');
+});
+
+/* 8.3. Фокус возвращается на кнопку ВИДИМОГО экрана. */
+test('З28B/3: разбор, открытый с «Прогресса», возвращает фокус на его баннер', async () => {
+  const { document } = await boot({ seed: dueSeed() });
+  // сначала побывать на «Сегодня», чтобы его разметка с таким же баннером осталась
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.ok(document.querySelector('#scr-today [data-act="goto-review"]'), 'баннер на «Сегодня»');
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  document.querySelector('#scr-progress [data-act="goto-review"]').click();
+  assert.equal(document.getElementById('scr-review').hidden, false);
+
+  document.querySelector('[data-act="review-done"]').click();
+  const af = document.activeElement;
+  assert.equal(af.dataset.act, 'goto-review', 'фокус на кнопке-источнике');
+  const scr = af.closest('section.screen');
+  assert.equal(scr.id, 'scr-progress', 'и это баннер «Прогресса», а не «Сегодня»');
+  assert.equal(scr.hidden, false, 'экран фокуса виден');
+  assert.notEqual(af, document.body);
+});
+
+test('З28B/3: лист тренировки возвращает фокус на «+» видимого экрана', async () => {
+  const { document } = await boot({ seed: trainSeed() });
+  document.querySelector('#scr-today [data-act="train-inc"]').click();
+  document.querySelector('[data-act="train-cancel"]').click();
+  const af = document.activeElement;
+  assert.equal(af.dataset.act, 'train-inc');
+  assert.equal(af.closest('section.screen').hidden, false);
+});
+
+/* 8.4. Формы «Настроек»: общий вид по всем сочетаниям. */
+const SETTINGS_FORMS = [
+  { key: 'пункт-правка', act: 'edit-open', field: 'e-name' },
+  { key: 'пункт-добавить', act: 'add-open', field: 'f-name' },
+  { key: 'блок-правка', act: 'group-open', field: 'g-name' },
+  { key: 'блок-добавить', act: 'group-add-open', field: 'g-add' },
+  { key: 'упр-правка', act: 'ex-open', field: 'x-name' },
+  { key: 'упр-добавить', act: 'ex-add-open', field: 'x-add-name' }
+];
+
+function openAllSettingsSections(document) {
+  for (const re of [/Блоки/, /Пункты/, /Упражнения/]) {
+    const s = [...document.querySelectorAll('#scr-settings details.sect')]
+      .find(x => re.test(x.querySelector('summary').textContent));
+    if (s && !s.open) s.querySelector('summary').click();
+  }
+}
+
+test('З28B/4: на «Настройках» форма одна, и черновик прежней цел — все 30 сочетаний', async () => {
+  const seed = trainSeed();
+  seed.groups = [{ name: 'Утро' }];
+  seed.items[0].group = 'Утро';
+  seed.exercises = [{ id: 'x1', name: 'Отжимания', unit: 'раз', value: 10, history: [], active: true, addedAt: daysAgo(30) }];
+  let пар = 0;
+  for (const a of SETTINGS_FORMS) {
+    for (const b of SETTINGS_FORMS) {
+      if (a.key === b.key) continue;
+      пар++;
+      const { document } = await boot({ seed });
+      document.querySelector('#tabs button[data-tab="settings"]').click();
+      openAllSettingsSections(document);
+      document.querySelector(`#scr-settings [data-act="${a.act}"]`).click();
+      const inp = document.getElementById(a.field);
+      assert.ok(inp, `${a.key}: форма открыта`);
+      inp.value = 'ЧЕРНОВИК';
+      document.querySelector(`#scr-settings [data-act="${b.act}"]`).click();
+      const forms = [...document.querySelectorAll('#scr-settings [data-form]')];
+      assert.equal(forms.length, 1, `${a.key} → ${b.key}: на экране одна форма`);
+      assert.equal(document.getElementById(a.field), null, `${a.key} → ${b.key}: первая закрыта`);
+      // возврат к первой: набранное на месте
+      document.querySelector(`#scr-settings [data-act="${a.act}"]`).click();
+      assert.equal(document.getElementById(a.field).value, 'ЧЕРНОВИК',
+        `${a.key} → ${b.key}: черновик первой формы цел`);
+    }
+  }
+  assert.equal(пар, 30, 'проверены все сочетания');
+});
+
+test('З28B/4: «Отмена» черновик отбрасывает, а не прячет', async () => {
+  const { document } = await boot();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  const was = document.getElementById('e-name').value;
+  document.getElementById('e-name').value = 'ОТМЕНЁННОЕ';
+  document.querySelector('#scr-settings [data-act="edit-cancel"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  assert.equal(document.getElementById('e-name').value, was,
+    'после «Отмены» возвращается сохранённое значение, а не отменённый черновик');
+});
+
+/* 8.6. Закрытие недели — вторым тапом. */
+test('З28B/6: «Закрыть неделю» — первый тап взводит, второй закрывает', async () => {
+  const { document, window } = await boot({ seed: dueSeed() });
+  openReview(document);
+  const btn = () => document.querySelector('[data-act="close-week"]');
+  assert.equal(btn().textContent, 'Закрыть неделю');
+
+  btn().click();
+  assert.match(btn().textContent, /Подтвердить: закрыть неделю/, 'первый тап только взводит');
+  assert.match(document.getElementById('scr-review').textContent, /Неделя уйдёт в архив/,
+    'последствие названо между тапами');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).reviews.length, 0, 'срез ещё не записан');
+
+  btn().click();
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).reviews.length, 1, 'второй тап закрывает');
+});
+
+test('З28B/6.3: взведённое закрытие недели гаснет уходом с листа', async () => {
+  const { document, window } = await boot({ seed: dueSeed() });
+  openReview(document);
+  document.querySelector('[data-act="close-week"]').click();
+  assert.match(document.querySelector('[data-act="close-week"]').textContent, /Подтвердить/);
+
+  document.querySelector('#tabs button[data-tab="progress"]').click(); // уход таб-баром
+  openReview(document);
+  assert.equal(document.querySelector('[data-act="close-week"]').textContent, 'Закрыть неделю',
+    'подтверждение не пережило ухода');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).reviews.length, 0, 'ничего не записано');
 });

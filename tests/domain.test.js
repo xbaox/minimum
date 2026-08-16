@@ -4268,25 +4268,96 @@ test('З25/3: dataCounts считает по сырому файлу, droppedLin
   setNow(2026, 8, 14, 12, 0);
   const raw = {
     schemaVersion: 16,
-    items: [null, 'мусор', { id: 'a', name: 'Пункт' }],
+    items: [null, 'мусор', {
+      id: 'a', name: 'Пункт',
+      // задача 28.B, п. 5: история планки роняется по дате и по значению
+      history: [{ date: '2026-08-10', value: 5 }, { date: 'нет', value: 7 }]
+    }],
     days: { '2026-08-10': { a: true, e: 1 }, 'мусор': { a: true } },
     notes: [{ text: 'мысль' }, { text: '   ' }],
     reviews: [null, {}],
     // ненулевые упражнения и тренировки: без них две категории из семи
     // считались бы «проверенными» на одних нулях
-    exercises: [null, { id: 'e1', name: 'Жим' }],
-    sessions: [{ id: 's1', date: '2026-08-10', entries: [] }, { id: 's2', date: 'мусор', entries: [] }]
+    exercises: [null, {
+      id: 'e1', name: 'Жим',
+      history: [{ date: '2026-08-10', value: 10 }, { date: 'нет', value: 12 }]
+    }],
+    sessions: [
+      { id: 's1', date: '2026-08-10', entries: [{ exId: 'e1', value: 10 }, { exId: 'e1', value: null }] },
+      { id: 's2', date: 'мусор', entries: [] }
+    ],
+    // пять категорий, которых счёт прежде не видел вовсе
+    groups: [{ name: 'Утро' }, { name: '   ' }, { name: 'Утро' }, 42],
+    weekLog: [{ itemId: 'a', date: '2026-08-10' }, 'мусор', null],
+    paramDecided: { p1: { week: '2026-08-10', from: 1, to: 2 }, p2: { мусор: true } }
   };
   const was = app.dataCounts(raw);
-  assert.deepEqual(was, { items: 3, days: 2, marks: 2, notes: 2, reviews: 2, exercises: 2, sessions: 2 });
+  assert.deepEqual(was, {
+    items: 3, days: 2, marks: 2, notes: 2, reviews: 2, exercises: 2, sessions: 2,
+    groups: 4, weekLog: 3, history: 4, entries: 2, params: 2
+  });
 
   // считать обязательно ДО migrate: он мутирует переданный объект
   const got = app.dataCounts(app.migrate(raw, { external: true }));
-  assert.deepEqual(got, { items: 1, days: 1, marks: 1, notes: 1, reviews: 1, exercises: 1, sessions: 1 });
+  assert.deepEqual(got, {
+    items: 1, days: 1, marks: 1, notes: 1, reviews: 1, exercises: 1, sessions: 1,
+    groups: 1, weekLog: 1, history: 2, entries: 1, params: 1
+  });
 
   assert.equal(app.droppedLine(was, got),
-    '2 пункта, 1 день, 1 отметка, 1 заметка, 1 разбор, 1 упражнение, 1 тренировка');
+    '2 пункта, 1 день, 1 отметка, 1 заметка, 1 разбор, 1 упражнение, 1 тренировка, ' +
+    '3 блока, 2 записи счётчика, 2 записи истории, 1 значение тренировки, 1 решение по параметру');
   assert.equal(app.droppedLine(got, got), '', 'числа сошлись — строки нет');
+});
+
+/* 5.2: склонения новых категорий на 1, 2 и 5 — по одному замеру на слово,
+   а не «на глаз». Разница «1 запись счётчика / 2 записи / 5 записей». */
+test('З28B/5.2: склонения новых категорий потерь на 1, 2 и 5', () => {
+  const zero = { items: 0, days: 0, marks: 0, notes: 0, reviews: 0, exercises: 0, sessions: 0, groups: 0, weekLog: 0, history: 0, entries: 0, params: 0 };
+  const line = (key, n) => app.droppedLine(Object.assign({}, zero, { [key]: n }), zero);
+  assert.equal(line('groups', 1), '1 блок');
+  assert.equal(line('groups', 2), '2 блока');
+  assert.equal(line('groups', 5), '5 блоков');
+  assert.equal(line('weekLog', 1), '1 запись счётчика');
+  assert.equal(line('weekLog', 2), '2 записи счётчика');
+  assert.equal(line('weekLog', 5), '5 записей счётчика');
+  assert.equal(line('history', 1), '1 запись истории');
+  assert.equal(line('history', 2), '2 записи истории');
+  assert.equal(line('history', 5), '5 записей истории');
+  assert.equal(line('entries', 1), '1 значение тренировки');
+  assert.equal(line('entries', 2), '2 значения тренировки');
+  assert.equal(line('entries', 5), '5 значений тренировки');
+  assert.equal(line('params', 1), '1 решение по параметру');
+  assert.equal(line('params', 2), '2 решения по параметру');
+  assert.equal(line('params', 5), '5 решений по параметру');
+});
+
+/* 5.3: файл из разведки 0.5 — тот, на котором строка потерь молчала. */
+test('З28B/5.3: файл, ронявший данные молча, теперь называет потерю числом', () => {
+  setNow(2026, 8, 14, 12, 0);
+  const raw = {
+    schemaVersion: 16,
+    items: [{
+      id: 'i1', name: 'Пункт', type: 'daily', area: 'min', active: true, addedAt: '2026-08-01',
+      value: 10, unit: 'мин', history: [{ date: '2026-08-01', value: 5 }, { date: 'не-дата', value: 7 }, { date: '2026-08-05', value: 'семь' }]
+    }],
+    days: { '2026-08-01': { i1: true } },
+    groups: [{ name: 'Утро' }, { name: '   ' }, { name: 'Утро' }, 42],
+    weekLog: [{ itemId: 'w1', date: '2026-08-01', ts: 1 }, 'мусор', null],
+    reviews: [], pendingRaises: [], pendingLowers: [], notes: [],
+    exercises: [{ id: 'x1', name: 'Отжимания', unit: 'раз', value: 10, active: true, addedAt: '2026-08-01', history: [{ date: '2026-08-01', value: 10 }, { date: 'нет', value: 12 }] }],
+    sessions: [{ id: 's1', date: '2026-08-01', note: '', entries: [{ exId: 'x1', value: 10 }, { exId: 'x1', value: null }, { нет: 1 }] }],
+    paramDecided: { p1: { week: '2026-08-03', from: 1, to: 2 }, p2: { мусор: true } },
+    draftOneChange: '', weekStart: '2026-08-03',
+    settings: { dayBoundary: 4, dayThreshold: 0.8, calendarSince: '2026-08-03', habitSeeded: true, seed17: true }
+  };
+  const was = app.dataCounts(raw);
+  const got = app.dataCounts(app.migrate(JSON.parse(JSON.stringify(raw)), { external: true }));
+  const line = app.droppedLine(was, got);
+  assert.notEqual(line, '', 'прежде здесь была пустая строка');
+  for (const part of ['3 блока', '2 записи счётчика', '3 записи истории', '2 значения тренировки', '1 решение по параметру']) {
+    assert.match(line, new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), part);
+  }
 });
 
 test('З25/3.1: счёт «было», снятый после migrate, потерь уже не видит', () => {
