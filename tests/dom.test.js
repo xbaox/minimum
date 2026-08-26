@@ -1769,7 +1769,7 @@ test('уход в фон (visibilitychange→hidden) сбрасывает зер
 test('exportedAt ставится при экспорте, строки «Данных» рендерятся', async () => {
   const { document, window } = await boot();
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  assert.match(document.getElementById('scr-settings').textContent, /Экспорта ещё не было/);
+  assert.match(document.getElementById('scr-settings').textContent, /Данные ещё не скачивались/);
 
   window.URL.createObjectURL = () => 'blob:fake'; // в jsdom не реализовано
   window.URL.revokeObjectURL = () => {};
@@ -1780,7 +1780,7 @@ test('exportedAt ставится при экспорте, строки «Дан
   // задача 25, п. 9: приложение знает лишь то, что скачивание ЗАПУЩЕНО —
   // сохранил ли владелец файл, в вебе узнать нечем. Строка не утверждает
   // больше: «Последний экспорт» обещал состоявшийся файл, «запускался» — нет
-  assert.match(document.getElementById('scr-settings').textContent, /Экспорт запускался:/);
+  assert.match(document.getElementById('scr-settings').textContent, /Данные скачивались:/);
   assert.doesNotMatch(document.getElementById('scr-settings').textContent, /Последний экспорт/);
 });
 
@@ -2014,9 +2014,10 @@ test('редактор блоков: строка — имя и стрелки, 
   document.querySelector('#tabs button[data-tab="settings"]').click();
   rowOf('Ночь').querySelector('[data-act="group-open"]').click(); // удаление живёт в раскрытой правке
   const del = () => rowOf('Ночь').querySelector('[data-act="group-del"]');
-  assert.match(del().textContent, /^Удалить$/);
+  assert.match(del().textContent, /^Удалить блок$/);
   del().click();
-  assert.match(del().textContent, /Подтвердить удаление/);
+  assert.match(del().textContent, /Подтвердить: удалить блок/);
+  assert.match(rowOf('Ночь').textContent, /Пункты останутся/, 'последствие названо между тапами');
   assert.ok(saved().groups.find(g => g.name === 'Ночь'), 'первый тап не удаляет');
   del().click();
   s = saved();
@@ -2249,10 +2250,62 @@ test('«Прогресс»: подъём — линия при двух запи
   assert.equal((d.match(/[HV]/g) || []).length, 3);
   assert.equal(svg[0].getAttribute('aria-hidden'), 'true');
   // подпись — словами владельца, без осей и подписей значений внутри графика
-  assert.match(scr.querySelector('.rise-v').textContent, /^10 → 14 мин$/);
+  assert.match(scr.querySelector('.rise-v').textContent, /^10 → 14$/);
   assert.equal(svg[0].querySelector('text'), null, 'подписей значений в SVG нет');
   assert.equal(svg[0].querySelector('line'), null, 'осей и сетки нет');
   assert.equal(svg[0].querySelector('circle'), null, 'точек нет');
+});
+
+/* ── A.1.2: формат подписи «Подъёма» — один на ВСЕ источники ──
+   «старт → текущее», и ничего после. Источников три, и до задачи 29/A
+   каждый печатался по-своему: у параметра-числа fmtParam вклеивал единицу
+   в ОБА значения («4000 шаг. → 5000 шаг.»), у пункта и упражнения единица
+   дописывалась хвостом, и упражнение с числом в поле «Единица» давало
+   «7 → 8 7» — третье число, которого владелец не писал.
+
+   Тест держит все четыре случая разом: хвост, вернувшийся к любому
+   источнику, валит его (мутант 29A-tail). */
+test('З29A/1: подпись «Подъёма» — «старт → текущее» у всех трёх источников, без хвоста', async () => {
+  const seed = progSeed();
+  const day0 = addKey(daysAgo(0), -20), day1 = daysAgo(3);
+  seed.items = [
+    { id: 'pt', name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
+      pkind: 'time', pvalue: 1425, pstep: -15, goal: null, note: '', group: '',
+      removedAt: null, addedAt: day0, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+      history: [{ date: day0, value: 0 }, { date: day1, value: 1425 }] },
+    { id: 'pn', name: 'Шаги', value: null, unit: 'шаг.', type: 'param', area: 'habit',
+      pkind: 'number', pvalue: 5000, pstep: 500, goal: null, note: '', group: '',
+      removedAt: null, addedAt: day0, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+      history: [{ date: day0, value: 4000 }, { date: day1, value: 5000 }] },
+    { id: 'it', name: 'Английский', value: 8, unit: 'мин', type: 'daily', area: 'min',
+      goal: null, note: '', group: '', removedAt: null, addedAt: day0,
+      raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+      history: [{ date: day0, value: 5 }, { date: day1, value: 8 }] }
+  ];
+  // упражнение с ЧИСЛОМ в поле «Единица» — данные владельца, дефект «7 → 8 7»
+  seed.exercises = [
+    { id: 'ex', name: 'Подтягивания', unit: '7', value: 8, addedAt: day0, removedAt: null,
+      history: [{ date: day0, value: 7 }, { date: day1, value: 8 }] },
+    { id: 'ex2', name: 'Жим', unit: 'кг', value: 40, addedAt: day0, removedAt: null,
+      history: [{ date: day0, value: 35 }, { date: day1, value: 40 }] }
+  ];
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  const got = {};
+  for (const b of document.querySelectorAll('#scr-progress .rise-b')) {
+    got[b.querySelector('.rise-n').textContent] = b.querySelector('.rise-v').textContent;
+  }
+  assert.deepEqual(got, {
+    'Отбой': '00:00 → 23:45',        // порог-время читается часами, единицы у него нет
+    'Шаги': '4000 → 5000',           // единица параметра-числа больше не вклеивается дважды
+    'Английский': '5 → 8',           // планка пункта — без «мин»
+    'Подтягивания': '7 → 8',         // мусор в «Единице» на «Подъём» не попадает
+    'Жим': '35 → 40'                 // и честная единица тоже: формат ОДИН
+  });
+  // сторож формата: ни одна подпись не несёт ничего, кроме двух значений и стрелки
+  for (const [name, label] of Object.entries(got)) {
+    assert.match(label, /^[^ ]+ → [^ ]+$/, `хвост вернулся к ряду «${name}»: ${label}`);
+  }
 });
 
 test('разбор: открывается строкой «Прогресса» и «Готово» возвращает на неё', async () => {
@@ -2541,7 +2594,7 @@ test('«Прогресс»: упражнение с двумя записями 
   const blocks = [...scr.querySelectorAll('.rise-b')];
   assert.equal(blocks.length, 1, 'один визуал на упражнение');
   assert.match(blocks[0].textContent, /Жим/);
-  assert.match(blocks[0].querySelector('.rise-v').textContent, /^40 → 45 кг$/);
+  assert.match(blocks[0].querySelector('.rise-v').textContent, /^40 → 45$/);
   assert.equal((blocks[0].querySelector('path').getAttribute('d').match(/[HV]/g) || []).length, 3);
 });
 
@@ -2861,7 +2914,7 @@ test('чистка: предупреждение с числами, второй
   assert.equal(document.querySelector('#scr-today .weekcount'), null);
 });
 
-test('чистка: «Вернуть» восстанавливает всё, «Убрать копию» — вторым тапом', async () => {
+test('чистка: «Вернуть» восстанавливает всё, «Стереть копию» — вторым тапом', async () => {
   const seed = trainSeed();
   seed.days = { [daysAgo(0)]: { it1: true } };
   const { document, window } = await boot({ seed });
@@ -3916,10 +3969,10 @@ test('З22/4: взведённое подтверждение гаснет пр�
   groupSect().querySelector('summary').click();
   document.querySelector('[data-act="group-open"]').click();
   document.querySelector('[data-act="group-del"]').click();
-  assert.match(document.querySelector('[data-act="group-del"]').textContent, /Подтвердить удаление/);
+  assert.match(document.querySelector('[data-act="group-del"]').textContent, /Подтвердить: удалить блок/);
   away();
   // правка блока переживает уход (её никто не отменял), а подтверждение — нет
-  assert.match(document.querySelector('[data-act="group-del"]').textContent, /^Удалить$/);
+  assert.match(document.querySelector('[data-act="group-del"]').textContent, /^Удалить блок$/);
   assert.equal(saved().groups.length, 1, 'блок на месте');
 });
 
@@ -4069,7 +4122,7 @@ test('З22/7.3: шапка листа тренировки не повторяе
   assert.match(head.querySelector('.overline').textContent, /\d/, 'надстрочник — день записи');
 });
 
-test('З22/7.2: подсказка «одна новая привычка за раз» — только по пунктам владельца', async () => {
+test('З22/7.2: подсказка «одно новое дело за раз» — только по пунктам владельца, и предмет по области', async () => {
   // засеянный store: девять пунктов одной датой — подсказки нет
   const { document, window } = await boot();
   const store = JSON.parse(window.localStorage.getItem(NS));
@@ -4087,8 +4140,16 @@ test('З22/7.2: подсказка «одна новая привычка за �
   document.getElementById('f-name').value = 'Своё';
   document.querySelector('[data-act="add-save"]').click();
   document.querySelector('[data-act="add-open"]').click();
+  // область МИНИМУМА: подсказка не смеет называть пункт привычкой (задача 29/A).
+  // Прежде текст был один на обе ветки, и ownerNewestItem area не различает.
   assert.match(document.querySelector('#scr-settings .hint').textContent,
-    /одна новая привычка за раз/);
+    /^Одно новое дело за раз: последнее добавлено меньше 14 дней назад\.$/);
+  document.querySelector('[data-act="add-cancel"]').click();
+  document.querySelector('[data-act="add-open"][data-area="habit"]').click();
+  assert.match(document.querySelector('#scr-settings .hint').textContent,
+    /^Одна новая привычка за раз: последнее добавлено меньше 14 дней назад\.$/);
+  // «правило системы» из текста ушло: такого правила в «Системе» нет
+  assert.doesNotMatch(document.querySelector('#scr-settings .hint').textContent, /Правило системы/);
 });
 
 test('З22/7.2: стёртый store — первый пункт владельца подсказку не глушит', async () => {
@@ -4115,7 +4176,7 @@ test('З22/7.2: стёртый store — первый пункт владель�
   document.dispatchEvent(new window.Event('visibilitychange'));
   document.querySelector('[data-act="add-open"]').click();
   assert.match(document.querySelector('#scr-settings .hint').textContent,
-    /Последний пункт добавлен меньше 14 дней назад/);
+    /последнее добавлено меньше 14 дней назад/);
 });
 
 /* ══ Задача 23, п. 6: точечный путь ≡ полная перерисовка ══════
@@ -5087,7 +5148,7 @@ test('З25/5.3: файл прежней схемы предупреждения 
   assert.doesNotMatch(text, /более новой версией/);
 });
 
-test('З25/6: строка нечитаемых данных появляется, скачивается и убирается вторым тапом', async () => {
+test('З25/6: строка нечитаемых данных появляется, скачивается и стирается вторым тапом', async () => {
   const { document, window } = await boot({ raw: '{битый json' });
   const row = () => document.querySelector('#scr-settings .restore.corrupt');
   openData(document);
@@ -5101,9 +5162,9 @@ test('З25/6: строка нечитаемых данных появляетс�
   assert.match(file.name, /^minimum-нечитаемое-\d{4}-\d{2}-\d{2}\.json$/);
   assert.ok(window.localStorage.getItem('minimum:data:corrupt'), 'скачивание ключа не убирает');
 
-  // «Убрать» — вторым тапом
+  // «Стереть нечитаемое» — вторым тапом
   row().querySelector('[data-act="corrupt-drop"]').click();
-  assert.match(row().textContent, /Подтвердить: убрать/);
+  assert.match(row().textContent, /Подтвердить: стереть нечитаемое/);
   assert.ok(window.localStorage.getItem('minimum:data:corrupt'), 'первый тап ничего не убрал');
   row().querySelector('[data-act="corrupt-drop"]').click();
   assert.equal(window.localStorage.getItem('minimum:data:corrupt'), null);
@@ -5168,25 +5229,25 @@ test('З25/2: взведённое подтверждение не пережи�
   assert.match(document.querySelector('[data-act="wipe-do"]').textContent, /^Стереть$/,
     'счёт тапов начинается заново');
 
-  // то же для «Убрать» нечитаемых данных: взведённое подтверждение гаснет
+  // то же для «Стереть» нечитаемых данных: взведённое подтверждение гаснет
   const b = await boot({ raw: '{битый json' });
   openData(b.document);
   b.document.querySelector('[data-act="corrupt-drop"]').click();
   assert.match(b.document.querySelector('[data-act="corrupt-drop"]').textContent, /Подтвердить/);
   await importThroughUi(b.document, b.window, otherFile());
   openData(b.document);
-  assert.match(b.document.querySelector('[data-act="corrupt-drop"]').textContent, /^Убрать$/);
+  assert.match(b.document.querySelector('[data-act="corrupt-drop"]').textContent, /^Стереть нечитаемое$/);
   assert.ok(b.window.localStorage.getItem('minimum:data:corrupt'), 'данные на месте');
 });
 
-test('З25/6: взведённое «Убрать» не переживает уход с экрана', async () => {
+test('З25/6: взведённое «Стереть нечитаемое» не переживает уход с экрана', async () => {
   const { document } = await boot({ raw: '{битый json' });
   openData(document);
   document.querySelector('[data-act="corrupt-drop"]').click();
   assert.match(document.querySelector('[data-act="corrupt-drop"]').textContent, /Подтвердить/);
   document.querySelector('#tabs button[data-tab="today"]').click(); // resetConfirms()
   openData(document);
-  assert.match(document.querySelector('[data-act="corrupt-drop"]').textContent, /^Убрать$/);
+  assert.match(document.querySelector('[data-act="corrupt-drop"]').textContent, /^Стереть нечитаемое$/);
 });
 
 test('З25/6: нечитаемые данные без даты — строка есть, дата не выдумывается', async () => {
@@ -5609,6 +5670,23 @@ test('З26/4.3: ловушки фокуса нет — таб-бар из отк
 /* ── п. 5: отделка, замером по объявлениям ─────────────────── */
 
 const CSS_SRC = () => fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+/* ── A.2.3: акцентного ТЕКСТА на «Настройках» нет ─────────────
+   `.hist` — история планки, нагрузки и порога — печаталась акцентом и
+   читалась как объявление, хотя это справка: в списке из девяти строк
+   светилась половина. Акцент на «Настройках» остаётся только у активной
+   вкладки таб-бара и у primary-кнопки открытой формы (это КОНТРОЛЫ, и
+   конституция называет их носителями акцента отдельно).
+
+   Сторож читает исходник CSS: jsdom значения var() не разрешает, а
+   предмет проверки — именно объявление. Мутант 29A-акцент-вернулся-в-справку. */
+test('З29A/2: история планки на «Настройках» — muted, а не акцент', () => {
+  const css = CSS_SRC();
+  const rule = css.match(/\.hist\s*\{[^}]*\}/);
+  assert.ok(rule, 'правило .hist есть в styles.css');
+  assert.match(rule[0], /color:\s*var\(--muted\)/, '.hist — справка, тон muted');
+  assert.doesNotMatch(rule[0], /var\(--accent\)/, 'акцент из справки снят (задача 29/A)');
+});
 /* Тело правила по ТОЧНОМУ селектору. Селектор ищется от начала строки:
    иначе «.cdays i» нашлось бы внутри «.grid i, .cdays i», и тест мерил бы
    чужое правило, ничего об этом не сообщив. */
@@ -6321,7 +6399,7 @@ test('З27/5.4: подтверждения гасятся возвратом —
   document.querySelector('#scr-settings [data-act="add-save"]').click();
   document.querySelector('#tabs button[data-tab="settings"]').click();
 
-  document.querySelector('[data-act="wipe-drop"]').click(); // взвели «Убрать копию»
+  document.querySelector('[data-act="wipe-drop"]').click(); // взвели «Стереть копию»
   assert.match(document.querySelector('[data-act="wipe-drop"]').textContent, /Подтвердить/);
 
   document.querySelector('[data-act="wipe-undo"]').click(); // возврат
@@ -6374,7 +6452,7 @@ test('З28A/1: непарсящийся снапшот не затирается
   assert.ok(document.querySelector('[data-act="corrupt-save"][data-src="mirror"]'), 'кнопка «Скачать»');
 });
 
-test('З28A/1.3: нечитаемая копия скачивается и убирается вторым тапом вместе со снапшотом', async () => {
+test('З28A/1.3: нечитаемая копия скачивается и стирается вторым тапом вместе со снапшотом', async () => {
   const idb = new IDBFactory();
   await idbPut(idb, { json: '{обрыв', savedAt: 1, schemaVersion: 16 });
   const { document, window } = await boot({ idb });
@@ -6386,10 +6464,10 @@ test('З28A/1.3: нечитаемая копия скачивается и уб�
   document.querySelector('[data-act="corrupt-save"][data-src="mirror"]').click();
   assert.ok(given, 'скачивание запущено');
 
-  // «Убрать» — вторым тапом
+  // «Стереть нечитаемое» — вторым тапом
   const drop = () => document.querySelector('[data-act="corrupt-drop"][data-src="mirror"]');
   drop().click();
-  assert.match(drop().textContent, /Подтвердить: убрать/, 'первый тап только взводит');
+  assert.match(drop().textContent, /Подтвердить: стереть нечитаемое/, 'первый тап только взводит');
   assert.ok(window.localStorage.getItem('minimum:data:mirror-corrupt'), 'ключ ещё на месте');
 
   drop().click();

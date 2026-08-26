@@ -3247,10 +3247,14 @@ function risePath(points) {
   return d + `H${RISE_W}`;
 }
 
-/* Значение ряда словами владельца: у параметра — через fmtParam
-   (time читается как 23:30), у остальных — числом */
+/* Значение ряда словами владельца: порог-время читается как 23:30, всё
+   остальное — числом. Единицы здесь нет ни у одного источника: формат
+   подписи один на все ряды — «старт → текущее», и ничего после (задача
+   29/A). Прежде fmtParam вклеивал единицу параметра-числа в КАЖДОЕ
+   значение, и подпись читалась «4000 шаг. → 5000 шаг.» — единица дважды
+   в одной строке (замер разведки). */
 function riseValue(it, v) {
-  return it.type === 'param' ? fmtParam(it, v) : String(v);
+  return (it.type === 'param' && it.pkind === 'time') ? fmtParam(it, v) : String(v);
 }
 
 /* Минуты суток цикличны: 00:00 и 23:45 — соседи, между ними 15 минут, а не
@@ -3288,9 +3292,12 @@ function riseBlocks() {
     const s = riseSeries(it);
     if (!s) continue;
     const a = s.points[0].value, b = s.points[s.points.length - 1].value;
-    // подпись одна: ряд теперь тоже один — история планки или нагрузки.
-    // Ветка «Ступень a → b» ушла с лестницей (задача 28.D)
-    const label = `${riseValue(it, a)} → ${riseValue(it, b)}${it.type !== 'param' && it.unit ? ' ' + it.unit : ''}`;
+    // Подпись одна на все ряды: «старт → текущее», и ничего после (задача
+    // 29/A, решение владельца). Хвост `it.unit` печатался дословно, и у
+    // упражнения с числом в поле «Единица» подпись читалась «7 → 8 7» —
+    // третье число, которого владелец не писал. Единица ушла со всех рядов
+    // разом: формат обязан быть один, иначе «хвост» не выразить мутантом.
+    const label = `${riseValue(it, a)} → ${riseValue(it, b)}`;
     // геометрия у порога-времени своя (кратчайшая дуга), подпись — по сырым
     const geo = (it.type === 'param' && it.pkind === 'time') ? unwrapDayMinutes(s.points) : s.points;
     h += `
@@ -3854,22 +3861,24 @@ function groupList() {
   return store.groups.map(g => g.name);
 }
 
-function barHistory(it) {
+function barHistory(it, word) {
   if (typeof it.value !== 'number' || !isFinite(it.value)) return ''; // после очистки значения строка не показывается
   if (!Array.isArray(it.history) || it.history.length < 2) return '';
   const vals = it.history.map(x => String(x.value));
   const shown = vals.length > 6 ? ['…'].concat(vals.slice(-6)) : vals;
   const last = it.history[it.history.length - 1];
-  return `<span class="hist">Планка: ${shown.map(esc).join(' → ')}${it.unit ? ' ' + esc(it.unit) : ''} · с ${esc(fmtShort(last.date))}</span>`;
+  return `<span class="hist">${word || 'Планка'}: ${shown.map(esc).join(' → ')}${it.unit ? ' ' + esc(it.unit) : ''} · с ${esc(fmtShort(last.date))}</span>`;
 }
 
-/* История порога параметра: «Отбой: 00:00 → 23:45 · с <дата>» */
+/* История порога параметра: «Порог: 00:00 → 23:45 · с <дата>». Прежде
+   здесь печаталось ИМЯ пункта, а строка списка начинается с него же —
+   имя выходило дважды подряд (задача 29/A). */
 function paramHistory(it) {
   if (!Array.isArray(it.history) || it.history.length < 2) return '';
   const last = it.history[it.history.length - 1];
   const vals = it.history.map(x => fmtParam(it, x.value));
   const shown = vals.length > 6 ? ['…'].concat(vals.slice(-6)) : vals;
-  return `<span class="hist">${esc(it.name)}: ${shown.map(esc).join(' → ')} · с ${esc(fmtShort(last.date))}</span>`;
+  return `<span class="hist">Порог: ${shown.map(esc).join(' → ')} · с ${esc(fmtShort(last.date))}</span>`;
 }
 
 /* Черновик открытой формы «Пунктов»: значения всех полей (сливаются
@@ -4053,8 +4062,9 @@ function groupEditor() {
           <div class="btns">
             <button class="btn primary" data-act="group-save" data-name="${esc(g.name)}">Сохранить</button>
             <button class="btn quiet" data-act="group-cancel">Отмена</button>
-            <button class="btn quiet" data-act="group-del" data-name="${esc(g.name)}">${ui.groupDelete === g.name ? 'Подтвердить удаление' : 'Удалить'}</button>
+            <button class="btn quiet" data-act="group-del" data-name="${esc(g.name)}">${ui.groupDelete === g.name ? 'Подтвердить: удалить блок' : 'Удалить блок'}</button>
           </div>
+          ${ui.groupDelete === g.name ? `<p class="muted">${GROUP_DELETE_WHAT}</p>` : ''}
         </div>` : ''}
         ${flashAt('group:' + g.name)}
       </div>`;
@@ -4084,6 +4094,12 @@ const GONE_WORD = { item: 'убран', ex: 'убрано' };
 /* Что произойдёт — названо МЕЖДУ тапами и названо нейтрально: последствие,
    без тревоги и без уговоров. Числа «во что превратится серия» здесь нет и
    быть не может — это была бы инструкция по накрутке (A.3.3). */
+/* Удаление блока — единственная стирающая операция над списком, и она
+   законна: от store.groups[] не зависит ни одно прошлое число (инвариант
+   13). Последствие называется между тапами, как у «Убрать» (задача 29/A):
+   прежде взводка блока молчала о том, что пункты уцелеют. */
+const GROUP_DELETE_WHAT = 'Пункты останутся — они просто выйдут из блока.';
+
 const REMOVE_WHAT = {
   item: 'Пункт уйдёт из списков. Отметки и прошлые дни останутся как есть.',
   ex: 'Упражнение уйдёт из списков. Записанные тренировки и история нагрузки останутся как есть.'
@@ -4166,7 +4182,7 @@ function exerciseEditor() {
           <button class="itxt" data-act="ex-open" data-id="${esc(ex.id)}" aria-label="изменить «${esc(ex.name)}»">
             <span class="tname">${esc(ex.name)}</span>
             ${meta ? `<span class="meta">${esc(meta)}</span>` : ''}
-            ${barHistory(ex)}
+            ${barHistory(ex, 'Нагрузка')}
           </button>
           <span class="ictl">
             <button class="btn icon quiet" data-act="ex-up" data-id="${esc(ex.id)}"${i === 0 ? ' disabled' : ''} aria-label="выше">&uarr;</button>
@@ -4176,7 +4192,7 @@ function exerciseEditor() {
         ${ui.exEditingId === ex.id ? `
         <div class="card form" data-form="ex-edit" data-id="${esc(ex.id)}">
           <label class="field"><span>Название</span><input type="text" id="x-name" value="${esc(ex.name)}"></label>
-          <label class="field"><span>Единица</span><input type="text" id="x-unit" value="${esc(ex.unit)}" placeholder="кг, повт."></label>
+          <label class="field"><span>Единица</span><input type="text" id="x-unit" value="${esc(ex.unit)}" placeholder="повт., мин, кг"></label>
           ${removeFoot('ex', ex.id, `<button class="btn primary" data-act="ex-save" data-id="${esc(ex.id)}">Сохранить</button>
             <button class="btn quiet" data-act="ex-cancel">Отмена</button>`)}
         </div>` : ''}
@@ -4186,7 +4202,7 @@ function exerciseEditor() {
   h += ui.exAddOpen
     ? `<div class="card form" data-form="ex-add">
         <label class="field"><span>Название</span><input type="text" id="x-add-name" placeholder="Например: Жим лёжа"></label>
-        <label class="field"><span>Единица</span><input type="text" id="x-add-unit" placeholder="кг, повт."></label>
+        <label class="field"><span>Единица</span><input type="text" id="x-add-unit" placeholder="повт., мин, кг"></label>
         <label class="field"><span>Рабочая нагрузка</span><input type="text" id="x-add-value" inputmode="decimal" placeholder="необязательно"></label>
         <div class="btns">
           <button class="btn primary" data-act="ex-add-save">Добавить</button>
@@ -4248,7 +4264,7 @@ function restoreLine() {
       ${ui.restoreFailed ? `<p class="muted">Возврат не выполнен — данные не изменены</p>` : ''}
       <div class="btns">
         <button class="btn" data-act="wipe-undo">Вернуть</button>
-        <button class="btn quiet" data-act="wipe-drop">${ui.wipeDropConfirm ? 'Подтвердить: убрать копию' : 'Убрать копию'}</button>
+        <button class="btn quiet" data-act="wipe-drop">${ui.wipeDropConfirm ? 'Подтвердить: стереть копию' : 'Стереть копию'}</button>
       </div>
     </div>`;
 }
@@ -4273,8 +4289,8 @@ function corruptBlock(src) {
       <p class="muted">${w.title}${when}</p>
       <p class="muted">${w.why}</p>
       <div class="btns">
-        <button class="btn" data-act="corrupt-save" data-src="${src}">Скачать</button>
-        <button class="btn quiet" data-act="corrupt-drop" data-src="${src}">${ui.corruptDropConfirm === src ? 'Подтвердить: убрать' : 'Убрать'}</button>
+        <button class="btn" data-act="corrupt-save" data-src="${src}">Скачать нечитаемое</button>
+        <button class="btn quiet" data-act="corrupt-drop" data-src="${src}">${ui.corruptDropConfirm === src ? 'Подтвердить: стереть нечитаемое' : 'Стереть нечитаемое'}</button>
       </div>
     </div>`;
 }
@@ -4301,7 +4317,7 @@ function mirrorOfferLine() {
       ${ui.mirrorFailed ? `<p class="muted" role="status">Восстановление не выполнено — данные не изменены</p>` : ''}
       <div class="btns">
         <button class="btn" data-act="mirror-restore">${ui.mirrorRestoreConfirm ? 'Подтвердить: восстановить' : 'Восстановить из копии'}</button>
-        <button class="btn quiet" data-act="mirror-save">Скачать</button>
+        <button class="btn quiet" data-act="mirror-save">Скачать копию</button>
         <button class="btn quiet" data-act="mirror-keep">${ui.mirrorKeepConfirm ? 'Подтвердить: оставить рабочую' : 'Оставить рабочую'}</button>
       </div>
     </div>`;
@@ -4339,7 +4355,7 @@ function wipeBlock() {
         : `<p class="muted">Резервная копия сейчас недоступна, и стереть её нечем. Она останется от прежнего состояния, и приложение предложит её при следующем запуске — подменить данные само оно не станет.</p>`)}
       <p class="muted">Копия останется в приложении — вернуть можно, пока она не убрана.${wipedCopy() && hasData(store) ? ' Прежняя копия будет заменена новой: хранится одна, последняя.' : ''}</p>
       <div class="btns">
-        <button class="btn" data-act="export">Сначала скачать копию</button>
+        <button class="btn" data-act="export">Сначала скачать мои данные</button>
         <button class="btn quiet" data-act="wipe-do">${ui.wipeConfirm ? 'Подтвердить: стереть' : 'Стереть'}</button>
         <button class="btn quiet" data-act="wipe-cancel">Отмена</button>
       </div>
@@ -4424,7 +4440,8 @@ function renderSettings() {
         <button type="button" class="btn icon quiet" data-act="thr-inc"${th >= THRESHOLD_MAX - EPS ? ' disabled' : ''} aria-label="выше порог">+</button>
       </span>
     </div>
-    <p class="muted" id="thr-note"${thrNote ? '' : ' hidden'}>${thrNote}</p>`;
+    <p class="muted" id="thr-note"${thrNote ? '' : ' hidden'}>${thrNote}</p>
+    <p class="muted">Влияет на серию и цепь дней на «Прогрессе». «День закрыт» на «Сегодня» считается отдельно — там нужны все пункты.</p>`;
 
   h += sect('items', 'Пункты', body);
   h += sect('exercises', 'Упражнения', exerciseEditor());
@@ -4434,25 +4451,25 @@ function renderSettings() {
   // не должна утверждать больше, чем приложение знает (задача 25, п. 9)
   const exp = (typeof store.settings.exportedAt === 'number' && isFinite(store.settings.exportedAt))
     // логический день — как в имени файла экспорта (инвариант 1)
-    ? `Экспорт запускался: ${esc(fmtShort(dateKeyShift(new Date(store.settings.exportedAt), store.settings.dayBoundary)))}`
-    : 'Экспорта ещё не было';
+    ? `Данные скачивались: ${esc(fmtShort(dateKeyShift(new Date(store.settings.exportedAt), store.settings.dayBoundary)))}`
+    : 'Данные ещё не скачивались';
   h += sect('data', 'Данные', mirrorOfferLine() + restoreLine() + `
     <div class="btns">
-      <button class="btn" data-act="export">Экспорт JSON</button>
-      <button class="btn" data-act="import">Импорт JSON</button>
+      <button class="btn" data-act="export">Скачать мои данные</button>
+      <button class="btn" data-act="import">Загрузить из файла</button>
     </div>
     ${ui.importNote ? `<p class="muted" role="status">${esc(ui.importNote)}</p>` : ''}
     <p class="muted">${exp}</p>
     <p class="muted" id="mirror-note" hidden></p>
     ${corruptLine()}
     <input type="file" id="import-file" accept="application/json,.json" hidden>
-    <p class="muted">Все данные — на этом устройстве: рабочая копия и автоматическая резервная. Экспорт — способ сохранить их вне приложения.</p>
+    <p class="muted">Все данные — на этом устройстве: рабочая копия и автоматическая резервная. Скачать — способ сохранить их вне приложения.</p>
     <h2>Начало отсчёта</h2>
     <label class="field">
       <span>Первый день в системе</span>
       <input type="date" id="since" data-act="since" value="${esc(isDayKey(store.settings.calendarSince) ? store.settings.calendarSince : '')}">
     </label>
-    <p class="muted">Меняет счёт дней в системе, серию и доступность разбора. Отметки не затрагивает.</p>` + wipeBlock());
+    <p class="muted">Дата сдвигается на понедельник своей недели. Меняет счёт дней в системе, серию и доступность разбора. Отметки не затрагивает.</p>` + wipeBlock());
 
   h += sect('system', 'Система', systemSection());
 
@@ -4578,7 +4595,7 @@ function editForm(it) {
 
 function addForm() {
   const hint = ui.addHint
-    ? `<p class="hint">Правило системы: одна новая привычка за раз. Последний пункт добавлен меньше 14 дней назад.</p>`
+    ? `<p class="hint">${ui.addArea === 'habit' ? 'Одна новая привычка за раз' : 'Одно новое дело за раз'}: последнее добавлено меньше 14 дней назад.</p>`
     : '';
   const head = `
     <div class="card form" data-form="add">

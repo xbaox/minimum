@@ -477,7 +477,7 @@ const MUTANTS = [
   {
     id: '27.1-Д8-invalid-date',
     file: 'app.js',
-    note: 'Д8: exportedAt вне диапазона Date снова доезжает до рендера — «Экспорт запускался: Invalid Date»',
+    note: 'Д8: exportedAt вне диапазона Date снова доезжает до рендера — «Данные скачивались: Invalid Date»',
     edits: [['        && Math.abs(s.settings.exportedAt) <= MAX_TIME)) {', '        )) {']]
   },
   {
@@ -880,6 +880,41 @@ const MUTANTS = [
     note: 'разбор объявлений возвращается к первому числу: фазовая задержка снова не проверяется никем',
     edits: [["      const ts = [...part.matchAll(/(-?[\\d.]+)s(?![\\w-])/g)].map(m => Math.round(+m[1] * 1000));",
       "      const ts = [...part.matchAll(/(-?[\\d.]+)s(?![\\w-])/g)].map(m => Math.round(+m[1] * 1000)).slice(0, 1);"]]
+  },
+  {
+    id: '29A-хвост-вернулся',
+    file: 'app.js',
+    note: 'единица снова дописывается хвостом к подписи «Подъёма»: «7 → 8 7» у упражнения с числом в поле «Единица»',
+    edits: [['    const label = `${riseValue(it, a)} → ${riseValue(it, b)}`;',
+      "    const label = `${riseValue(it, a)} → ${riseValue(it, b)}${it.type !== 'param' && it.unit ? ' ' + it.unit : ''}`;"]]
+  },
+  {
+    id: '29A-единица-параметра-дважды',
+    file: 'app.js',
+    note: 'fmtParam снова вклеивает единицу параметра-числа в ОБА значения: «4000 шаг. → 5000 шаг.»',
+    edits: [["  return (it.type === 'param' && it.pkind === 'time') ? fmtParam(it, v) : String(v);",
+      "  return it.type === 'param' ? fmtParam(it, v) : String(v);"]]
+  },
+  {
+    id: '29A-подсказка-зовёт-пункт-привычкой',
+    file: 'app.js',
+    note: 'подсказка снова называет привычкой любой новый пункт, включая минимум',
+    edits: [["${ui.addArea === 'habit' ? 'Одна новая привычка за раз' : 'Одно новое дело за раз'}: последнее добавлено меньше 14 дней назад.",
+      'Правило системы: одна новая привычка за раз. Последний пункт добавлен меньше 14 дней назад.']]
+  },
+  {
+    id: '29A-взводка-блока-вне-шаблона',
+    file: 'app.js',
+    note: 'удаление блока снова взводится вне общего шаблона и молчит о судьбе пунктов',
+    edits: [["${ui.groupDelete === g.name ? 'Подтвердить: удалить блок' : 'Удалить блок'}",
+      "${ui.groupDelete === g.name ? 'Подтвердить удаление' : 'Удалить'}"]]
+  },
+  {
+    id: '29A-акцент-вернулся-в-справку',
+    file: 'styles.css',
+    note: 'история планки снова печатается акцентом: справка читается как объявление',
+    edits: [['.hist { font-size: var(--text-xs); line-height: 1.35; color: var(--muted); }',
+      '.hist { font-size: var(--text-xs); line-height: 1.35; color: var(--accent); }']]
   }
 ];
 

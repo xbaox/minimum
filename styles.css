@@ -283,7 +283,12 @@ h2 {
 .val { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
 /* вторичные подписи под названием — единый кегль, цвет и межстрочный ритм */
 .note, .meta { font-size: var(--text-xs); line-height: 1.35; color: var(--muted); }
-.hist { font-size: var(--text-xs); line-height: 1.35; color: var(--accent); }
+/* История планки, нагрузки и порога — СПРАВКА, а не событие (задача 29/A):
+   акцентом она читалась как объявление, и в списке из девяти строк
+   «Настроек» светилась половина. Акцентного текста на «Настройках»
+   после этого не остаётся: акцент там несут только активная вкладка
+   таб-бара и primary-кнопка формы. */
+.hist { font-size: var(--text-xs); line-height: 1.35; color: var(--muted); }
 
 /* чекбокс-круг */
 .check { cursor: pointer; position: relative; } /* containing block для скрытого input */
