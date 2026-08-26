@@ -377,7 +377,11 @@ h2 {
    лишь альфой (задача 26, п. 8.2), и в тёмной теме давала 1,35:1 — то есть
    ту же невидимость, только неявную. Место в раскладке остаётся: подписи
    дней недели на месте, полоса не съезжает. */
-.hstrip i.fut { visibility: hidden; }
+/* Будущий день и день ВНЕ РАСПИСАНИЯ (задача 29/B) не рисуются вовсе:
+   пустой кружок означает пропуск, а в такой день дела не стояло. Место в
+   раскладке остаётся — подписи дней недели на месте, полоса не съезжает. */
+.hstrip i.fut,
+.hstrip i.off { visibility: hidden; }
 .hcount { font-size: 13px; color: var(--muted); white-space: nowrap; margin-left: auto; }
 
 /* степпер нормы в форме привычки */
@@ -553,6 +557,40 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .field.inline { display: flex; flex-direction: row; align-items: center; gap: 12px; }
 .field.inline > span { font-size: 15px; color: var(--fg); }
 .field.inline select { width: auto; min-width: 108px; }
+/* ── Выбор дней недели (задача 29/B) ───────────────────────────
+   Замер 375×812: внутренняя ширина карточки формы — 301 px, а семь целей
+   по 44 требуют 308. Ряд вынесен НА padding карточки отрицательным полем —
+   приём в файле уже есть (.sect > summary, margin: 0 -8px), здесь он
+   гасит все 16 px и даёт 333 px: ячейка 45,9 px при зазоре 2 px, то есть
+   тач-таргет выдержан с запасом.
+
+   Состояние выбранности несут ТРИ признака, а не один цвет (B.4.1):
+   заливка, начертание и aria-pressed. */
+.days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  /* padding здесь БЫЛ и гасил вынос: 333 − 32 снова давали 301, то есть
+     цель 41,3 px вместо 44 (замер в браузере). Вынос затем и делается,
+     чтобы забрать эти 32 px, — добавлять их обратно нельзя. */
+  margin: 0 -16px;
+}
+.days .btn.day {
+  min-height: 44px;
+  padding: 0;
+  font-size: var(--text-xs);
+  font-weight: 550;
+  color: var(--muted);
+  border-color: var(--control-border);
+  border-radius: var(--radius-sm);
+}
+.days .btn.day.on {
+  background: var(--accent-weak);
+  border-color: var(--accent);
+  color: var(--fg);
+  font-weight: 650;
+}
+
 .hint { font-size: 14px; color: var(--accent); margin-bottom: 12px; }
 /* заголовки законов внутри карточки формы */
 .form .overline { margin-top: 18px; }
@@ -672,7 +710,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .cdays i.part { border-color: var(--accent); }       /* отмечено, но ниже порога */
 .cdays i.full { background: var(--accent); border-color: var(--accent); }
 .cdays i.fut,
-.cdays i.pre { visibility: hidden; }                 /* будущее и дни до эпохи не рисуются */
+.cdays i.pre,
+/* день, в котором не было ни одного применимого пункта (всё вне расписания
+   либо пунктов ещё не завели): делать было нечего, и пропуском он не был.
+   Серия такой день и так пропускает — цепь теперь тоже (задача 29/B). */
+.cdays i.off { visibility: hidden; }                 /* будущее, дни до эпохи и дни без дел не рисуются */
 
 /* подъём: подпись и одна ступенчатая линия на пункт — ни осей, ни
    сетки, ни точек, ни подписей значений (CLAUDE.md, «Незыблемые») */

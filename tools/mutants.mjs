@@ -320,7 +320,7 @@ const MUTANTS = [
     id: '26.8-будущая-ячейка-снова-одной-прозрачностью',
     file: 'styles.css',
     note: 'состояние «будущий день» опять передаётся только альфой (1,35:1 в тёмной)',
-    edits: [['.hstrip i.fut { visibility: hidden; }', '.hstrip i.fut { opacity: .45; }']]
+    edits: [['.hstrip i.fut,\n.hstrip i.off { visibility: hidden; }', '.hstrip i.fut,\n.hstrip i.off { opacity: .45; }']]
   },
   {
     id: '26.8-точка-без-aria-controls',
@@ -356,7 +356,7 @@ const MUTANTS = [
     id: '27.3-точка-у-пункта-заведённого-сегодня',
     file: 'app.js',
     note: 'стык 22×24: проверка «пункт существовал вчера» снята — заведённый сегодня пункт получает точку «вчера — пропуск»',
-    edits: [['  if (!(item.addedAt <= y) || isMarked(y, item.id)) return false;',
+    edits: [['  if (!dueOn(item, y) || isMarked(y, item.id)) return false;',
       '  if (isMarked(y, item.id)) return false;']]
   },
   {
@@ -632,7 +632,7 @@ const MUTANTS = [
     id: '28B-5-потеря-категории-не-называется',
     file: 'app.js',
     note: 'блоки, weekLog, история, значения сессий и решения по параметрам снова вне счёта — импорт молчит о потере',
-    edits: [["  ['groups', 'блок', 'блока', 'блоков'],\n  ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],\n  ['history', 'запись истории', 'записи истории', 'записей истории'],\n  ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],\n  ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']\n", '']]
+    edits: [["  ['groups', 'блок', 'блока', 'блоков'],\n  ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],\n  ['history', 'запись истории', 'записи истории', 'записей истории'],\n  ['schedule', 'отрезок расписания', 'отрезка расписания', 'отрезков расписания'],\n  ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],\n  ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']\n", '']]
   },
   {
     id: '28B-6-неделя-закрывается-одним-тапом',
@@ -739,8 +739,8 @@ const MUTANTS = [
     id: '28D-подпись-строки-дня-снова-из-ступени',
     file: 'app.js',
     note: 'подписью пункта снова служит текущая ступень — слово владельца вытеснено данными снятой механики',
-    edits: [['  const sub = it.note;',
-      '  const sub = (it.ladder && it.ladder.steps[it.ladder.step]) || it.note;']]
+    edits: [['  const sub = rowNote(it);',
+      '  const sub = (it.ladder && it.ladder.steps[it.ladder.step]) || rowNote(it);']]
   },
   {
     id: '28D-строка-последствия-снова-над-кнопкой',
@@ -756,7 +756,7 @@ const MUTANTS = [
     id: '28E-A-правило-применимости-игнорирует-removedAt',
     file: 'app.js',
     note: 'minDayItems снова не смотрит на день ухода — прошлое считается по всем когда-либо заведённым',
-    edits: [["    i.type === 'daily' && i.area === 'min' && livedOn(i, dayKey));",
+    edits: [["    i.type === 'daily' && i.area === 'min' && dueOn(i, dayKey));",
       "    i.type === 'daily' && i.area === 'min' && i.addedAt <= dayKey);"]]
   },
   {
@@ -915,6 +915,125 @@ const MUTANTS = [
     note: 'история планки снова печатается акцентом: справка читается как объявление',
     edits: [['.hist { font-size: var(--text-xs); line-height: 1.35; color: var(--muted); }',
       '.hist { font-size: var(--text-xs); line-height: 1.35; color: var(--accent); }']]
+  },
+  {
+    id: '29B-маска-игнорируется',
+    file: 'app.js',
+    note: 'применимость снова читает только отрезок жизни: расписание не влияет ни на что',
+    edits: [["  return livedOn(item, dayKey) && scheduleOn(item, dayKey)[weekdayOf(dayKey)] === '1';",
+      '  return livedOn(item, dayKey);']]
+  },
+  {
+    id: '29B-маска-переписывает-прошлое',
+    file: 'app.js',
+    note: 'scheduleOn отдаёт НЫНЕШНЮЮ маску для любого дня — ровно дефект поля active (28.E/A)',
+    edits: [['  for (let i = segs.length - 1; i >= 0; i--) {\n    if (segs[i].from <= dayKey) return segs[i].mask;\n  }\n  return WEEK_ALL;',
+      '  return segs.length ? segs[segs.length - 1].mask : WEEK_ALL;']]
+  },
+  {
+    id: '29B-смена-маски-затирает-отрезки',
+    file: 'app.js',
+    note: 'setSchedule заменяет весь список одним отрезком: прошлое теряет свои маски',
+    edits: [['  if (segs.length && segs[segs.length - 1].from === t) segs.pop(); // сегодняшний — переписывается',
+      '  segs.length = 0;']]
+  },
+  {
+    id: '29B-сквозной-день-рвёт-серию',
+    file: 'app.js',
+    note: 'день без применимых пунктов снова даёт ноль вместо null — серия рвётся на выходном по расписанию',
+    edits: [['  return m.total > 0 ? m.done / m.total : null;', '  return m.total > 0 ? m.done / m.total : 0;']]
+  },
+  {
+    id: '29B-цепь-читает-сквозной-как-пропуск',
+    file: 'app.js',
+    note: 'сквозной день снова рисуется пустой ячейкой, то есть пропуском',
+    edits: [['      if (s === null) { cells += `<i class="cd off"></i>`; continue; }', '']]
+  },
+  {
+    id: '29B-норма-не-зажимается',
+    file: 'app.js',
+    note: 'норма привычки снова может превышать число дней маски — невыполнима с рождения',
+    edits: [['  if (was <= cap) return null;\n  item.normPerWeek = cap;\n  return was;',
+      '  if (was <= cap) return null;\n  return null;']]
+  },
+  {
+    id: '29B-норма-не-зажимается-в-migrate',
+    file: 'app.js',
+    note: 'импорт снова приносит невыполнимую норму: потолок опять семь, а не число дней маски',
+    edits: [['      const cap = maskDays(it.schedule[it.schedule.length - 1].mask);', '      const cap = 7;']]
+  },
+  {
+    id: '29B-пороги-захардкожены',
+    file: 'app.js',
+    note: 'пороги планки снова «6 из 7» и «3 из 7»: расписанный пункт не растёт никогда и вечно получает «Сделать легче»',
+    edits: [['const raiseNeed = m => Math.ceil(6 / 7 * m);\nconst lowerNeed = m => Math.floor(3 / 7 * m);',
+      'const raiseNeed = () => 6;\nconst lowerNeed = () => 3;']]
+  },
+  {
+    id: '29B-знаменатель-отметок-календарный',
+    file: 'app.js',
+    note: 'знаменатель «Отметок» снова считает календарные дни: воскресный пункт читается «1 из 12»',
+    edits: [['  let n = 0;\n  for (let k = from; k <= t; k = addDays(k, 1)) if (dueOn(item, k)) n++;\n  return n;',
+      '  return diffDays(t, from) + 1;']]
+  },
+  {
+    id: '29B-точка-за-день-вне-расписания',
+    file: 'app.js',
+    note: 'точка «вчера — пропуск» снова рождается в день, в который дела не стояло',
+    edits: [['  if (!dueOn(item, y) || isMarked(y, item.id)) return false;',
+      '  if (!livedOn(item, y) || isMarked(y, item.id)) return false;']]
+  },
+  {
+    id: '29B-ретро-отметка-вне-расписания',
+    file: 'app.js',
+    note: 'markYesterday снова пишет отметку в день, которого у пункта нет',
+    edits: [['  if (!dueOn(item, y)) return false;\n  if (isMarked(y, item.id)) return false;',
+      '  if (isMarked(y, item.id)) return false;']]
+  },
+  {
+    id: '29B-время-в-расчёте',
+    file: 'app.js',
+    note: 'время перестаёт быть подписью: пункт с вписанным временем выпадает из применимости',
+    edits: [['function dueOn(item, dayKey) {', 'function dueOn(item, dayKey) {\n  if (item.at) return false;']]
+  },
+  {
+    id: '29B-сортировка-по-времени',
+    file: 'app.js',
+    note: 'список дня сортируется по времени — ручной порядок (инвариант 17) перестаёт держаться',
+    edits: [["const dueDaily = (area, t) => liveDaily().filter(i => i.area === area && dueNow(i, t));",
+      "const dueDaily = (area, t) => liveDaily().filter(i => i.area === area && dueNow(i, t)).sort((a, b) => (a.at || '99:99') < (b.at || '99:99') ? -1 : 1);"]]
+  },
+  {
+    id: '29B-горячий-путь-не-видит-маску',
+    file: 'app.js',
+    note: 'точечное обновление планки снова считает по «есть сейчас» — расходится с перерисовкой',
+    edits: [["  const items = dueDaily('min', t); // то же правило, что в renderToday: сторож сравнивает их вывод",
+      "  const items = liveDaily().filter(i => i.area === 'min');"]]
+  },
+  {
+    id: '29B-полоса-привычки-без-третьего-состояния',
+    file: 'app.js',
+    note: 'дни вне маски в полосе недели снова рисуются пустым кружком, то есть пропуском',
+    edits: [["    const off = scheduleOn(it, k)[weekdayOf(k)] !== '1';", '    const off = false;']]
+  },
+  {
+    id: '29B-миграция-не-ставит-якорь',
+    file: 'app.js',
+    note: 'normSchedule перестаёт достраивать отрезок «все семь» с дня заведения',
+    edits: [["  if (!out.length || out[0].from !== addedAt) out.unshift({ from: addedAt, mask: WEEK_ALL });", '']]
+  },
+  {
+    id: '29B-пустая-маска-проходит',
+    file: 'app.js',
+    note: 'маска без единого дня становится расписанием: пункт исчезает навсегда, а «Убрать» тут ни при чём',
+    edits: [['  if (!isMask(mask) || maskDays(mask) === 0) return false; // пустая маска — не расписание',
+      '  if (!isMask(mask)) return false;']]
+  },
+  {
+    id: '29B-отрезки-не-считаются-в-потерях',
+    file: 'app.js',
+    note: 'потеря отрезков расписания при импорте снова проходит молча (инвариант 6)',
+    edits: [['    schedule: sum(s && s.items, x => x.schedule),', '    schedule: 0,']]
   }
 ];
 

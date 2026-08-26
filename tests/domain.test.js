@@ -1652,8 +1652,12 @@ test('З28D/6: импорт файла с формулой и лестницей
   assert.equal(back.ladder.step, 1);
   assert.equal(back.ladderLog.length, 2);
   assert.equal(back.ladderLog[0].start, true);
-  // и сам счёт совпадает по всем категориям
-  assert.deepEqual(app.dataCounts(incoming), was);
+  // и сам счёт совпадает по всем категориям, кроме расписания: его migrate
+  // ДОСТРАИВАЕТ живому пункту (задача 29/B), и это прибавка, а не потеря
+  const after = app.dataCounts(incoming);
+  assert.equal(app.droppedLine(was, after), '', 'ни одна категория не потеряла');
+  assert.deepEqual(Object.assign({}, after, { schedule: was.schedule }), was);
+  assert.ok(after.schedule >= was.schedule, 'отрезки расписания только достраиваются');
 });
 
 /* ── Задача 15. Группы и цепочки (инвариант 13) ────────────── */
@@ -3963,14 +3967,16 @@ test('З25/3: dataCounts считает по сырому файлу, droppedLin
   const was = app.dataCounts(raw);
   assert.deepEqual(was, {
     items: 3, days: 2, marks: 2, notes: 2, reviews: 2, exercises: 2, sessions: 2,
-    groups: 4, weekLog: 3, history: 4, entries: 2, params: 2
+    groups: 4, weekLog: 3, history: 4, schedule: 0, entries: 2, params: 2
   });
 
   // считать обязательно ДО migrate: он мутирует переданный объект
   const got = app.dataCounts(app.migrate(raw, { external: true }));
   assert.deepEqual(got, {
     items: 1, days: 1, marks: 1, notes: 1, reviews: 1, exercises: 1, sessions: 1,
-    groups: 1, weekLog: 1, history: 2, entries: 1, params: 1
+    // расписания в сыром файле не было — migrate достроил уцелевшему пункту
+    // якорь «все семь». Это ПРИБАВКА: droppedLine считает только убыль
+    groups: 1, weekLog: 1, history: 2, schedule: 1, entries: 1, params: 1
   });
 
   assert.equal(app.droppedLine(was, got),
@@ -3982,7 +3988,7 @@ test('З25/3: dataCounts считает по сырому файлу, droppedLin
 /* 5.2: склонения новых категорий на 1, 2 и 5 — по одному замеру на слово,
    а не «на глаз». Разница «1 запись счётчика / 2 записи / 5 записей». */
 test('З28B/5.2: склонения новых категорий потерь на 1, 2 и 5', () => {
-  const zero = { items: 0, days: 0, marks: 0, notes: 0, reviews: 0, exercises: 0, sessions: 0, groups: 0, weekLog: 0, history: 0, entries: 0, params: 0 };
+  const zero = { items: 0, days: 0, marks: 0, notes: 0, reviews: 0, exercises: 0, sessions: 0, groups: 0, weekLog: 0, history: 0, schedule: 0, entries: 0, params: 0 };
   const line = (key, n) => app.droppedLine(Object.assign({}, zero, { [key]: n }), zero);
   assert.equal(line('groups', 1), '1 блок');
   assert.equal(line('groups', 2), '2 блока');
@@ -4547,7 +4553,7 @@ test('З28E/A.7.1: миграция v16→v17 не сдвигает числа �
   const m = app.migrate(raw);
   app.store = m;
   assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
-  assert.equal(m.schemaVersion, 17, 'схема поднята до семнадцатой');
+  assert.equal(m.schemaVersion, 18, 'схема поднята до восемнадцатой');
 
   const after = [];
   for (let k = m.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
@@ -4814,4 +4820,343 @@ test('З28E/B.5.3: набор — 91 строка, дублей нет, за с�
   }
   // дни до якоря считаются тем же правилом, без NaN и без выхода за границы
   assert.ok(L.includes(app.dayLine('2019-03-07')));
+});
+
+/* ══ Задача 29/B: расписание пункта ══════════════════════════════ */
+
+/* ── B.6.1 РЕГРЕСС: схема 17 → 18 не двигает ни одного числа ──────
+   Та же фикстура и те же ЗАПИСАННЫЕ константы, что у регресса задачи
+   28.E/A: V41_STREAK, V41_BEST и V41_CHAIN сняты с версии ДО обеих
+   миграций и от нового кода не зависят вовсе. Уцелели и здесь — значит
+   числа владельца не сдвинулись за две точки невозврата подряд.
+
+   Плюс независимый расчёт по СТАРОМУ правилу прямо в тесте: применимость
+   без всякой маски, выведенная из непромигрированных данных, а не
+   списанная с вывода нового кода. */
+test('З29B/6.1: миграция v17→v18 не сдвигает числа «Прогресса» ни на единицу', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const raw = v16Fixture();
+  const t = '2026-08-16';
+
+  // «ДО» — правило БЕЗ расписания, на сырых данных: пункт применим ко дню,
+  // если он в нём жил. Именно так считала семнадцатая схема.
+  const before = [];
+  for (let k = raw.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
+    const applicable = raw.items.filter(i =>
+      i.type === 'daily' && i.area === 'min' && i.active && i.addedAt <= k);
+    const done = applicable.filter(i => raw.days[k] && raw.days[k][i.id]).length;
+    before.push(done + '/' + applicable.length);
+  }
+
+  const m = app.migrate(raw);
+  app.store = m;
+  assert.equal(m.schemaVersion, 18, 'схема поднята до восемнадцатой');
+
+  const after = [];
+  for (let k = m.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
+    const x = app.minDayMarks(k);
+    after.push(x.done + '/' + x.total);
+  }
+  assert.deepEqual(after, before, 'знаменатель и числитель каждого дня эпохи — те же');
+  assert.equal(app.dayStreak(), V41_STREAK, 'серия та же');
+  assert.equal(app.bestStreak(), V41_BEST, 'рекорд тот же');
+  assert.equal(chainString(), V41_CHAIN, 'цепь дней та же');
+
+  // B.1.1: каждому ЕЖЕДНЕВНОМУ пункту ровно один отрезок «все семь» с дня
+  // заведения; недельный счётчик и параметр расписания не несут вовсе
+  for (const it of m.items) {
+    if (it.type === 'daily') {
+      assert.deepEqual(it.schedule, [{ from: it.addedAt, mask: '1111111' }], it.name);
+    } else {
+      assert.equal('schedule' in it, false, it.name + ': расписания не несёт');
+    }
+    assert.equal(it.at, '', it.name + ': время пустое');
+  }
+  assert.equal(JSON.stringify(app.migrate(JSON.parse(JSON.stringify(m)))), JSON.stringify(m));
+});
+
+/* Сердце части B: сегодняшняя смена маски не двигает ВЧЕРАШНИЕ числа —
+   то же утверждение, ради которого задача 28.E/A подняла схему. */
+test('З29B/6.1: сужение маски СЕГОДНЯ не двигает ни одного прошлого числа', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const m = app.migrate(v16Fixture());
+  app.store = m;
+  const t = app.todayKey();
+
+  const snapshot = () => {
+    const per = [];
+    for (let k = m.settings.calendarSince; k < t; k = app.addDays(k, 1)) {
+      const x = app.minDayMarks(k);
+      per.push(x.done + '/' + x.total);
+    }
+    return { per, chain: chainString().slice(0, -1), best: app.bestStreak() };
+  };
+  const before = snapshot();
+
+  const it = m.items.find(i => i.id === 'm1');
+  assert.equal(app.setSchedule(it, '0000001'), true);
+  assert.equal(it.schedule.length, 2, 'прежний отрезок не тронут, добавлен новый');
+  assert.equal(it.schedule[0].mask, '1111111');
+  assert.equal(it.schedule[1].from, t, 'новый отрезок — с сегодняшнего дня');
+
+  const after = snapshot();
+  assert.deepEqual(after.per, before.per, 'доли прошлых дней не сдвинулись');
+  assert.equal(after.chain, before.chain, 'цепь прошлого та же');
+  assert.equal(after.best, before.best, 'рекорд тот же');
+  assert.equal(app.weekdayOf(t), 6, 'фикстура кончается воскресеньем');
+  assert.equal(app.dueOn(it, t), true);
+  assert.equal(app.dueOn(it, app.addDays(t, 1)), false, 'завтра понедельник — пункта нет');
+});
+
+/* ── B.6.2: scheduleOn — маска ТОГО дня ──────────────────────── */
+test('З29B/6.2: scheduleOn берёт отрезок, действовавший в дне', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const it = { id: 'x', addedAt: '2026-08-01', schedule: [
+    { from: '2026-08-01', mask: '1111111' },
+    { from: '2026-08-10', mask: '1010100' }
+  ] };
+  assert.equal(app.scheduleOn(it, '2026-08-05'), '1111111', 'до смены — прежняя');
+  assert.equal(app.scheduleOn(it, '2026-08-09'), '1111111', 'накануне — ещё прежняя');
+  assert.equal(app.scheduleOn(it, '2026-08-10'), '1010100', 'в день смены — новая');
+  assert.equal(app.scheduleOn(it, '2026-08-30'), '1010100', 'дальше — новая');
+  assert.equal(app.scheduleOn({ id: 'y' }, '2020-01-01'), '1111111', 'отрезков нет — все семь');
+  assert.equal(app.scheduleOn({ id: 'y', schedule: [] }, '2020-01-01'), '1111111');
+  assert.equal(app.scheduleOn({ schedule: [{ from: '2026-09-01', mask: '1000000' }] }, '2026-08-01'),
+    '1111111', 'отрезок позже дня в счёт не идёт');
+});
+
+test('З29B/6.2: повторная смена в тот же день заменяет отрезок, не плодит', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const s = freshStore();
+  const it = s.items.find(i => i.type === 'daily');
+  assert.equal(it.schedule.length, 1, 'посевной пункт — один отрезок');
+  advanceDays(1); // отрезок посева стал вчерашним — сегодняшняя смена его не трогает
+  const t = app.todayKey();
+
+  app.setSchedule(it, '1010100');
+  assert.equal(it.schedule.length, 2);
+  app.setSchedule(it, '1100000');
+  assert.equal(it.schedule.length, 2, 'второй раз за день — замена, а не третья запись');
+  assert.equal(it.schedule[1].mask, '1100000');
+  assert.equal(it.schedule[1].from, t);
+
+  app.setSchedule(it, '1111111');
+  assert.equal(it.schedule.length, 1, 'возврат к прежней маске схлопывает отрезок');
+  assert.equal(it.schedule[0].mask, '1111111');
+
+  advanceDays(1);
+  app.setSchedule(it, '0000001');
+  assert.equal(it.schedule.length, 2);
+  assert.equal(it.schedule[0].mask, '1111111', 'прежний отрезок не тронут');
+  assert.equal(app.setSchedule(it, '0000000'), false, 'пустая маска расписанием не становится');
+  assert.equal(it.schedule.length, 2, 'отказ ничего не записал');
+});
+
+test('З29B/6.2: normSchedule — канон, мусор и идемпотентность', () => {
+  const A = '2026-08-01';
+  const got = app.normSchedule([
+    { from: '2026-08-10', mask: '1010100' },
+    { from: 'не дата', mask: '1111111' },
+    { from: '2026-08-05', mask: 'ЖЖЖЖЖЖЖ' },
+    { from: '2026-08-20', mask: '0000000' }
+  ], A);
+  assert.deepEqual(got, [{ from: A, mask: '1111111' }, { from: '2026-08-10', mask: '1010100' }]);
+  assert.deepEqual(
+    app.normSchedule([{ from: '2020-01-01', mask: '1111111' }, { from: '2026-09-01', mask: '1111111' }], A),
+    [{ from: A, mask: '1111111' }], 'подряд одинаковые схлопнуты, якорь на addedAt');
+  assert.deepEqual(
+    app.normSchedule([{ from: A, mask: '1000000' }, { from: A, mask: '0000001' }], A),
+    [{ from: A, mask: '0000001' }], 'два отрезка одним днём: побеждает последний');
+  for (const inp of [[], [{ from: '2026-08-10', mask: '1010100' }], got]) {
+    const once = app.normSchedule(inp, A);
+    assert.deepEqual(app.normSchedule(once, A), once, 'идемпотентно');
+  }
+});
+
+/* ── B.6.3: по тесту на каждый пункт B.2 ─────────────────────── */
+
+test('З29B/6.3 (B.2.6): при m = 7 пороги — РОВНО прежние 6 и 3', () => {
+  assert.equal(app.raiseNeed(7), 6, 'существующим пунктам механика не меняется');
+  assert.equal(app.lowerNeed(7), 3);
+  const table = [];
+  for (let m = 1; m <= 7; m++) table.push([m, app.raiseNeed(m), app.lowerNeed(m)]);
+  assert.deepEqual(table, [[1, 1, 0], [2, 2, 0], [3, 3, 1], [4, 4, 1], [5, 5, 2], [6, 6, 2], [7, 6, 3]]);
+});
+
+function schedItem(id, name, since, mask, extra) {
+  return Object.assign({
+    id, name, value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', removedAt: null, addedAt: since, at: '',
+    schedule: [{ from: since, mask }],
+    raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    formula: null, ladder: null, ladderLog: []
+  }, extra || {});
+}
+
+test('З29B/6.3 (B.2.6): воскресный пункт получает повышение и НЕ получает понижения', () => {
+  setNow(2026, 8, 24, 12, 0);
+  const s = freshStore();
+  s.items = [];
+  const since = app.addDays(app.weekStartOf(app.todayKey()), -7 * 5);
+  s.settings.calendarSince = since;
+  const it = schedItem('sun', 'Звонок родителям', since, '0000001',
+    { value: 10, unit: 'мин', history: [{ date: since, value: 10 }] });
+  s.items.push(it);
+  for (const mon of app.closedWeeks(5)) s.days[app.addDays(mon, 6)] = { sun: true };
+
+  for (const mon of app.closedWeeks(3)) {
+    assert.equal(app.weekMaskDays(it, mon), 1, 'дней расписания в неделе — один');
+    assert.equal(app.itemWeekCount(it, mon), 1, 'и он отмечен');
+  }
+  assert.equal(app.raiseEligible(it), true, 'один из одного — это «держится»');
+  assert.equal(app.lowerEligible(it), false, 'безупречному пункту «Сделать легче» не предлагают');
+});
+
+test('З29B/6.3 (B.2.2): день без применимых пунктов сквозной — не рвёт серию и не входит в счёт', () => {
+  setNow(2026, 8, 24, 12, 0);
+  const s = freshStore();
+  s.items = [];
+  const since = app.addDays(app.todayKey(), -13);
+  s.settings.calendarSince = since;
+  const it = schedItem('wd', 'Будни', since, '1111100');
+  s.items.push(it);
+  for (let k = since; k < app.todayKey(); k = app.addDays(k, 1)) {
+    if (app.dueOn(it, k)) s.days[k] = { wd: true };
+  }
+  const sat = app.addDays(app.weekStartOf(app.todayKey()), -2);
+  assert.equal(app.dayScore(sat), null, 'суббота: применимых пунктов нет');
+  assert.equal(app.minDayMarks(sat).total, 0);
+  let workdays = 0;
+  for (let k = since; k < app.todayKey(); k = app.addDays(k, 1)) if (app.dueOn(it, k)) workdays++;
+  assert.equal(app.dayStreak(), workdays, 'серия идёт СКВОЗЬ выходные: ' + workdays);
+  assert.equal(app.bestStreak(), workdays);
+});
+
+test('З29B/6.3 (B.2.4): норма привычки зажимается числом дней маски', () => {
+  setNow(2026, 8, 24, 12, 0);
+  const s = freshStore();
+  const h = s.items.find(i => i.type === 'daily' && i.area === 'habit');
+  h.normPerWeek = 7;
+  app.setSchedule(h, '0000011');
+  assert.equal(h.normPerWeek, 2, 'норма не может превышать числа дней расписания');
+  app.setSchedule(h, '1111111');
+  assert.equal(h.normPerWeek, 2, 'расширение норму не поднимает: это решение владельца');
+  h.normPerWeek = 5;
+  assert.equal(app.clampNorm(h), null, 'при семи днях зажимать нечего');
+  app.setSchedule(h, '1100000');
+  assert.equal(h.normPerWeek, 2);
+  const m = app.migrate({ schemaVersion: 17, items: [{
+    id: 'z', name: 'З', type: 'daily', area: 'habit', addedAt: '2026-08-01', normPerWeek: 6,
+    schedule: [{ from: '2026-08-01', mask: '0000011' }] }] });
+  assert.equal(m.items[0].normPerWeek, 2, 'импорт не приносит невыполнимой нормы');
+});
+
+test('З29B/6.3 (B.2.5): вчера вне маски — точки нет, ретро-отметка невозможна', () => {
+  setNow(2026, 8, 24, 12, 0);
+  const s = freshStore();
+  s.items = [];
+  const since = app.addDays(app.todayKey(), -20);
+  s.settings.calendarSince = since;
+  const it = schedItem('wd', 'Будни', since, '1111100');
+  s.items.push(it);
+  s.days[app.addDays(app.todayKey(), -4)] = { wd: true };
+  const y = app.addDays(app.todayKey(), -1);
+  assert.equal(app.weekdayOf(y), 6, 'вчера воскресенье');
+  assert.equal(app.missedYesterday(it, app.todayKey()), false, 'дела вчера не стояло — укора нет');
+  assert.equal(app.markYesterday('wd'), false, 'и отметить вчера нечем');
+  assert.equal(s.days[y] === undefined || s.days[y].wd === undefined, true, 'в days{} ничего не легло');
+});
+
+test('З29B/6.3 (B.2.1): знаменатель «Отметок» — дни расписания, а не календарные', () => {
+  setNow(2026, 8, 24, 12, 0);
+  const s = freshStore();
+  s.items = [];
+  const since = app.addDays(app.weekStartOf(app.todayKey()), -7 * 4);
+  s.settings.calendarSince = since;
+  const it = schedItem('sun', 'Вс', since, '0000001');
+  s.items.push(it);
+  let sundays = 0;
+  for (let k = since; k <= app.todayKey(); k = app.addDays(k, 1)) {
+    if (app.weekdayOf(k) === 6) { sundays++; s.days[k] = { sun: true }; }
+  }
+  assert.equal(app.marksWindow(it), sundays, 'знаменатель — только воскресенья окна');
+  assert.equal(app.marksInSystem(it), sundays, 'числитель — тем же правилом');
+  assert.ok(sundays >= 3 && sundays <= 5, 'окно четырёх недель: ' + sundays);
+});
+
+test('З29B/6.3 (B.2.1): отметка, оставшаяся вне суженной маски, в счёт не идёт', () => {
+  setNow(2026, 8, 24, 12, 0);
+  const s = freshStore();
+  s.items = [];
+  const since = app.addDays(app.todayKey(), -20);
+  s.settings.calendarSince = since;
+  const it = schedItem('x', 'X', since, '1111111');
+  s.items.push(it);
+  for (let k = since; k <= app.todayKey(); k = app.addDays(k, 1)) s.days[k] = { x: true };
+  const wasDen = app.marksWindow(it);
+  assert.equal(app.marksInSystem(it), wasDen, '21 день, всё отмечено');
+  // сегодня понедельник, новая маска — только воскресенье: из знаменателя
+  // уходит РОВНО сегодняшний день, прошлые считаются прежней маской
+  assert.equal(app.weekdayOf(app.todayKey()), 0);
+  app.setSchedule(it, '0000001');
+  assert.ok(app.marksInSystem(it) <= app.marksWindow(it), 'числитель никогда не больше знаменателя');
+  assert.equal(app.marksWindow(it), wasDen - 1, 'ушёл только сегодняшний день');
+  assert.equal(app.marksInSystem(it), wasDen - 1, 'и его отметка — вместе с ним');
+});
+
+/* ── B.6.5: время — подпись, и ни на что не влияет ───────────── */
+test('З29B/6.5: normTime — валидация, пустое, мусор', () => {
+  for (const ok of ['00:00', '07:30', '23:59', '19:05']) assert.equal(app.normTime(ok), ok);
+  assert.equal(app.normTime(' 07:30 '), '07:30', 'пробелы по краям снимаются');
+  for (const bad of ['24:00', '7:30', '23:60', '', '  ', 'вечером', null, undefined, 730, {}])
+    assert.equal(app.normTime(bad), '', 'мусор не сохраняется: ' + JSON.stringify(bad));
+});
+
+test('З29B/6.5: время не влияет НИ НА ОДИН расчёт', () => {
+  setNow(2026, 8, 24, 12, 0);
+  const s = freshStore();
+  calendarPast(s);
+  const t = app.todayKey();
+  for (let d = 20; d >= 0; d--) {
+    const k = app.addDays(t, -d);
+    s.days[k] = {};
+    for (const i of s.items) if (i.type === 'daily') s.days[k][i.id] = true;
+  }
+  const snap = () => JSON.stringify([app.dayStreak(), app.bestStreak(), app.chainWeeks(8),
+    s.items.map(i => [app.marksInSystem(i), app.marksWindow(i),
+      app.raiseEligible(i), app.lowerEligible(i), app.habitStreak(i)])]);
+  const before = snap();
+  for (const i of s.items) i.at = '07:30';
+  assert.equal(snap(), before, 'ни серия, ни цепь, ни отметки, ни планка времени не видят');
+});
+
+/* ── B.6.6: пороги производительности держатся ───────────────── */
+test('З29B/6.6: bestStreak и dayStreak с расписанием держат пороги инварианта', () => {
+  const { store: s } = perfStore();
+  app.store = s;
+  const mid = app.addDays(s.settings.calendarSince, 400);
+  const late = app.addDays(s.settings.calendarSince, 800);
+  for (const i of s.items) {
+    if (i.type !== 'daily') continue;
+    i.schedule = [{ from: s.settings.calendarSince, mask: '1111111' },
+      { from: mid, mask: '1111110' }, { from: late, mask: '1111111' }];
+  }
+  const best = measureMs(() => app.bestStreak());
+  const day = measureMs(() => app.dayStreak());
+  assert.ok(best < 50, `bestStreak с расписанием: ${best.toFixed(1)} мс ≥ 50 мс`);
+  assert.ok(day < 30, `dayStreak с расписанием: ${day.toFixed(1)} мс ≥ 30 мс`);
+});
+
+/* ── Инвариант 6: отрезки — вложенная коллекция, потери считаются ── */
+test('З29B: потери отрезков расписания называются числом при импорте', () => {
+  setNow(2026, 8, 24, 12, 0);
+  const raw = { schemaVersion: 18, items: [{
+    id: 'x', name: 'A', type: 'daily', area: 'min', addedAt: '2026-08-01',
+    schedule: [{ from: '2026-08-01', mask: '1111111' }, { from: 'мусор', mask: '1010101' },
+      { from: '2026-08-05', mask: 'ЖЖЖ' }, { from: '2026-08-09', mask: '0000000' }] }] };
+  const was = app.dataCounts(JSON.parse(JSON.stringify(raw)));
+  const got = app.dataCounts(app.migrate(raw));
+  assert.equal(was.schedule, 4);
+  assert.equal(got.schedule, 1);
+  assert.match(app.droppedLine(was, got), /3 отрезка расписания/);
 });

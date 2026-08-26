@@ -4332,9 +4332,22 @@ function pointSeed() {
 }
 
 test('З23/6: отметка на «Сегодня» — экран после точечного пути равен перерисованному', async () => {
-  const { document, window } = await boot({ seed: pointSeed() });
+  // в сиде есть пункт ВНЕ сегодняшней маски (задача 29/B): без него
+  // renderToday и updateDayline считали бы одинаково при любом правиле,
+  // и расхождение по расписанию сторож бы не увидел
+  const seed = pointSeed();
+  const off = JSON.parse(JSON.stringify(seed.items[0]));
+  Object.assign(off, { id: 'off1', name: 'Не сегодня', at: '',
+    schedule: [{ from: seed.items[0].addedAt, mask: '0000000'.slice(0, 7) }] });
+  // маска ровно без сегодняшнего дня недели
+  const dow = (new Date(new Date().getTime() - 4 * 3600000).getDay() + 6) % 7;
+  off.schedule[0].mask = '1111111'.split('').map((c, i) => (i === dow ? '0' : '1')).join('');
+  seed.items.push(off);
+  const { document, window } = await boot({ seed });
   const boxes = [...document.querySelectorAll('#scr-today input[data-act="mark"]')];
   assert.ok(boxes.length >= 2, 'есть что отмечать');
+  assert.equal(document.querySelector('#scr-today [data-act="mark"][data-id="off1"]'), null,
+    'пункт вне маски в список не попал');
 
   // изъятий больше нет: сторож сравнивает разметку целиком (задача 24, п. 7.4)
   boxes[0].click();                                   // 1 из 2
@@ -6013,11 +6026,13 @@ test('З26/7: устаревших комментариев про «два ли
 
 test('З26/8.2: будущий день полосы недели не передаётся одной прозрачностью', () => {
   const css = CSS_SRC();
-  const fut = ruleOf(css, '.hstrip i.fut');
+  // с задачи 29/B у правила два селектора: будущий день и день ВНЕ РАСПИСАНИЯ
+  const fut = ruleOf(css, '.hstrip i.off');
   assert.match(fut, /visibility:\s*hidden/);
   assert.doesNotMatch(fut, /opacity/);
-  // идиома та же, что в цепи дней «Прогресса»
-  assert.match(css, /\.cdays i\.fut,\s*\n?\.cdays i\.pre \{[^}]*visibility:\s*hidden/);
+  assert.match(css, /\.hstrip i\.fut,\s*\n?\.hstrip i\.off \{/, 'будущее и вне расписания — одна идиома');
+  // идиома та же, что в цепи дней «Прогресса», и там же третье состояние
+  assert.match(css, /\.cdays i\.fut,[\s\S]{0,400}?\.cdays i\.off \{[^}]*visibility:\s*hidden/);
 });
 
 test('З26/8.2: место будущей ячейки в раскладке остаётся — полоса не съезжает', async () => {
@@ -7152,4 +7167,242 @@ test('З28E/C.1: раскадровка — три фазы, клип запол
   for (const bad of ['Молодец', 'Отлично', 'Ура', 'confetti', 'Audio', 'new Audio']) {
     assert.ok(!app.includes(bad), 'в отклике нет «' + bad + '»');
   }
+});
+
+/* ══ Задача 29/B: расписание и время — интерфейс ═══════════════ */
+
+/* Пункт с маской: собирается прямо, без формы, — форма проверяется ниже */
+function schedSeed(mask, extra) {
+  const seed = progSeed();
+  const since = seed.settings.calendarSince;
+  seed.items.push(Object.assign({
+    id: 'sun', name: 'Звонок родителям', value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group: '', removedAt: null, addedAt: since, at: '',
+    schedule: [{ from: since, mask }],
+    raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    formula: null, ladder: null, ladderLog: []
+  }, extra || {}));
+  return seed;
+}
+
+/* Сдвинуть окно к ближайшему дню недели dow (0 — понедельник) и дать
+   приложению перерисоваться сменой логического дня (инвариант 8). */
+async function moveToWeekday(window, document, dow) {
+  const cur = (new Date(new Date().getTime() - 4 * 3600000).getDay() + 6) % 7;
+  const delta = ((dow - cur) + 7) % 7 || 7;
+  shiftWindowDate(window, delta * 86400000);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  return delta;
+}
+
+/* ── B.6.4: пример владельца дословно ────────────────────────── */
+test('З29B/6.4: «только воскресенье» — в среду пункта нет нигде, в воскресенье «1 из 1»', async () => {
+  const { document, window } = await boot({ seed: schedSeed('0000001') });
+
+  // среда: пункта нет ни в списке «Сегодня», ни в знаменателе планки
+  await moveToWeekday(window, document, 2);
+  const today = document.getElementById('scr-today');
+  const names = [...today.querySelectorAll('.list .row .tname')].map(n => n.textContent);
+  assert.equal(names.some(n => /Звонок родителям/.test(n)), false, 'в среду пункта в списке нет');
+  const wed = today.querySelector('.bar-note').textContent.replace(/\s+/g, ' ').trim();
+  assert.doesNotMatch(wed, /из 4/, 'и в знаменателе его тоже нет');
+  assert.equal(document.querySelector('#scr-today [data-act="mark"][data-id="sun"]'), null);
+
+  // воскресенье: пункт на месте
+  const b = await boot({ seed: schedSeed('0000001', { id: 'sun' }) });
+  await moveToWeekday(b.window, b.document, 6);
+  const sun = b.document.getElementById('scr-today');
+  const cb = sun.querySelector('[data-act="mark"][data-id="sun"]');
+  assert.ok(cb, 'в воскресенье пункт в списке');
+
+  // и он ЕДИНСТВЕННЫЙ применимый, если прочие убраны: «1 из 1» → «День закрыт»
+  const c = await boot({ seed: (() => {
+    const s = schedSeed('0000001');
+    s.items = s.items.filter(i => i.id === 'sun');
+    return s;
+  })() });
+  await moveToWeekday(c.window, c.document, 6);
+  const only = c.document.getElementById('scr-today');
+  assert.match(only.querySelector('.bar-note').textContent.replace(/\s+/g, ' '), /0\s*из\s*1/,
+    'знаменатель — ОДИН: столько пунктов стоит в этом дне');
+  only.querySelector('[data-act="mark"][data-id="sun"]').click();
+  assert.match(only.querySelector('.bar-note').textContent, /День закрыт/,
+    'отметил единственный применимый — день закрыт: это и есть «1 из 1» владельца');
+});
+
+/* ── B.2.2 / B.2.8: день без применимых пунктов ──────────────── */
+test('З29B/6.3 (B.2.8): ноль применимых в дне — прежнее пустое состояние, без NaN', async () => {
+  const seed = schedSeed('0000001');
+  seed.items = seed.items.filter(i => i.id === 'sun' || i.type === 'weekly');
+  const { document, window } = await boot({ seed });
+  await moveToWeekday(window, document, 2); // среда: применимых нет вовсе
+  const today = document.getElementById('scr-today');
+  assert.equal(today.querySelector('.dayline'), null, 'планки нет — измерять нечего');
+  assert.doesNotMatch(today.textContent, /NaN|undefined|Infinity/);
+  // и это ровно то пустое состояние, что было до расписания (задача 22)
+  assert.match(today.textContent, /Пунктов пока нет/);
+});
+
+test('З29B/6.3 (B.2.2): сквозной день в цепи гаснет, а не читается пропуском', async () => {
+  const seed = schedSeed('1111100');            // Пн–Пт
+  seed.items = seed.items.filter(i => i.id === 'sun');
+  seed.items[0].name = 'Будни';
+  const { document } = await boot({ seed });
+  openProgress(document);
+  const cells = [...document.querySelectorAll('#scr-progress .cdays i')];
+  assert.equal(cells.length, 56, 'сетка на месте — восемь недель');
+  const off = cells.filter(c => c.classList.contains('off'));
+  assert.ok(off.length > 0, 'выходные по расписанию гаснут');
+  // погашённая ячейка НЕ несёт признаков пропуска: ни пустой обводки, ни части
+  for (const c of off) {
+    assert.equal(c.classList.contains('part'), false);
+    assert.equal(c.classList.contains('full'), false);
+  }
+  // и её место в раскладке остаётся — сетка не съезжает
+  assert.equal(document.querySelectorAll('#scr-progress .cdays .cd-head').length, 7);
+});
+
+/* ── B.2.3: полоса недели привычки ───────────────────────────── */
+test('З29B/6.3 (B.2.3): дни вне маски в полосе привычки инертны, счёт прежний', async () => {
+  const seed = schedSeed('1010100', { area: 'habit', normPerWeek: 3, id: 'sun', name: 'Зал' });
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const wrap = [...document.querySelectorAll('#scr-habits .rowwrap')]
+    .find(w => /Зал/.test(w.textContent));
+  assert.ok(wrap, 'привычка на экране');
+  const cells = [...wrap.querySelectorAll('.hstrip i')];
+  assert.equal(cells.length, 7, 'семь кружков на месте — полоса не съезжает');
+  const off = cells.filter((c, i) => [1, 3, 5, 6].includes(i));
+  for (const c of off) assert.ok(c.classList.contains('off'), 'день вне маски погашен');
+  for (const i of [0, 2, 4]) assert.equal(cells[i].classList.contains('off'), false);
+  assert.match(wrap.querySelector('.hcount').textContent, /из 3$/, 'счёт «X из нормы» прежний');
+});
+
+/* ── B.4: форма правки ───────────────────────────────────────── */
+test('З29B/6.3 (B.4.1): семь целей Пн…Вс, умолчание — все выбраны, состояние не одним цветом', async () => {
+  const { document } = await boot({ seed: progSeed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  const days = [...document.querySelectorAll('#scr-settings .days .btn.day')];
+  assert.equal(days.length, 7, 'семь целей');
+  assert.deepEqual(days.map(d => d.textContent), ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']);
+  assert.equal(days.every(d => d.getAttribute('aria-pressed') === 'true'), true, 'умолчание — все семь');
+  // состояние читается НЕ ТОЛЬКО ЦВЕТОМ: aria-pressed + класс, по которому
+  // CSS даёт и заливку, и начертание
+  days[6].click();
+  const after = [...document.querySelectorAll('#scr-settings .days .btn.day')];
+  assert.equal(after[6].getAttribute('aria-pressed'), 'false');
+  assert.equal(after[6].classList.contains('on'), false);
+  assert.equal(after[0].getAttribute('aria-pressed'), 'true');
+  // каждая цель — .btn, то есть у неё уже есть состояние нажатия (задача 26)
+  assert.equal(after.every(d => d.classList.contains('btn')), true);
+});
+
+test('З29B/6.3 (B.4.1): пустая маска не сохраняется — форма отказывает строкой', async () => {
+  const { document, window } = await boot({ seed: progSeed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const open = document.querySelector('#scr-settings [data-act="edit-open"]');
+  const id = open.dataset.id;
+  open.click();
+  for (let i = 0; i < 7; i++) document.querySelector(`#scr-settings [data-act="day-toggle"][data-day="${i}"]`).click();
+  const save = document.querySelector('#scr-settings [data-act="edit-save"]');
+  save.click();
+  assert.match(document.getElementById('scr-settings').textContent, /Нужен хотя бы один день недели/);
+  const saved = JSON.parse(window.localStorage.getItem(NS));
+  assert.deepEqual(saved.items.find(i => i.id === id).schedule.length, 1, 'ничего не записано');
+  assert.ok(document.querySelector('#scr-settings [data-form="edit"]'), 'форма осталась открытой');
+});
+
+test('З29B/6.3 (B.4.3): черновик формы держит и время, и выбранные дни', async () => {
+  const { document } = await boot({ seed: progSeed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  document.getElementById('e-at').value = '07:30';
+  // тап по дню перерисовывает форму (от маски зависит потолок нормы)
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="6"]').click();
+  assert.equal(document.getElementById('e-at').value, '07:30', 'время пережило перерисовку');
+  assert.equal(document.querySelector('#scr-settings [data-act="day-toggle"][data-day="6"]')
+    .getAttribute('aria-pressed'), 'false', 'и снятый день тоже');
+  // «Отмена» — осознанный отказ: черновик снимается вместе с маской
+  document.querySelector('#scr-settings [data-act="edit-cancel"]').click();
+  document.querySelector('#scr-settings [data-act="edit-open"]').click();
+  assert.equal(document.getElementById('e-at').value, '', 'после отмены поле чистое');
+  assert.equal(document.querySelector('#scr-settings [data-act="day-toggle"][data-day="6"]')
+    .getAttribute('aria-pressed'), 'true', 'и маска вернулась к сохранённой');
+});
+
+/* ── B.3: время — подпись ────────────────────────────────────── */
+test('З29B/6.5: время сохраняется, печатается перед подписью и не принимается кривым', async () => {
+  const { document, window } = await boot({ seed: progSeed() });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const open = document.querySelector('#scr-settings [data-act="edit-open"]');
+  const id = open.dataset.id;
+  open.click();
+  document.getElementById('e-note').value = 'на кухню';
+  // поле type="time" отбрасывает мусор САМО — это его штатное поведение и
+  // первая линия обороны: невалидное значение до обработчика не доходит
+  document.getElementById('e-at').value = 'вечером';
+  assert.equal(document.getElementById('e-at').value, '', 'мусор в поле не удерживается');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === id).at, '',
+    'пустое время — законное состояние, отказа нет');
+
+  // сохранение прошло, форма закрылась — открываем заново и вписываем время
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')]
+    .find(x => x.dataset.id === id).click();
+  document.getElementById('e-at').value = '23:30';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.id === id).at, '23:30');
+
+  // печатается ПЕРВОЙ в подписи, через « · », одинаково на «Сегодня» и в «Настройках»
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  const row = [...document.querySelectorAll('#scr-today .rowwrap')]
+    .find(r => r.querySelector('[data-act="mark"]') && r.querySelector('[data-act="mark"]').dataset.id === id);
+  assert.equal(row.querySelector('.note').textContent, '23:30 · на кухню');
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const srow = [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')]
+    .find(x => x.dataset.id === id);
+  assert.equal(srow.querySelector('.note').textContent, '23:30 · на кухню');
+});
+
+/* B.3.3: сортировки по времени НЕТ — порядок пунктов ручной (инвариант 17).
+   Соблазн «отсортировать по времени» очевиден и потому сторожится: время
+   позднее у пункта, стоящего ПЕРВЫМ, порядок менять не должно. */
+test('З29B/6.5 (B.3.3): время не пересортировывает список — порядок остаётся ручным', async () => {
+  // список БЕЗ блоков: groupedItems пересобирает порядок по блокам, и на
+  // сгруппированном списке сортировка внутри чужих блоков не видна вовсе
+  const seed = progSeed();
+  seed.groups = [];
+  seed.items = seed.items.filter(i => i.type === 'daily' && i.area === 'min').slice(0, 1);
+  const since = seed.settings.calendarSince;
+  const mk = (id, name) => Object.assign(JSON.parse(JSON.stringify(seed.items[0])),
+    { id, name, group: '', at: '', schedule: [{ from: since, mask: '1111111' }] });
+  seed.items = [mk('a1', 'Первый'), mk('a2', 'Второй'), mk('a3', 'Третий')];
+  const { document } = await boot({ seed });
+  const order = () => [...document.querySelectorAll('#scr-today .list [data-act="mark"]')].map(c => c.dataset.id);
+  assert.deepEqual(order(), ['a1', 'a2', 'a3'], 'порядок — ручной, как в items[]');
+
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const setAt = (itemId, v) => {
+    [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')]
+      .find(x => x.dataset.id === itemId).click();
+    document.getElementById('e-at').value = v;
+    document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  };
+  setAt('a1', '23:45');   // первому — самое позднее
+  setAt('a3', '05:00');   // последнему — самое раннее
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.deepEqual(order(), ['a1', 'a2', 'a3'], 'сортировки по времени нет (инвариант 17)');
+  // и подписи на месте — время печатается, но порядка не трогает
+  const row = [...document.querySelectorAll('#scr-today .rowwrap')]
+    .find(r => r.querySelector('[data-act="mark"]') && r.querySelector('[data-act="mark"]').dataset.id === 'a3');
+  assert.equal(row.querySelector('.note').textContent, '05:00');
+});
+
+/* ── B.2.7: лид разбора остаётся «из 7» ──────────────────────── */
+test('З29B/6.3 (B.2.7): «Минимум закрыт N из 7» — знаменатель прежний', async () => {
+  const seed = dueSeed();
+  const { document } = await boot({ seed });
+  document.querySelector('#scr-today [data-act="goto-review"]').click();
+  assert.match(document.getElementById('scr-review').textContent, /Минимум закрыт \d из 7 дней/);
 });

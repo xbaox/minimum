@@ -217,7 +217,7 @@ function timing(name, def) {
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — постоянный баннер над экраном
@@ -249,13 +249,13 @@ function nextCalendarMonday(k) {
 function seedHabits(today) {
   const habit = (name) => ({
     id: uid(), name, value: null, unit: '', type: 'daily', area: 'habit', normPerWeek: 7,
-    goal: null, note: '', group: '', removedAt: null, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    goal: null, note: '', group: '', removedAt: null, addedAt: today, schedule: [{ from: today, mask: WEEK_ALL }], at: '', raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
     formula: null, ladder: null, ladderLog: []
   });
   return [
     { id: uid(), name: 'Отбой', value: null, unit: '', type: 'param', area: 'habit',
       pkind: 'time', pvalue: 0, pstep: -15, goal: null, note: '', group: '',
-      removedAt: null, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [{ date: today, value: 0 }],
+      removedAt: null, addedAt: today, at: '', raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [{ date: today, value: 0 }],
       formula: null, ladder: null, ladderLog: [] },
     habit('Перестать грызть ногти'),
     habit('Ловить импульс трат → алгоритм')
@@ -294,7 +294,7 @@ function programItems(today) {
   return SEED_ITEMS.map(([name, value, unit, group, type, goal, note, extra]) => {
     const it = {
       id: uid(), name, value, unit, type, area: 'min', goal, note, group,
-      removedAt: null, addedAt: today, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+      removedAt: null, addedAt: today, at: '', raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
       // числовому пункту — стартовая запись истории планки (инвариант 5)
       history: (typeof value === 'number') ? [{ date: today, value }] : [],
       formula: null, ladder: null, ladderLog: []
@@ -302,6 +302,9 @@ function programItems(today) {
     Object.assign(it, extra);
     // порог параметра — такая же планка: своя стартовая запись истории
     if (it.type === 'param') it.history = [{ date: today, value: it.pvalue }];
+    // расписание — только у ежедневных (инвариант 10); defaultStore не проходит
+    // через migrate, поэтому каноническую форму задаёт эта фабрика (инвариант 19)
+    if (it.type === 'daily') it.schedule = [{ from: today, mask: WEEK_ALL }];
     return it;
   });
 }
@@ -413,6 +416,39 @@ const FORMULA_KEYS = ['anchor', 'when', 'pair', 'identity', 'twoMin', 'friction'
    нужно — mode достраивается этой же безусловной нормализацией, как в своё
    время normPerWeek (v5→v6) и сама formula (v6→v7); шаг аддитивен и
    идемпотентен, days{} и reviews[] не трогает. */
+/* v17 → v18 (задача 29/B): расписание пункта — список отрезков.
+   Нормализация приводит его к канонической форме и НИ ОДНОГО дня не
+   двигает: пункту без расписания ставится один отрезок «все семь дней»
+   с from = addedAt, то есть ровно прежнее поведение, выраженное данными.
+
+   Канон: отрезки по возрастанию from, дубли одного дня схлопнуты (побеждает
+   последний — так же, как в setSchedule), подряд идущие одинаковые маски
+   схлопнуты (правило recordBar, инвариант 5), первый отрезок не раньше
+   addedAt. Пустая маска — не расписание: пункт, не существующий ни в один
+   день недели, не отличим от убранного, а убирать умеет «Убрать».
+   Шаг идемпотентен: повторный прогон канонической формы её не меняет. */
+function normSchedule(list, addedAt) {
+  const src = (Array.isArray(list) ? list : [])
+    .filter(x => x && typeof x === 'object' && !Array.isArray(x) && isDayKey(x.from) && isMask(x.mask))
+    .filter(x => maskDays(x.mask) > 0)
+    .map(x => ({ from: x.from < addedAt ? addedAt : x.from, mask: x.mask }))
+    .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+  const out = [];
+  for (const seg of src) {
+    if (out.length && out[out.length - 1].from === seg.from) out.pop(); // один день — один отрезок
+    if (out.length && out[out.length - 1].mask === seg.mask) continue;  // повтор маски не пишется
+    out.push(seg);
+  }
+  // отрезка нет вовсе — «все семь» с первого дня жизни: прежнее поведение
+  if (!out.length || out[0].from !== addedAt) out.unshift({ from: addedAt, mask: WEEK_ALL });
+  return (out.length > 1 && out[0].mask === out[1].mask) ? out.slice(1) : out;
+}
+
+/* Время у пункта (задача 29/B) — ПОДПИСЬ, не механика: ни уведомлений, ни
+   просрочки, ни сортировки, ни одного расчёта. Строка «ЧЧ:ММ» либо пустая. */
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const normTime = v => (typeof v === 'string' && TIME_RE.test(v.trim()) ? v.trim() : '');
+
 function normFormula(f) {
   if (!f || typeof f !== 'object' || Array.isArray(f)) return null;
   const out = {};
@@ -562,9 +598,18 @@ function migrate(s, opts) {
       it.pvalue = pv; // числовой порог может быть дробным — формы его не округляют
       it.pstep = Math.round(numOr(it.pstep, 0));
     }
+    // v17 → v18: расписание — только у ЕЖЕДНЕВНЫХ пунктов обеих областей.
+    // Недельный счётчик и параметр дневных отметок не несут вовсе
+    // (инвариант 10), и маска им нечего означать.
+    if (it.type === 'daily') it.schedule = normSchedule(it.schedule, it.addedAt);
+    else delete it.schedule;
+    it.at = normTime(it.at); // подпись времени — у любого пункта
     if (it.type === 'daily' && it.area === 'habit') {
-      // норма недели (инвариант 11): целое 1–7, невалид — к ближайшему допустимому
-      it.normPerWeek = Math.max(1, Math.min(7, Math.round(numOr(it.normPerWeek, 7))));
+      // норма недели (инвариант 11): целое 1–7, невалид — к ближайшему
+      // допустимому, и не больше числа дней НЫНЕШНЕГО расписания: норма 5
+      // при двух днях в маске невыполнима с рождения (задача 29/B)
+      const cap = maskDays(it.schedule[it.schedule.length - 1].mask);
+      it.normPerWeek = Math.max(1, Math.min(cap, Math.round(numOr(it.normPerWeek, 7))));
     } else {
       delete it.normPerWeek; // норма — только у привычек
     }
@@ -758,6 +803,7 @@ function migrate(s, opts) {
         goal: null, note: '', group: 'Тело', removedAt: null,
         addedAt: dateKeyShift(new Date(), s.settings.dayBoundary), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
         // вставка идёт после валидации пунктов — каноническая форма задаётся здесь
+        schedule: [{ from: dateKeyShift(new Date(), s.settings.dayBoundary), mask: WEEK_ALL }], at: '',
         formula: null, ladder: null, ladderLog: []
       };
       const at = s.items.findIndex(i => i.name === 'Умыться');
@@ -1113,9 +1159,16 @@ function isDayKey(k) {
 }
 
 /* Понедельник календарной недели, которой принадлежит логический день */
+/* День недели логического дня: 0 — понедельник, 6 — воскресенье. Формула
+   жила внутри weekStartOf; расписанию (задача 29/B) она нужна отдельно, и
+   двух её копий быть не должно. Та же конвенция, что у трёх мест разметки
+   (полоса недели привычки, точечный путь той же полосы, шапка сетки разбора). */
+function weekdayOf(dayKey) {
+  return (keyToDate(dayKey).getDay() + 6) % 7;
+}
+
 function weekStartOf(dayKey) {
-  const dow = (keyToDate(dayKey).getDay() + 6) % 7; // 0 — понедельник
-  return addDays(dayKey, -dow);
+  return addDays(dayKey, -weekdayOf(dayKey));
 }
 
 /* Миллисекунды до ближайшего момента границы дня */
@@ -1180,8 +1233,97 @@ function livedOn(x, dayKey) {
   return x.addedAt <= dayKey && (!x.removedAt || dayKey < x.removedAt);
 }
 
+/* ── Расписание пункта (задача 29/B, инвариант 12) ─────────────
+   `item.schedule` — список ОТРЕЗКОВ `[{from, mask}]` по возрастанию from.
+   mask — семь символов '0'/'1', понедельник первым: '1000001' — Пн и Вс.
+
+   Отрезки, а не одно поле, ровно по той причине, по которой в задаче
+   28.E/A упразднён `active`: маска, положенная в пункт одним значением,
+   применилась бы ко ВСЕЙ истории, и сегодняшняя правка переписала бы
+   вчерашние числа. День читается маской, действовавшей В ТОТ ДЕНЬ, и
+   прошлое не двигается никогда.
+
+   Списка нет или он пуст — «все семь дней»: пункт без расписания ведёт
+   себя ровно так, как вёл до задачи 29. */
+const WEEK_ALL = '1111111';
+const isMask = m => typeof m === 'string' && /^[01]{7}$/.test(m);
+const maskDays = m => (isMask(m) ? m.split('').filter(c => c === '1').length : 7);
+
+/* Маска, действовавшая в дне: последний отрезок с from ≤ dayKey. Отрезков
+   нет, или все они позже этого дня — «все семь»: до первой записи
+   расписания не существовало, и прошлое о нём не знает. */
+function scheduleOn(item, dayKey) {
+  const segs = Array.isArray(item && item.schedule) ? item.schedule : [];
+  for (let i = segs.length - 1; i >= 0; i--) {
+    if (segs[i].from <= dayKey) return segs[i].mask;
+  }
+  return WEEK_ALL;
+}
+
+/* Нынешняя маска — последний отрезок; её показывает и правит форма */
+const scheduleNow = item => scheduleOn(item, todayKey());
+
+/* Применимость ДНЯ: пункт в этот день жил И день недели входит в маску
+   ЭТОГО дня. Единственная содержательная точка прошлого — minDayItems,
+   ровно как было с livedOn (инвариант 12). */
+function dueOn(item, dayKey) {
+  return livedOn(item, dayKey) && scheduleOn(item, dayKey)[weekdayOf(dayKey)] === '1';
+}
+
+/* «Есть сегодня»: живой и сегодняшний день недели в нынешней маске */
+function dueNow(item, tKey) {
+  const t = tKey || todayKey();
+  return live(item) && scheduleOn(item, t)[weekdayOf(t)] === '1';
+}
+
+/* Сколько дней расписания у пункта в календарной неделе mon — знаменатель
+   недельных порогов (инвариант 4) и потолок нормы привычки (инвариант 11).
+   Считается по маске КАЖДОГО дня недели: неделя, в которую расписание
+   сменилось, честно даёт смешанное число. */
+function weekMaskDays(item, mon) {
+  let n = 0;
+  for (let i = 0; i < 7; i++) {
+    const k = addDays(mon, i);
+    if (scheduleOn(item, k)[weekdayOf(k)] === '1') n++;
+  }
+  return n;
+}
+
+/* Смена расписания — отрезок с сегодняшнего дня. Повторная смена в тот же
+   логический день ЗАМЕНЯЕТ последний отрезок, а не плодит записи; возврат
+   к прежней маске схлопывает его. Правила те же, что у recordBar
+   (инвариант 5) — второго словаря владельцу учить не нужно.
+   Прежние отрезки не трогаются никогда: в этом весь смысл отрезков. */
+function setSchedule(item, mask) {
+  if (!isMask(mask) || maskDays(mask) === 0) return false; // пустая маска — не расписание
+  const t = todayKey();
+  const segs = Array.isArray(item.schedule) ? item.schedule : (item.schedule = []);
+  if (segs.length && segs[segs.length - 1].from === t) segs.pop(); // сегодняшний — переписывается
+  const prev = segs.length ? segs[segs.length - 1].mask : WEEK_ALL;
+  if (prev !== mask) segs.push({ from: t, mask });
+  clampNorm(item);
+  save();
+  return true;
+}
+
+/* Норма привычки не может превышать числа дней её расписания (инвариант
+   11): норма 5 при двух днях в маске невыполнима с рождения. Зажатие —
+   это СМЕНА нормы со всеми её последствиями (серия недель пересчитывается
+   ретроактивно), поэтому оно возвращает прежнее значение: вызывающий
+   обязан сказать об этом владельцу, а не смолчать (задача 29/B, B.2.4). */
+function clampNorm(item) {
+  if (item.type !== 'daily' || item.area !== 'habit') return null;
+  const cap = maskDays(scheduleNow(item));
+  const was = item.normPerWeek || 7;
+  if (was <= cap) return null;
+  item.normPerWeek = cap;
+  return was;
+}
+
 const liveDaily = () => store.items.filter(i => live(i) && i.type === 'daily');
 const liveWeekly = () => store.items.filter(i => live(i) && i.type === 'weekly');
+/* Пункты области, применимые СЕГОДНЯ: дневные экраны и их горячие пути */
+const dueDaily = (area, t) => liveDaily().filter(i => i.area === area && dueNow(i, t));
 
 /* ── Уход и возврат ────────────────────────────────────────────
    Словарь задачи 28.E/A: «удалить» — стереть, «убрать» — увести из виду.
@@ -1232,6 +1374,12 @@ function restoreItem(id) {
     removedAt: null, addedAt: t, raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
     history: [], formula: null, ladder: null, ladderLog: []
   };
+  // расписание и подпись времени переезжают вместе с пунктом: copy
+  // собирается ПЕРЕЧИСЛЕНИЕМ, и забытое поле терялось бы молча. Отрезки
+  // начинаются заново с нового addedAt — прежние принадлежат прежнему
+  // отрезку жизни, как отметки и история (инвариант 12).
+  if (it.type === 'daily') copy.schedule = [{ from: t, mask: scheduleNow(it) }];
+  copy.at = it.at || '';
   if (it.type === 'daily' && it.area === 'habit') copy.normPerWeek = it.normPerWeek || 7;
   if (it.type === 'param') {
     copy.pkind = it.pkind; copy.pvalue = it.pvalue; copy.pstep = it.pstep;
@@ -1317,7 +1465,13 @@ function everMarked(item, upto) {
    владелец не должен). */
 function missedYesterday(item, tKey) {
   const y = addDays(tKey, -1);
-  if (!(item.addedAt <= y) || isMarked(y, item.id)) return false;
+  // Применимость вчерашнего дня — одним правилом (задача 29/B): пункт вчера
+  // ЖИЛ и вчерашний день недели стоял в его тогдашней маске. Отдельная
+  // проверка `addedAt <= y` отсюда ушла: livedOn внутри dueOn делает ровно
+  // её, и две копии одного условия разошлись бы при первой же правке.
+  // Без маски пункт «только по воскресеньям» показывал бы укор шесть дней
+  // из семи, вечно.
+  if (!dueOn(item, y) || isMarked(y, item.id)) return false;
   return everMarked(item, y);
 }
 
@@ -1328,6 +1482,9 @@ function markYesterday(itemId) {
   if (!item || !live(item) || item.type !== 'daily') return false;
   const y = addDays(todayKey(), -1);
   if (!(item.addedAt <= y)) return false;
+  // отметка в день вне расписания невозможна: её негде было бы показать,
+  // а в days{} она осталась бы навсегда и считалась бы механиками
+  if (!dueOn(item, y)) return false;
   if (isMarked(y, item.id)) return false;
   const day = store.days[y] || (store.days[y] = {});
   day[item.id] = true;
@@ -1500,7 +1657,26 @@ function currentOneChange() {
    принято; следующее предложение возможно, когда все нужные недели
    строго позже якоря. */
 
-/* Критерий повышения: 3 последние закрытые недели, в каждой ≥6 из 7 */
+/* Пороги планки — ДОЛИ от числа дней расписания недели m (задача 29/B).
+   При m = 7 обязаны дать ровно прежние 6 и 3: существующим пунктам
+   механика не меняется ни на волос, и это закреплено тестом.
+   Пункт «только по воскресеньям» (m = 1) прежде не мог набрать «6 из 7»
+   НИКОГДА — молчаливый запрет по данным, которых владелец не видит, ровно
+   тот, что задача 28.D сняла в этом же файле, — и одновременно проходил
+   «≤3 из 7» при безупречном исполнении, получая «Сделать легче» каждую
+   неделю. Доли лечат оба конца разом. */
+const raiseNeed = m => Math.ceil(6 / 7 * m);
+const lowerNeed = m => Math.floor(3 / 7 * m);
+
+/* Знаменатель в тексте карточки понижения: у пункта без расписания обе
+   недели дают 7, и «из 7 и 7» читалось бы канцелярией — печатается одно
+   число. Расписание сменилось внутри окна — числа разные, и оба названы. */
+function lowDen(item, weeks) {
+  const ms = weeks.map(w => weekMaskDays(item, w));
+  return ms.every(m => m === ms[0]) ? String(ms[0]) : ms.join(' и ');
+}
+
+/* Критерий повышения: 3 последние закрытые недели, в каждой ≥ ceil(6/7·m) */
 function raiseEligible(item) {
   if (item.type !== 'daily' || !live(item) || item.area !== 'min') return false; // повышение — только минимум
   if (!(typeof item.value === 'number' && isFinite(item.value) && item.value > 0)) return false;
@@ -1512,11 +1688,11 @@ function raiseEligible(item) {
   // теперь один — три закрытые недели по ≥6 из 7.
   const W = closedWeeks(3);
   if (W.length < 3) return false;
-  if (!W.every(w => itemWeekCount(item, w) >= 6)) return false;
+  if (!W.every(w => itemWeekCount(item, w) >= raiseNeed(weekMaskDays(item, w)))) return false;
   return item.raiseAfterWeek === null || W[0] > item.raiseAfterWeek;
 }
 
-/* Критерий понижения: 2 последние закрытые недели, в каждой ≤3 из 7.
+/* Критерий понижения: 2 последние закрытые недели, в каждой ≤ floor(3/7·m).
    Значения планки критерий не требует: пункт без числа тоже может
    не держаться — решение по нему сводится к «Оставить». */
 function lowerEligible(item) {
@@ -1534,7 +1710,7 @@ function lowerEligible(item) {
   // Владелец, засеявший программу и не успевший отметиться, получал
   // предложение урезать её за недели, в которые не мог отмечаться.
   if (!everMarked(item, addDays(W[W.length - 1], 6))) return false;
-  if (!W.every(w => itemWeekCount(item, w) <= 3)) return false;
+  if (!W.every(w => itemWeekCount(item, w) <= lowerNeed(weekMaskDays(item, w)))) return false;
   return item.lowerAfterWeek === null || W[0] > item.lowerAfterWeek;
 }
 
@@ -1921,7 +2097,7 @@ function reorderExercise(id, to) {
    сегодняшнего дня включительно — вчера и раньше не двигается никогда. */
 function minDayItems(dayKey) {
   return store.items.filter(i =>
-    i.type === 'daily' && i.area === 'min' && livedOn(i, dayKey));
+    i.type === 'daily' && i.area === 'min' && dueOn(i, dayKey));
 }
 
 /* Сколько таких пунктов отмечено: 0 — день пуст, меньше всех —
@@ -2135,7 +2311,12 @@ function marksWindow(item) {
   const t = todayKey();
   if (!isDayKey(since)) return 0;
   const from = (isDayKey(item.addedAt) && item.addedAt > since) ? item.addedAt : since;
-  return t < from ? 0 : diffDays(t, from) + 1;
+  if (t < from) return 0;
+  // дни РАСПИСАНИЯ, а не календарные (задача 29/B): пункт «только по
+  // воскресеньям», не пропустивший ни одного занятия, читался «1 из 12»
+  let n = 0;
+  for (let k = from; k <= t; k = addDays(k, 1)) if (dueOn(item, k)) n++;
+  return n;
 }
 
 /* Отметок пункта за время в системе — числитель строки «Отметки» */
@@ -2145,7 +2326,9 @@ function marksInSystem(item) {
   if (!isDayKey(since)) return 0;
   let n = 0;
   for (const k of Object.keys(store.days)) {
-    if (k >= since && k <= t && store.days[k][item.id]) n++;
+    // тем же правилом, что знаменатель: отметка в дне вне расписания
+    // (сужение маски после отметки) в счёт не идёт — иначе «5 из 3»
+    if (k >= since && k <= t && store.days[k][item.id] && dueOn(item, k)) n++;
   }
   return n;
 }
@@ -2529,6 +2712,13 @@ function dataCounts(s) {
     // история планки и история нагрузки — одна сущность (обе пишет recordBar,
     // инвариант 5), поэтому и категория потерь одна
     history: sum(s && s.items, x => x.history) + sum(s && s.exercises, x => x.history),
+    // отрезки расписания (задача 29/B) — вложенная коллекция, из которой
+    // normSchedule роняет элементы: битую дату, невалидную маску, пустую
+    // маску, дубль одного дня. Инвариант 6 требует категорию на ВСЁ, что
+    // migrate способен отбросить, а поштучно выразить это может только счёт.
+    // Подпись времени категории не получает и не должна: это скаляр, как
+    // unit и note, — их migrate тоже нормализует без счёта.
+    schedule: sum(s && s.items, x => x.schedule),
     entries: sum(s && s.sessions, x => x.entries),
     params
   };
@@ -2545,6 +2735,7 @@ const COUNT_WORDS = [
   ['groups', 'блок', 'блока', 'блоков'],
   ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],
   ['history', 'запись истории', 'записи истории', 'записей истории'],
+  ['schedule', 'отрезок расписания', 'отрезка расписания', 'отрезков расписания'],
   ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],
   ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']
 ];
@@ -2667,6 +2858,10 @@ const ui = {
   addArea: 'min',       // область формы добавления: 'min' | 'habit'
   addPkind: 'time',     // вид параметра в форме добавления; после создания вид не меняется
   editNorm: null,       // черновик нормы недели в открытой форме привычки (null — как у пункта)
+  // черновик маски дней в открытой форме (задача 29/B). Кнопки, а не поля:
+  // snapshotOpenForm читает только `.value`, у кнопки его нет вовсе — так же,
+  // как у степпера нормы, и механизм тот же
+  editDays: null,
   // разовое тихое подтверждение сохранения формы (движение, задача 12).
   // С задачи 26 это не флаг, а якорь: { key, text } — ключ той строки, у
   // которой узел должен родиться, чтобы стоять у пальца, а не в шапке (п. 2.1)
@@ -3032,7 +3227,9 @@ function renderAll() {
 function renderToday() {
   const t = todayKey();
   ui.renderedDayKey = t;
-  const items = liveDaily().filter(i => i.area === 'min');
+  // применимость ДНЯ, а не «есть сейчас» (задача 29/B): пункт вне
+  // маски сегодняшнего дня не идёт ни в список, ни в знаменатель планки
+  const items = dueDaily('min', t);
   const done = items.filter(i => isMarked(t, i.id)).length;
   const total = items.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -3074,7 +3271,7 @@ function renderToday() {
       <div class="weekcount">
         <span class="txt">
           <span class="tname">${esc(w.name)}</span>
-          ${w.note ? `<span class="note">${esc(w.note)}</span>` : ''}
+          ${rowNote(w) ? `<span class="note">${esc(rowNote(w))}</span>` : ''}
         </span>
         <span class="wctl">
           <span class="wnum"><b>${n}</b>&thinsp;/&thinsp;${w.goal || 0}</span>
@@ -3126,12 +3323,20 @@ function groupSections(items, t, habit) {
    Подпись «вчера — пропуск» стоит в разметке всегда, когда есть точка,
    и прячется атрибутом hidden: aria-controls обязан указывать на
    существующий узел, иначе disclosure для AT неполон (задача 26, п. 8.1). */
+/* Подпись строки пункта: время (если вписано) и слова владельца, через
+   домашний разделитель « · ». Время — ЯКОРЬ дня, поэтому идёт первым;
+   подпись уточняет. Ни сортировки, ни просрочки, ни уведомлений: на расчёт
+   оно не влияет нигде (задача 29/B, решение архитектора). */
+function rowNote(it) {
+  return [it.at, it.note].map(x => (x || '').trim()).filter(Boolean).join(' · ');
+}
+
 function dailyRow(it, t, habit, chain) {
   const on = isMarked(t, it.id);
   const miss = missedYesterday(it, t);
   const vu = valUnit(it);
   const streak = habit ? habitStreak(it) : 0; // при нуле справка скрыта
-  const sub = it.note;
+  const sub = rowNote(it);
   // половинки линии блока: верхняя идёт к предыдущему пункту, нижняя — к
   // следующему; у крайних строк лишнюю гасит CSS. Идут первыми в разметке —
   // круг отметки закрывает линию собой.
@@ -3165,8 +3370,12 @@ function habitWeekRow(it, t) {
   for (let i = 0; i < 7; i++) {
     const k = addDays(mon, i);
     const today = k === t;
+    // день вне расписания ИНЕРТЕН: кружка нет вовсе, как у будущего дня
+    // (задача 29/B, B.2.3). Пустой кружок читался бы пропуском, а дела в
+    // этот день не стояло. Подпись дня остаётся — полоса не съезжает.
+    const off = scheduleOn(it, k)[weekdayOf(k)] !== '1';
     cells += `<span class="hday${today ? ' today' : ''}"><span class="hd">${names[i]}</span>` +
-      `<i class="c${isMarked(k, it.id) ? ' on' : ''}${today ? ' today' : ''}${k > t ? ' fut' : ''}"></i></span>`;
+      `<i class="c${isMarked(k, it.id) ? ' on' : ''}${today ? ' today' : ''}${k > t ? ' fut' : ''}${off ? ' off' : ''}"></i></span>`;
   }
   return `
         <div class="hweek">
@@ -3179,7 +3388,9 @@ function habitWeekRow(it, t) {
 function renderHabits() {
   const t = todayKey();
   ui.renderedDayKey = t;
-  const habits = liveDaily().filter(i => i.area === 'habit');
+  // применимость ДНЯ, а не «есть сейчас» (задача 29/B): пункт вне
+  // маски сегодняшнего дня не идёт ни в список, ни в знаменатель планки
+  const habits = dueDaily('habit', t);
   const done = habits.filter(i => isMarked(t, i.id)).length;
   const total = habits.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -3326,21 +3537,29 @@ function chainGrid() {
   const sr = [];
   for (const mon of weeks) {
     let hit = 0;
-    let vis = 0;
+    let vis = 0;  // прожитых дней недели в эпохе: по ним решается, рисовать ли сетку
     for (let i = 0; i < 7; i++) {
       const k = addDays(mon, i);
       if (k > t) { cells += `<i class="cd fut"></i>`; continue; }
       if (isDayKey(since) && k < since) { cells += `<i class="cd pre"></i>`; continue; }
       const s = dayScore(k);
-      const full = s !== null && s >= dayThreshold() - EPS;
+      // применимых пунктов в дне нет — делать было нечего: день СКВОЗНОЙ.
+      // Серия его и так пропускает (streakBack: continue), а цепь до задачи
+      // 29/B рисовала его пустой ячейкой, то есть ПРОПУСКОМ: null и 0 давали
+      // один и тот же класс. Гасится тем же приёмом, что дни до эпохи и
+      // будущие (.pre/.fut) — место в сетке остаётся, ряд не съезжает.
+      vis++; // день прожит и лежит в эпохе — сетке он принадлежит, даже если делать было нечего
+      if (s === null) { cells += `<i class="cd off"></i>`; continue; }
+      const full = s >= dayThreshold() - EPS;
       if (full) hit++;
       if (s) drawn++;
-      vis++;
       cells += `<i class="cd${full ? ' full' : (s ? ' part' : '')}"></i>`;
     }
     shown += vis;
     // неделя целиком до начала отсчёта не существует — скринридер не должен
-    // слышать про неё «зачтено 0 из 7» (задача 22, п. 3.4)
+    // слышать про неё «зачтено 0 из 7» (задача 22, п. 3.4). Знаменатель —
+    // семь: это дни НЕДЕЛИ, а не дни расписания, и он совпадает с лидом
+    // разбора «Минимум закрыт N из 7 дней» (задача 29/B, B.2.7).
     if (vis) sr.push(`Неделя с ${fmtShort(mon)}: зачтено ${hit} из 7`);
   }
   // все восемь недель до начала отсчёта (эпоха ещё не наступила или только
@@ -3501,7 +3720,7 @@ function renderTrain() {
 
 function updateDayline() {
   const t = todayKey();
-  const items = liveDaily().filter(i => i.area === 'min');
+  const items = dueDaily('min', t); // то же правило, что в renderToday: сторож сравнивает их вывод
   const done = items.filter(i => isMarked(t, i.id)).length;
   const total = items.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -3517,7 +3736,7 @@ function updateDayline() {
 
 function updateHabitsDayline() {
   const t = todayKey();
-  const habits = liveDaily().filter(i => i.area === 'habit');
+  const habits = dueDaily('habit', t); // то же правило, что в renderHabits
   const done = habits.filter(i => isMarked(t, i.id)).length;
   const total = habits.length;
   const pct = total ? Math.round(done / total * 100) : 0;
@@ -3714,7 +3933,7 @@ function renderReview() {
     const editing = ui.raiseEdit[it.id];
     bar += `
       <div class="card raise" data-raise="${esc(it.id)}">
-        <p>${esc(it.name)}: три недели подряд не меньше 6 из 7.</p>
+        <p>${esc(it.name)}: три недели подряд не меньше ${raiseNeed(weekMaskDays(it, closedWeeks(1)[0] || currentWeekStart() || todayKey()))} из ${weekMaskDays(it, closedWeeks(1)[0] || currentWeekStart() || todayKey())}.</p>
         <p class="raise-line">Повысить ${esc(String(it.value))} →
           ${editing
             ? `<input class="num" id="raise-${esc(it.id)}" type="text" inputmode="decimal" value="${esc(String(sug))}" aria-label="новая планка: «${esc(it.name)}»${it.unit ? ', ' + esc(it.unit) : ''}">`
@@ -3742,7 +3961,7 @@ function renderReview() {
     bar += `
       <div class="card lower" data-lower="${esc(it.id)}">
         <p>Сделать легче</p>
-        <p class="muted">${esc(it.name)} — ${counts} из 7 за две недели</p>
+        <p class="muted">${esc(it.name)} — ${counts} из ${lowDen(it, lowW)} за две недели</p>
         <div class="btns">
           ${to === null ? '' : `<button class="btn" data-act="lower-ok" data-id="${esc(it.id)}">Сделать легче ${esc(String(it.value))} → ${esc(String(to))}${it.unit ? ' ' + esc(it.unit) : ''}</button>`}
           <button class="btn quiet" data-act="lower-keep" data-id="${esc(it.id)}">Оставить</button>
@@ -4397,7 +4616,7 @@ function renderSettings() {
           <button class="itxt" data-act="edit-open" data-id="${esc(it.id)}" aria-label="изменить «${esc(it.name)}»">
             <span class="tname">${esc(it.name)}</span>
             ${meta ? `<span class="meta">${esc(meta)}</span>` : ''}
-            ${it.note ? `<span class="note">${esc(it.note)}</span>` : ''}
+            ${rowNote(it) ? `<span class="note">${esc(rowNote(it))}</span>` : ''}
             ${it.type === 'param' ? paramHistory(it) : barHistory(it)}
           </button>
           <span class="ictl">
@@ -4543,11 +4762,54 @@ function readGroupField(idPrefix, fallback) {
   return name;
 }
 
+/* Выбор дней недели: семь целей Пн…Вс. Кнопки, а не чекбоксы, по двум
+   причинам: снимок черновика читает только `.value`, а у чекбокса он равен
+   'on' независимо от галочки (замер разведки), и `.field input` перебил бы
+   вид скрытого чекбокса из `.check`. Состояние живёт в `ui.editDays` по
+   образцу `ui.editNorm` и переживает перерисовку формы.
+
+   Состояние выбранности читается НЕ ТОЛЬКО ЦВЕТОМ (B.4.1): выбранный день
+   несёт `aria-pressed="true"`, заливку И жирное начертание, невыбранный —
+   пустую обводку и обычное. Тач-отклик даровой: класс `.btn` уже в списке
+   TAPPABLE, и сторож живого DOM это проверяет.
+
+   Ряд вынесен на padding карточки (`.days` в styles.css): внутренняя
+   ширина формы на 375 px — 301 px, а семь целей по 44 требуют 308. */
+const DAY_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+const DAY_FULL = ['понедельник', 'вторник', 'среду', 'четверг', 'пятницу', 'субботу', 'воскресенье'];
+
+function daysField(mask) {
+  let b = '';
+  for (let i = 0; i < 7; i++) {
+    const on = mask[i] === '1';
+    b += `<button type="button" class="btn day${on ? ' on' : ''}" data-act="day-toggle" data-day="${i}"` +
+      ` aria-pressed="${on ? 'true' : 'false'}" aria-label="${on ? 'убрать' : 'добавить'} ${DAY_FULL[i]}">${DAY_SHORT[i]}</button>`;
+  }
+  return `
+      <div class="field">
+        <span id="days-lbl">Дни недели</span>
+        <div class="days" role="group" aria-labelledby="days-lbl">${b}</div>
+      </div>`;
+}
+
+/* Поле времени — подпись для памяти. type="time" уже применён в проекте
+   к порогу параметра: значение всегда каноническое «ЧЧ:ММ», на iOS
+   открывается системный барабан, валидация даровая. */
+function timeField(idPrefix, value) {
+  return `<label class="field"><span>Время</span>` +
+    `<input type="time" id="${idPrefix}-at" value="${esc(value || '')}" placeholder="23:30"></label>`;
+}
+
 function editForm(it) {
   const head = `
     <div class="card form" data-form="edit" data-id="${esc(it.id)}">
       <label class="field"><span>Название</span><input type="text" id="e-name" value="${esc(it.name)}"></label>
-      <label class="field"><span>Подпись</span><input type="text" id="e-note" value="${esc(it.note || '')}" placeholder="необязательная строка под названием"></label>`;
+      <label class="field"><span>Подпись</span><input type="text" id="e-note" value="${esc(it.note || '')}" placeholder="необязательная строка под названием"></label>
+      ${timeField('e', it.at)}`;
+  // маска — только у ежедневных пунктов обеих областей; у недельного
+  // счётчика и параметра дневных отметок нет вовсе (инвариант 10)
+  const days = it.type === 'daily'
+    ? daysField(ui.editDays !== null ? ui.editDays : scheduleNow(it)) : '';
   // Здесь стояла ссылка «Формула и лестница ›» — вход в лист детали, и
   // предупреждение о том, что у пункта с лестницей подпись на дневных
   // экранах вытесняется ступенью. Обе механики сняты задачей 28.D: ссылке
@@ -4572,19 +4834,24 @@ function editForm(it) {
       ${groupField('e', it.group)}` + foot;
   }
   if (it.area === 'habit') {
-    // привычка: название, подпись и норма недели степпером (границы 1–7)
-    const n = ui.editNorm !== null ? ui.editNorm : (it.normPerWeek || 7);
-    return head + `
+    // привычка: название, подпись, время, дни и норма недели степпером.
+    // Потолок нормы — число дней ВЫБРАННОЙ маски (инвариант 11): норма 5
+    // при двух днях в маске невыполнима, и форма её не даёт (B.2.4).
+    const mask = ui.editDays !== null ? ui.editDays : scheduleNow(it);
+    const cap = maskDays(mask);
+    const n = Math.min(cap, ui.editNorm !== null ? ui.editNorm : (it.normPerWeek || 7));
+    return head + days + `
       <div class="field inline norm">
         <span>Норма в неделю: <b>${n}</b></span>
         <span class="btns">
           <button type="button" class="btn icon quiet" data-act="norm-dec" data-id="${esc(it.id)}"${n <= 1 ? ' disabled' : ''} aria-label="уменьшить норму">&minus;</button>
-          <button type="button" class="btn icon quiet" data-act="norm-inc" data-id="${esc(it.id)}"${n >= 7 ? ' disabled' : ''} aria-label="увеличить норму">+</button>
+          <button type="button" class="btn icon quiet" data-act="norm-inc" data-id="${esc(it.id)}"${n >= cap ? ' disabled' : ''} aria-label="увеличить норму">+</button>
         </span>
       </div>
+      ${cap < 7 ? `<p class="muted">Не больше ${cap} — столько дней в расписании.</p>` : ''}
       ${groupField('e', it.group)}` + foot;
   }
-  return head + `
+  return head + days + `
       <div class="pair">
         <label class="field"><span>Значение</span><input class="num" type="text" inputmode="decimal" id="e-value" value="${esc(it.value)}"></label>
         <label class="field"><span>Единица</span><input type="text" id="e-unit" value="${esc(it.unit || '')}"></label>
@@ -5227,7 +5494,7 @@ function onClick(e) {
       break;
     case 'edit-cancel':
       dropOpenDraft();
-      ui.editingId = null; ui.editNorm = null; ui.groupPick = null; ui.groupNew = false;
+      ui.editingId = null; ui.editNorm = null; ui.editDays = null; ui.groupPick = null; ui.groupNew = false;
       renderSettings();
       break;
 
@@ -5271,11 +5538,30 @@ function onClick(e) {
       break;
     }
 
+    // выбор дня недели в открытой форме: правит только ЧЕРНОВИК маски,
+    // запись — по «Сохранить», как у нормы. Перерисовка нужна: от маски
+    // зависит потолок степпера нормы и его подпись.
+    case 'day-toggle': {
+      const item2 = store.items.find(x => x.id === ui.editingId);
+      if (!item2) break;
+      const cur = ui.editDays !== null ? ui.editDays : scheduleNow(item2);
+      const i = +b.dataset.day;
+      const next = cur.split('');
+      next[i] = next[i] === '1' ? '0' : '1';
+      ui.editDays = next.join('');
+      renderSettings();
+      // фокус остаётся на той же кнопке: перерисовка её пересоздала
+      const back = document.querySelector(`#scr-settings [data-act="day-toggle"][data-day="${i}"]`);
+      if (back) back.focus();
+      break;
+    }
+
     case 'norm-dec':
     case 'norm-inc': {
       if (!item) break;
-      const cur = ui.editNorm !== null ? ui.editNorm : (item.normPerWeek || 7);
-      const next = Math.max(1, Math.min(7, cur + (act === 'norm-inc' ? 1 : -1)));
+      const capNorm = maskDays(ui.editDays !== null ? ui.editDays : scheduleNow(item));
+      const cur = Math.min(capNorm, ui.editNorm !== null ? ui.editNorm : (item.normPerWeek || 7));
+      const next = Math.max(1, Math.min(capNorm, cur + (act === 'norm-inc' ? 1 : -1)));
       if (next === cur) break;
       ui.editNorm = next;
       renderSettings();
@@ -5344,9 +5630,19 @@ function onClick(e) {
           goal = Math.round(g);
         }
       }
+      // время — подпись, но невалидное не сохраняется молча (B.3.1)
+      const rawAt = el('e-at') ? el('e-at').value.trim() : '';
+      if (rawAt && !TIME_RE.test(rawAt)) { refuse(b, 'Время не принято: нужно вида 23:30'); break; }
+      // пустая маска — не расписание: пункт, не существующий ни в один день
+      // недели, неотличим от убранного, а убирать умеет «Убрать»
+      if (item.type === 'daily' && ui.editDays !== null && maskDays(ui.editDays) === 0) {
+        refuse(b, 'Нужен хотя бы один день недели'); break;
+      }
+
       // проверки пройдены — запись
       item.name = name;
       item.note = el('e-note').value.trim();
+      item.at = rawAt;
       if (item.type === 'param') {
         if (item.pkind === 'number' && el('e-punit')) item.unit = el('e-punit').value.trim();
         if (pv !== item.pvalue) { item.pvalue = pv; recordBar(item, pv); } // история — по общим правилам
@@ -5359,6 +5655,16 @@ function onClick(e) {
       } else if (ui.editNorm !== null) {
         item.normPerWeek = Math.max(1, Math.min(7, ui.editNorm)); // ежедневная привычка: норма недели
       }
+      // расписание пишется ОТРЕЗКОМ с сегодняшнего дня; прежние не трогаются.
+      // Зажатие нормы — это смена нормы со всеми её последствиями (серия
+      // недель пересчитывается ретроактивно), поэтому оно НАЗЫВАЕТСЯ вслух,
+      // а не происходит молча (B.2.4).
+      let clamped = null;
+      if (item.type === 'daily' && ui.editDays !== null && ui.editDays !== scheduleNow(item)) {
+        const wasNorm = item.normPerWeek || 7;
+        setSchedule(item, ui.editDays); // внутри — clampNorm и save
+        if (item.area === 'habit' && item.normPerWeek !== wasNorm) clamped = wasNorm;
+      }
       // блок — поле всех форм, а не только минимума (задача 19, B.3): блоки
       // работали на «Привычках», но назначить их привычке и параметру было
       // нечем. Без поля в форме readGroupField возвращает прежнее значение.
@@ -5368,7 +5674,12 @@ function onClick(e) {
       ui.editNorm = null;
       ui.groupPick = null;
       ui.groupNew = false;
+      ui.editDays = null;
       flashWrite('item:' + id); // тихое подтверждение у той же строки (задача 26)
+      if (clamped !== null) {
+        // не тихое «Сохранено», а сказанное последствие: норма изменилась
+        flashOk('item:' + id, `Норма ${clamped} → ${item.normPerWeek}: столько дней в расписании`);
+      }
       keepInPlace(b, renderSettings);
       break;
     }
@@ -5419,13 +5730,14 @@ function onClick(e) {
           note, group: readGroupField('f', ''),
           type: 'param', area: 'habit', pkind, pvalue,
           pstep: Math.round(st),
-          goal: null, removedAt: null, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+          goal: null, removedAt: null, addedAt: todayKey(), at: '', raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
           history: [{ date: todayKey(), value: pvalue }]
         };
       } else if (ui.addArea === 'habit') {
         item = {
           id: uid(), name, value: null, unit: '', note, group: readGroupField('f', ''),
           type: 'daily', area: 'habit', normPerWeek: 7, // каноническая форма привычки (инвариант 11)
+          schedule: [{ from: todayKey(), mask: WEEK_ALL }], at: '',
           goal: null, removedAt: null, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: []
         };
       } else {
@@ -5449,9 +5761,11 @@ function onClick(e) {
           note,
           group: readGroupField('f', ''),
           type, area: 'min', goal,
-          removedAt: null, addedAt: todayKey(), raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+          removedAt: null, addedAt: todayKey(), at: '', raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
           history: (typeof value === 'number') ? [{ date: todayKey(), value }] : []
         };
+        // маска — только у ежедневного; недельный счётчик свободен по дням
+        if (type === 'daily') item.schedule = [{ from: todayKey(), mask: WEEK_ALL }];
       }
       store.items.push(item);
       save();
@@ -5739,6 +6053,11 @@ if (typeof module !== 'undefined' && module.exports) {
     moveItem, canMoveItem, reorderItem, reorderGroup, reorderExercise,
     // уход и возврат (инвариант 12, задача 28.E/A)
     live, livedOn, removeItem, restoreItem, removeExercise, restoreExercise,
+    // расписание пункта (задача 29/B, инвариант 12): отрезки, действовавшая
+    // маска, применимость дня, пороги планки как доли от дней маски
+    weekdayOf, WEEK_ALL, isMask, maskDays, normSchedule, normTime,
+    scheduleOn, scheduleNow, dueOn, dueNow, weekMaskDays, setSchedule, clampNorm,
+    raiseNeed, lowerNeed,
     recordBar, parsePositive, isDayKey, load,
     mirrorRead, mirrorWrite, flushMirror,
     closedWeeks, itemWeekCount,
