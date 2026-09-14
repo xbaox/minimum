@@ -74,5 +74,9 @@
   {
     "version": "minimum-v46",
     "hash": "d31afc5e44304894bf22a8b4f4e061ff4e9028ad28f60c47a6683345b1983606"
+  },
+  {
+    "version": "minimum-v47",
+    "hash": "cb863d42a6b4afaa260b3d216d6b2952334a1c7f6bc605c28659791d0d9fa0ca"
   }
 ]
