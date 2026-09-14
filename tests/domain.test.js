@@ -3774,7 +3774,9 @@ test('З23/1.4: значения по умолчанию — рантайм пр
     FLASH_MS: 1200,            // сколько держится «Сохранено» при reduced-motion
     DRAG_HOLD: 250,            // удержание до захвата
     DRAG_CLICK_MS: 300,        // подавление клика после перетаскивания
-    DAY_CLOSE_MS: 360          // вся сцена закрытия дня (задача 28.E/C)
+    DAY_CLOSE_MS: 360,         // вся сцена закрытия дня (задача 28.E/C)
+    UPDATE_CHECK_MS: 600000,   // автопроверка обновления — не чаще раза в 10 минут (задача Р3)
+    VERSION_ASK_MS: 1000       // сколько ждать номер версии у воркера (задача Р3)
   });
   // без подмены значения этой загрузки равны умолчаниям
   assert.deepEqual(app.TIMING, app.TIMING_DEFAULTS);
@@ -8234,7 +8236,13 @@ test('Р2/рецензия: переименование — убранный о
   clearLocalStorage();
 });
 
-test('Р2/рецензия: переименование — убранный одноимённый блок держит глобальные пункты, ушедшие с ним в один день, и только их', () => {
+/* Было «убранный одноимённый блок держит глобальные пункты, ушедшие с ним в
+   один день, и только их». Решение архитектора по вопросу Р2 № 3 (задача Р3,
+   п. 0.3): держит только живой блок живого режима — убранный не держит никого,
+   в том числе ушедших с ним в один день. Сценарий тот же; изменились ожидания
+   у «h»: она идёт за переименованием, стоит в «Убранных» под новым именем, а
+   возврат «Утра» режима x её уже не уводит. «h2» — как было. */
+test('Р3/0.3: переименование — убранный одноимённый блок не держит глобальных пунктов, в том числе ушедших с ним в один день', () => {
   const s = r2Store();
   s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Каникулы')];
   const since = '2026-08-31';
@@ -8250,13 +8258,16 @@ test('Р2/рецензия: переименование — убранный о
   assert.equal(byIdOf('h').removedAt, R2_T, 'живого одноимённого нет — привычка ушла с блоком');
   assert.equal(app.addGroup('Утро', '', undefined, 'main'), true, 'одноимённый блок заведён в основном');
   assert.deepEqual(app.updateGroup('Утро', { name: 'Рассвет' }, 'main'), { ok: true, name: 'Рассвет' });
-  assert.equal(byIdOf('h').group, 'Утро', 'ушедшая с «Утром» x в тот же день — при нём: её вернёт его возврат');
-  assert.equal(byIdOf('h2').group, 'Рассвет', 'убранная поштучно в другой день — идёт за переименованием');
-  assert.equal(app.goneBesideBlock(byIdOf('h')), false, 'в «Убранных» её нет — дорога назад через блок');
+  assert.equal(byIdOf('h').group, 'Рассвет', 'ушедшая с «Утром» x в тот же день — идёт за переименованием: убранный блок не держит');
+  assert.equal(byIdOf('h2').group, 'Рассвет', 'убранная поштучно в другой день — тоже');
+  assert.equal(byIdOf('ax').group, 'Утро', 'действие режима x — при своём блоке');
+  assert.equal(app.goneBesideBlock(byIdOf('h')), true, 'дорога назад у неё одна — строка «Убранных» под новым именем');
   assert.equal(app.goneBesideBlock(byIdOf('h2')), true);
   assert.equal(app.restoreGroup('Утро', 'x'), true);
-  assert.deepEqual([byIdOf('h').removedAt, byIdOf('h').group], [null, 'Утро'], 'вернулась с блоком');
+  assert.deepEqual([byIdOf('h').removedAt, byIdOf('h').group], [R2_T, 'Рассвет'], 'возврат «Утра» x её не уводит: она при другом имени');
   assert.equal(byIdOf('h2').removedAt, '2026-09-13');
+  assert.equal(app.restoreItem('h').id, 'h', 'возвращается своей строкой — той же записью');
+  assert.deepEqual([byIdOf('h').removedAt, byIdOf('h').group], [null, 'Рассвет'], 'в тот же день — полная отмена, под живым «Рассветом»');
   clearLocalStorage();
 });
 
@@ -8312,6 +8323,124 @@ test('Р2/рецензия: hasLiveNamesake — живой одноимённы�
   clearLocalStorage();
 });
 
+/* ══ Задача Р3, п. 0: решения архитектора по вопросам Р2 ═══════════
+   Сегодня — понедельник 14.09.2026 (r2Store). */
+
+test('Р3/0.3: блок убранного режима имени не держит — уход одноимённого блока уводит глобальные пункты, возврат возвращает; «Убранные» — тем же правилом', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Каникулы', '2026-09-10')];
+  const since = '2026-08-31';
+  s.groups = [r2Block('Утро', 'main'), r2Block('Утро', 'x')];
+  s.items = [
+    r2Act('am', since, 'Утро', R1_WEEK, 'main'),
+    r2Act('ax', since, 'Утро', R1_WEEK, 'x'),
+    r1Item('h', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7 }),
+    r2Weekly('w', since, 'Утро', 2)
+  ];
+  const [um, ux] = s.groups;
+  const byIdOf = id => s.items.find(i => i.id === id);
+  assert.deepEqual([app.holdsName(um), app.holdsName(ux)], [true, false], 'живой блок убранного режима имени не держит');
+  assert.equal(app.holdsName(Object.assign({}, um, { removedAt: '2026-09-12' })), false, 'убранный блок — тоже');
+  assert.equal(app.hasLiveNamesake(um), false, 'тёзка «Утра» основного — в убранном режиме');
+  assert.equal(app.hasLiveNamesake(ux), true, 'для блока убранного режима тёзка основного жив');
+
+  assert.equal(app.removeGroup('Утро', 'main'), true);
+  assert.deepEqual(s.items.map(i => [i.id, i.removedAt]), [['am', R2_T], ['ax', null], ['h', R2_T], ['w', R2_T]],
+    'привычка и счётчик ушли вместе с блоком: держать их некому');
+  assert.deepEqual(['h', 'w'].map(id => app.goneBesideBlock(byIdOf(id))), [false, false], 'в «Убранных» их нет — дорога назад через блок');
+  assert.deepEqual(app.restoreSetOf(um).map(i => i.id), ['am', 'h', 'w'], 'возврат блока берёт их');
+  const shape = st => JSON.stringify({ groups: st.groups, items: st.items });
+  assert.equal(shape(app.migrate(JSON.parse(JSON.stringify(s)))), shape(s), 'старт ничего не оживляет');
+
+  advanceDays(1); // 15.09 — возврат позже заводит новые записи
+  assert.equal(app.restoreGroup('Утро', 'main'), true);
+  assert.deepEqual(s.items.filter(i => app.live(i)).map(i => [i.name, i.addedAt]).sort(),
+    [['am', '2026-09-15'], ['ax', since], ['h', '2026-09-15'], ['w', '2026-09-15']], 'глобальные пункты вернулись с блоком');
+
+  // правило читает режимы store, а не память: режим вернулся — его блок держит снова
+  assert.equal(app.restoreMode('x').ok, true);
+  assert.deepEqual([app.holdsName(ux), app.hasLiveNamesake(um)], [true, true]);
+  assert.equal(app.removeGroup('Утро', 'main'), true);
+  assert.equal(s.items.filter(i => (i.name === 'h' || i.name === 'w') && app.live(i)).length, 2, 'живой тёзка живого режима держит, как в Р2');
+
+  // режим тёзки убран уже после: привычка жива, держащего блока нет — она
+  // «без блока», а старт убранное «Утро» основного молча не оживляет
+  assert.equal(app.removeMode('x').ok, true);
+  const liveH = s.items.filter(i => i.name === 'h' && app.live(i));
+  assert.deepEqual(app.habitSections(liveH, 'main').map(x => x.name), [null], 'держащего нет — без блока');
+  assert.equal(shape(app.migrate(JSON.parse(JSON.stringify(s)))), shape(s), 'migrate считает живым и блок убранного режима: оживлять нечего');
+  clearLocalStorage();
+});
+
+test('Р3/0.3: переименование — блок убранного режима имени не держит: глобальные пункты идут за именем; тёзка живого режима держит, как прежде', () => {
+  const setup = xRemovedAt => {
+    const s = r2Store();
+    s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Каникулы', xRemovedAt)];
+    const since = '2026-08-31';
+    s.groups = [r2Block('Утро', 'main'), r2Block('Утро', 'x')];
+    s.items = [
+      r2Act('am', since, 'Утро', R1_WEEK, 'main'),
+      r2Act('ax', since, 'Утро', R1_WEEK, 'x'),
+      r1Item('h', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7 }),
+      r2Weekly('w', since, 'Утро', 2),
+      r1Item('hg', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7, removedAt: '2026-09-12' })
+    ];
+    return s;
+  };
+  const groupsOf = s => s.items.map(i => [i.id, i.group]);
+
+  let s = setup('2026-09-10');
+  assert.deepEqual(app.updateGroup('Утро', { name: 'Рассвет' }, 'main'), { ok: true, name: 'Рассвет' });
+  assert.deepEqual(groupsOf(s), [['am', 'Рассвет'], ['ax', 'Утро'], ['h', 'Рассвет'], ['w', 'Рассвет'], ['hg', 'Рассвет']],
+    'тёзка — в убранном режиме: глобальные пункты, живые и убранные, идут за именем; действие режима x — при своём блоке');
+  assert.deepEqual(app.habitSections(s.items.filter(i => i.area === 'habit' && app.live(i)), 'main')
+    .map(x => [x.name, x.group === s.groups[0], x.items.map(i => i.id)]),
+  [['Рассвет', true, ['h']]], 'привычка стоит под переименованным блоком, а не «без блока»');
+  assert.equal(app.goneBesideBlock(s.items.find(i => i.id === 'hg')), true, 'убранная — в «Убранных» под новым именем');
+  clearLocalStorage();
+
+  s = setup(null);
+  assert.deepEqual(app.updateGroup('Утро', { name: 'Рассвет' }, 'main'), { ok: true, name: 'Рассвет' });
+  assert.deepEqual(groupsOf(s), [['am', 'Рассвет'], ['ax', 'Утро'], ['h', 'Утро'], ['w', 'Утро'], ['hg', 'Утро']],
+    'живой тёзка живого режима держит все глобальные — и живые, и убранные');
+  clearLocalStorage();
+});
+
+test('Р3/0.2: habitSections — блоки активного режима (с блоком), затем прочие имена (без блока), пункты без блока последними; имя блока убранного режима — без блока', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('kan', 'Каникулы'), r2Mode('old', 'Прошлое', '2026-09-01')];
+  const since = '2026-08-31';
+  s.groups = [
+    r2Block('Лагерь', 'kan'), r2Block('Утро', 'main', [], null, '7:00'), r2Block('Школа', 'main'),
+    r2Block('Утро', 'kan', [], null, '9:00'), r2Block('Сад', 'old'), r2Block('Поле', 'main', [], '2026-09-05'),
+    r2Block('Пусто', 'main')
+  ];
+  const habit = (id, group, extra) => r1Item(id, since, group, R1_WEEK, Object.assign({ area: 'habit', normPerWeek: 7 }, extra || {}));
+  s.items = [
+    habit('hL', 'Лагерь'), habit('h0', ''), habit('hU', 'Утро'), r2Param('pS', since, 'Школа'),
+    habit('hC', 'Сад'), habit('hP', 'Поле'), habit('hN', 'Нигде'), habit('hU2', 'Утро')
+  ];
+  const lay = mode => app.habitSections(s.items, mode)
+    .map(x => [x.name, x.group ? x.group.mode + ':' + x.group.caption : null, x.items.map(i => i.id)]);
+  assert.deepEqual(lay('main'), [
+    ['Утро', 'main:7:00', ['hU', 'hU2']], ['Школа', 'main:', ['pS']], ['Лагерь', null, ['hL']],
+    [null, null, ['h0', 'hC', 'hP', 'hN']]
+  ], 'основной: его блоки по порядку с самим блоком, затем «Лагерь» без блока — подпись чужого режима не печатается; без блока — пустое имя, имя блока убранного режима, убранный блок и неизвестное имя');
+  assert.deepEqual(lay('kan'), [
+    ['Лагерь', 'kan:', ['hL']], ['Утро', 'kan:9:00', ['hU', 'hU2']], ['Школа', null, ['pS']],
+    [null, null, ['h0', 'hC', 'hP', 'hN']]
+  ], 'каникулы: порядок — их блоков, одноимённое «Утро» — их блок; каждая привычка под тем же именем');
+  assert.deepEqual(app.habitSections(s.items), app.habitSections(s.items, 'main'), 'режим не назван — активный');
+  assert.ok(!lay('main').some(x => x[0] === 'Пусто'), 'пустых секций нет');
+  assert.deepEqual(app.habitSections([], 'main'), []);
+  assert.equal(app.goneBesideBlock(habit('hG', 'Сад', { removedAt: '2026-09-10' })), true,
+    'имя живёт только в блоке убранного режима, убранного блока нет — строка «Убранных» остаётся дорогой назад');
+
+  assert.equal(app.restoreMode('old').ok, true);
+  assert.deepEqual(lay('main').map(x => x[0]), ['Утро', 'Школа', 'Лагерь', 'Сад', null], 'режим вернулся — имя его блока снова заголовок');
+  clearLocalStorage();
+});
+
 test('Р2/рецензия: режимы — содержание store: чистка, «Вернуть» и импорт кладут их в копию; стартовый основной содержанием не считается', () => {
   const mem = fakeLocalStorage();
   setNow(2026, 9, 14, 12, 0);
@@ -8355,5 +8484,133 @@ test('Р2/рецензия: режимы — содержание store: чис�
   delete mem[app.WIPE_KEY];
   assert.equal(app.keepPrev(app.store, 'import'), true);
   assert.deepEqual([app.wipedCopy().kind, app.wipedCopy().store.modes[0].name], ['import', 'Будни']);
+  clearLocalStorage();
+});
+
+/* ── Задача Р3, пп. 1–3: обновление приложения ─────────────────
+   Номер версии страница узнаёт у воркера и печатает коротким («v48»);
+   автопроверка обновления — не чаще раза в UPDATE_CHECK_MS. Обе функции
+   чистые: всё прочее живёт на service worker API и закреплено
+   интерфейсным уровнем (dom.test.js, подмена navigator.serviceWorker). */
+
+test('Р3/2: versionLabel — «minimum-vN» → «vN», всё вне формата — null', () => {
+  assert.equal(app.versionLabel('minimum-v48'), 'v48');
+  assert.equal(app.versionLabel('minimum-v49'), 'v49');
+  assert.equal(app.versionLabel('minimum-v1'), 'v1');
+  assert.equal(app.versionLabel('minimum-v100'), 'v100', 'номер любой длины');
+  // формат замка версии (tools/deploy-hash.mjs): строго minimum-v{целое}
+  for (const bad of ['minimum-v48a', 'minimum-48', 'v48', 'minimum-v', 'Minimum-v48', ' minimum-v48',
+    'minimum-v48 ', 'minimum-v4.8', 'other-v48', '']) {
+    assert.equal(app.versionLabel(bad), null, JSON.stringify(bad));
+  }
+  // чужой ответ воркера: не строка — не номер
+  for (const bad of [undefined, null, 48, {}, ['minimum-v48'], true]) {
+    assert.equal(app.versionLabel(bad), null, String(bad));
+  }
+});
+
+test('Р3/2: updateCheckDue — первая проверка сразу, дальше не чаще UPDATE_CHECK_MS; часы назад и мусор не запирают', () => {
+  const N = app.TIMING_DEFAULTS.UPDATE_CHECK_MS;
+  assert.equal(N, 600000, 'рантайм — 10 минут');
+  const t0 = 1_800_000_000_000;
+  // первой проверки не было
+  assert.equal(app.updateCheckDue(null, t0), true);
+  assert.equal(app.updateCheckDue(undefined, t0), true);
+  assert.equal(app.updateCheckDue(NaN, t0), true);
+  // сразу после — рано, граница включительно пропускает
+  assert.equal(app.updateCheckDue(t0, t0), false, 'в тот же миг');
+  assert.equal(app.updateCheckDue(t0, t0 + 1), false);
+  assert.equal(app.updateCheckDue(t0, t0 + N - 1), false, 'на миллисекунду раньше срока');
+  assert.equal(app.updateCheckDue(t0, t0 + N), true, 'ровно через 10 минут — пора');
+  assert.equal(app.updateCheckDue(t0, t0 + N * 6), true);
+  // часы ушли назад: метка из «будущего» не запирает автопроверку на весь сдвиг
+  assert.equal(app.updateCheckDue(t0, t0 - 1), true);
+  assert.equal(app.updateCheckDue(t0, t0 - 86400000), true);
+  // нечисловое «сейчас» — проверка разрешена: лишний update() ничего не стоит
+  assert.equal(app.updateCheckDue(t0, NaN), true);
+  // чистая: вход не меняется, ответ повторяем
+  assert.equal(app.updateCheckDue(t0, t0 + 5), app.updateCheckDue(t0, t0 + 5));
+});
+
+/* ── Р3/рецензия: ремонт после рецензии ─────────────────────── */
+
+/* Раскладка и соседство привычек — одно правило. С задачи Р3 имя, которое
+   держит только блок убранного режима, стоит в «Без блока» рядом с
+   пунктами без блока; соседи по сырому item.group оставляли такую строку
+   посреди списка с обеими неактивными стрелками, а соседнюю уводили через
+   её голову (замер рецензии: A↓ давало [B, L, A]). */
+test('Р3/рецензия: соседи привычки и параметра — строки её секции habitSections; имя блока убранного режима — соседи «Без блока»; режим вернулся — снова свой блок', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('kan', 'Каникулы')];
+  const since = '2026-08-31';
+  s.groups = [r2Block('Утро', 'main'), r2Block('Лагерь', 'kan')];
+  const habit = (id, group, extra) => r1Item(id, since, group, R1_WEEK, Object.assign({ area: 'habit', normPerWeek: 7 }, extra || {}));
+  s.items = [
+    habit('A', ''), habit('L', 'Лагерь'), habit('G', '', { removedAt: '2026-09-10' }), r2Param('P', since, ''),
+    habit('U', 'Утро'), habit('B', '')
+  ];
+  const byId = id => s.items.find(i => i.id === id);
+  const order = () => s.items.map(i => i.id).join('');
+  const arrows = id => [app.canMoveItem(id, 'up'), app.canMoveItem(id, 'down')];
+
+  // режим «Каникулы» жив: «Лагерь» — своя секция, L в ней один
+  assert.equal(app.habitSectionName(byId('L')), 'Лагерь');
+  assert.deepEqual(arrows('L'), [false, false], 'один в своём блоке — двигать некуда');
+  assert.deepEqual(['A', 'P', 'B'].map(arrows), [[false, true], [true, true], [true, false]], '«Без блока» — A, P, B');
+
+  assert.equal(app.removeMode('kan').ok, true);
+  assert.equal(app.habitSectionOf(byId('L')).name, null, 'держащего блока нет — L в «Без блока»');
+  assert.equal(app.habitSectionName(byId('L')), '', 'имя секции для перетаскивания — «Без блока»');
+  assert.equal(app.habitSectionName(byId('U')), 'Утро');
+  assert.deepEqual(['A', 'L', 'P', 'B'].map(arrows), [[false, true], [true, true], [true, true], [true, false]],
+    'в видимом списке A, L, P, B у каждой строки стрелки — к видимому соседу; ни одна живая не заперта');
+  assert.deepEqual(arrows('U'), [false, false], 'чужая секция в соседи не попадает');
+  assert.deepEqual(arrows('G'), [false, false], 'убранный не двигается и соседом не считается');
+
+  assert.equal(app.moveItem('A', 'down'), true);
+  assert.equal(order(), 'LAGPUB', 'A встал за L — на одну строку, а не через голову L');
+  assert.equal(app.moveItem('L', 'up'), false, 'L теперь первый в «Без блока»');
+  assert.equal(app.moveItem('P', 'down'), true);
+  assert.equal(order(), 'LAGBUP', 'P перепрыгнул U чужой секции и убранного G не трогал — обмен с B');
+  assert.equal(app.reorderItem('L', 3), true);
+  assert.equal(order(), 'ABGPUL', 'перетаскивание — позиция среди тех же четырёх');
+  assert.equal(byId('G'), s.items[2], 'убранный остался на своём месте items[]');
+
+  // режим вернулся — L снова под «Лагерем», и соседи у него только свои
+  assert.equal(app.restoreMode('kan').ok, true);
+  assert.equal(app.habitSectionName(byId('L')), 'Лагерь');
+  assert.deepEqual(arrows('L'), [false, false]);
+  assert.deepEqual(['A', 'B', 'P'].map(arrows), [[false, true], [true, true], [true, false]]);
+  // пункт не из store секции не имеет
+  assert.equal(app.habitSectionOf(habit('X', '')), null);
+  assert.equal(app.habitSectionName(habit('X', '')), '');
+  clearLocalStorage();
+});
+
+/* Ветка holdsName «режима блока нет в store.modes — блок читается живым»
+   (выживший мутант R3-блок-без-записи-режима-не-держит). После migrate она
+   недостижима — неизвестный режим переводится в основной, — но holdsName
+   читает store напрямую, и запись, собранная без режима (или с режимом,
+   которого нет), держит имя, как блок без поля читается основным. */
+test('Р3/рецензия: holdsName — блок живой записи с режимом, которого нет в store.modes, держит имя; hasLiveNamesake и уход блока его учитывают', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной')];
+  const since = '2026-08-31';
+  s.groups = [r2Block('Утро', 'main'), r2Block('Утро', 'ghost'), r2Block('Сон', 'ghost')];
+  s.items = [
+    r2Act('am', since, 'Утро', R1_WEEK, 'main'),
+    r1Item('h', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7 }),
+    r1Item('hs', since, 'Сон', R1_WEEK, { area: 'habit', normPerWeek: 7 })
+  ];
+  const [um, ug, sg] = s.groups;
+  assert.equal(app.holdsName(ug), true, 'режима нет в store — блок живой записи держит');
+  assert.equal(app.holdsName(sg), true);
+  assert.equal(app.holdsName(Object.assign({}, ug, { removedAt: '2026-09-12' })), false, 'убранный — нет, режим тут ни при чём');
+  assert.equal(app.hasLiveNamesake(um), true, 'тёзка без записи режима — живой тёзка');
+  assert.deepEqual(app.habitSections(s.items.filter(i => i.area === 'habit'), 'main').map(x => [x.name, x.items.map(i => i.id)]),
+    [['Утро', ['h']], ['Сон', ['hs']]], '«Сон» — заголовок, а не «Без блока»');
+  assert.equal(app.removeGroup('Утро', 'main'), true);
+  assert.deepEqual(s.items.map(i => [i.id, i.removedAt]), [['am', R2_T], ['h', null], ['hs', null]],
+    'привычку держит тёзка — с блоком основного она не уходит');
   clearLocalStorage();
 });

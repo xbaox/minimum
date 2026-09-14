@@ -184,6 +184,11 @@ h2 {
 }
 .bar-note b { font-size: 22px; font-weight: 650; color: var(--fg); }
 .bar-note.ok { color: var(--accent); font-weight: 600; }
+/* Хвост « · пропусков K» счёта «Сегодня» (задача Р3, п. 0.5) — приглушён
+   существующим --muted явно, а не наследованием: число N — --fg, хвост —
+   справка, и тон его не должен зависеть от того, что станет с родителем.
+   У «День закрыт» хвоста нет вовсе — акцентное слово экрана одно. */
+.bar-skip { color: var(--muted); }
 
 /* ── Баннер разбора ────────────────────────────────────────── */
 
@@ -284,6 +289,14 @@ h2 {
 }
 .bfold .g-cap { min-width: 0; text-align: left; }
 .bf-count { margin-left: auto; white-space: nowrap; }
+/* Признак точки «вчера — пропуск» на свёрнутой строке (задача Р3, п. 0.1):
+   тот же кружок, что у точки строки (.dot i — одно правило на оба), справа
+   от счёта. Цель одна — сама строка, поэтому это не кнопка, а знак; коробка
+   20 px ставит центр кружка в 10 px от правого края — туда же, где центр
+   точки у строки пункта (44 px с margin-right: -12px), и признак не
+   прыгает при свёртке. Тон — нейтральный --dot, без акцента и без нового
+   цвета: приглушён, как вся свёрнутая строка. */
+.bf-miss { flex: none; display: grid; place-items: center; width: 20px; height: 20px; }
 
 .rowwrap { display: flex; flex-wrap: wrap; align-items: center; gap: 0 14px; } /* зазор текст–точка как до выноса из label */
 .rowwrap > .row { flex: 1 1 auto; min-width: 0; }
@@ -388,7 +401,7 @@ h2 {
   border-radius: 50%;                    /* форма отклика на нажатие (задача 26, п. 6) */
   cursor: pointer;
 }
-.dot i { width: 7px; height: 7px; border-radius: 50%; background: var(--dot); }
+.dot i, .bf-miss i { width: 7px; height: 7px; border-radius: 50%; background: var(--dot); }
 .miss-note { font-size: 13px; color: var(--muted); padding: 0 0 10px 40px; margin-top: -6px; }
 .miss-note .undo { display: inline-block; margin: 0 0 0 6px; vertical-align: middle; } /* 6 + 8px padding = прежние 14px до подписи */
 
@@ -1113,6 +1126,33 @@ body.dragging { -webkit-user-select: none; user-select: none; }
   line-height: 1.55;
   color: var(--fg);
 }
+
+/* ── Версия и обновление (задача Р3) ───────────────────────────
+   Строка «Минимум · v48» внизу «Системы», результат «Проверить обновления»
+   и предложение над экранами (#update-note) говорят одним тоном: текст
+   --muted на --text-sm, «Обновить» — .btn.primary, единственный акцент
+   строки. Новых цветов, кеглей и токенов нет. На 375 px ряд переносится
+   целиком: кнопка уходит под текст, а не сжимает его в столбик. */
+.appver {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-top: var(--gap-section);
+}
+.appver > .muted { margin: 0; }
+.upd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  color: var(--muted);
+}
+/* глобального правила [hidden] в файле нет — flex перебил бы атрибут */
+.upd[hidden] { display: none; }
 
 /* ── Вкладки ───────────────────────────────────────────────── */
 

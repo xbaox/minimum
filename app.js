@@ -1109,6 +1109,10 @@ function migrate(s, opts) {
     }
     for (const g of s.groups) if (g.removedAt !== null && liveActions.has(JSON.stringify([g.mode, g.name]))) g.removedAt = null;
     for (const name of liveGlobal) {
+      // живым здесь считается и блок УБРАННОГО режима — осознанно, не holdsName
+      // (задача Р3, п. 0.3): привычка, чей единственный живой тёзка остался в
+      // убранном режиме, стоит на экранах «без блока», но убранный блок другого
+      // режима старт за владельца не оживляет — вернуть режим или блок решает он
       if (s.groups.some(g => g.name === name && g.removedAt === null)) continue;
       const g = s.groups.find(x => x.name === name);
       if (g) g.removedAt = null;
@@ -2943,21 +2947,21 @@ function renameGroupCore(g, from, to) {
   const m = blockMode(g);
   // Глобальные пункты (привычки, параметры, счётчики) ссылаются на блок
   // только именем, а одноимённый блок может жить и в другом режиме (Р2).
-  // Имя остаётся прежним у того пункта, которого ДЕРЖИТ одноимённый блок:
-  // живой — любого пункта; убранный — только убранного с ним в один день,
-  // то есть того, кого вернёт его возврат (restoreSetOf). Убранный блок
-  // живого пункта не держит (Р2/рецензия): прежде «живого или убранного»
-  // оставляло живую привычку при имени, у которого нет ни одного живого
-  // блока, — на экранах она выпадала из блока, где только что стояла, а
-  // следующий старт молча оживлял убранный блок (migrate, инвариант 13)
-  const heldByNamesake = it => store.groups.some(x => x !== g && x.name === from &&
-    (live(x) || (!live(it) && x.removedAt === it.removedAt)));
+  // Имя остаётся прежним у всех глобальных пунктов, если их ДЕРЖИТ
+  // одноимённый блок — живой блок живого режима (holdsName, задача Р3,
+  // п. 0.3). Убранный блок не держит никого (Р2/рецензия: живую привычку
+  // при имени без единого живого блока следующий старт оживил бы вместе с
+  // блоком), и с задачи Р3 — даже пункт, ушедший с ним в один день: такой
+  // пункт идёт за переименованием и встаёт в «Убранные» под новым именем
+  // (goneBesideBlock), а возврат того блока его уже не уводит назад. Блок
+  // убранного режима не держит тоже: владелец его не видит нигде.
+  const held = store.groups.some(x => x !== g && x.name === from && holdsName(x));
   for (const it of store.items) {
     if (isAction(it)) {
       if (itemMode(it) !== m) continue; // действия чужого режима — при своём блоке
       if (groupNameOf(it) === from) it.group = to;
       if (Array.isArray(it.groupLog)) for (const e of it.groupLog) if (e.group === from) e.group = to;
-    } else if (groupNameOf(it) === from && !heldByNamesake(it)) {
+    } else if (groupNameOf(it) === from && !held) {
       it.group = to;
     }
   }
@@ -3045,9 +3049,25 @@ function updateGroup(oldName, patch, mode) {
 /* Живой одноимённый блок в ДРУГОМ месте store — в другом режиме (Р2).
    Одно правило на уход блока (глобальные пункты уходят, только если такого
    нет) и на слова его последствия в форме: названное между тапами обязано
-   совпадать с тем, что сделает второй тап (Р2/рецензия). */
+   совпадать с тем, что сделает второй тап (Р2/рецензия). «Живой» — в смысле
+   holdsName (задача Р3, п. 0.3): живой блок ЖИВОГО режима. */
 function hasLiveNamesake(g) {
-  return store.groups.some(x => x !== g && live(x) && x.name === g.name);
+  return store.groups.some(x => x !== g && x.name === g.name && holdsName(x));
+}
+
+/* Держит ли блок глобальные пункты своим именем (задача Р3, п. 0.3, решение
+   архитектора): только ЖИВОЙ блок ЖИВОГО режима. Убранный блок не держит —
+   в том числе ушедший в тот же день, что пункт; блок убранного режима не
+   держит тоже: его режим нельзя выбрать, блока владелец не видит нигде, и
+   держать под ним привычки значило бы прятать их за невидимым. Одно правило
+   на уход блока (hasLiveNamesake), переименование (renameGroupCore),
+   «Убранные» (goneBesideBlock) и заголовки привычек (habitSections).
+   Режима нет в store (запись собрана руками без modes) — читается живым,
+   как блок без поля читается основным. */
+function holdsName(g) {
+  if (!g || !live(g)) return false;
+  const m = findMode(blockMode(g));
+  return !m || live(m);
 }
 
 function groupJoinRefusal(name, mode) {
@@ -3063,7 +3083,9 @@ function groupJoinRefusal(name, mode) {
    С режимами (Р2): действия — только режима блока. Глобальные пункты
    (привычки, параметры, счётчики) ссылаются на блок именем и уходят,
    только если живого блока с этим именем не остаётся НИ В ОДНОМ режиме:
-   иначе уход блока одного режима увёл бы их из-под одноимённого другого. */
+   иначе уход блока одного режима увёл бы их из-под одноимённого другого.
+   Живого — живого режима (holdsName, задача Р3, п. 0.3): блок убранного
+   режима глобальных пунктов не держит, и они уходят вместе с блоком. */
 function removeGroup(name, mode) {
   const g = findGroup(name, mode);
   if (!g || !live(g)) return false;
@@ -3239,6 +3261,39 @@ function groupedItems(items, mode) {
   return out;
 }
 
+/* Раскладка привычек и параметров по блокам — ОДНА на дневной экран
+   «Привычки» и секцию «Привычки» «Настроек» (задача Р3, п. 0.2, решение
+   архитектора). Привычки глобальны, и блок у них — только имя (инвариант
+   20): раскладка по блокам одного активного режима (groupedItems) уводила
+   на дневном экране в секцию без заголовка привычку, чей блок живёт в
+   другом режиме, хотя «Настройки» показывали её под этим именем.
+
+   Секции по порядку: живые блоки АКТИВНОГО режима в порядке store.groups
+   (group — сам блок: дневной экран печатает его подпись); затем прочие
+   имена, у которых есть блок, держащий имя (holdsName: живой блок живого
+   режима), в порядке store.groups, одно имя — одна секция (group: null —
+   подпись у разных режимов своя, и печатать чужую нельзя); последней —
+   пункты без блока (name: null): пустое имя и имя, которого не держит ни
+   один блок. Смена режима меняет порядок секций, но привычку не прячет и
+   в «Без блока» не переносит. Пустые секции не рождаются. Чистая функция
+   от store.groups, режимов и переданных пунктов; какие пункты печатать
+   (живые, убранные с коротким путём) — решает место вызова. */
+function habitSections(items, mode) {
+  const m = mode === undefined ? activeMode() : mode;
+  const out = [];
+  const known = new Set();
+  const own = store.groups.filter(g => live(g) && blockMode(g) === m);
+  for (const g of own.concat(store.groups.filter(holdsName))) {
+    if (known.has(g.name)) continue;
+    known.add(g.name);
+    const list = items.filter(it => groupNameOf(it) === g.name);
+    if (list.length) out.push({ name: g.name, group: own.includes(g) ? g : null, items: list });
+  }
+  const loose = items.filter(it => !known.has(groupNameOf(it)));
+  if (loose.length) out.push({ name: null, group: null, items: loose });
+  return out;
+}
+
 /* ── Быстрое добавление («Расписание 1/3») ─────────────────────
    Строки владельца → действия. Разделитель подписи — ПЕРВОЕ вхождение
    любого из четырёх знаков с пробельными символами по бокам: « · » (точка
@@ -3284,6 +3339,26 @@ function addActions(groupName, lines, mode) {
   return [];
 }
 
+/* Секция привычки или параметра в раскладке habitSections — той самой,
+   что рисует секцию «Привычки» «Настроек» (Р3/рецензия). Соседи стрелок и
+   перетаскивания у привычек берутся из неё, а не из сырого item.group: с
+   задачи Р3 имя, которое держит только блок убранного режима, стоит в
+   «Без блока» рядом с пунктами без блока, и соседство по имени оставляло
+   такую строку посреди списка с обеими неактивными стрелками, а соседнюю
+   уводило через её голову (инвариант 17: границы движения — список,
+   который видит владелец). Раскладка и соседство — одна функция, разойтись
+   им нечем. null — пункта нет среди привычек store. */
+function habitSectionOf(item) {
+  return habitSections(store.items.filter(x => x.area === 'habit')).find(x => x.items.includes(item)) || null;
+}
+
+/* Имя секции строки привычки для перетаскивания (data-dgroup): '' — «Без
+   блока». */
+function habitSectionName(item) {
+  const sec = habitSectionOf(item);
+  return sec && sec.name !== null ? sec.name : '';
+}
+
 /* Соседи пункта по перестановке — пункты того же блока и той же области
    (задача 16F). Блок пункт меняет полем «Блок» в форме правки, а не
    стрелками и не перетаскиванием: порядок и принадлежность — разные
@@ -3291,8 +3366,17 @@ function addActions(groupName, lines, mode) {
 /* С режимами (Р2) соседи — ещё и одной области режима: действие — среди
    действий своего режима и недельных счётчиков карточки; счётчик, глобальный
    для режимов, стоит в карточке одноимённого блока АКТИВНОГО режима и
-   соседствует с его действиями. Привычки и параметры — как прежде. */
+   соседствует с его действиями. Привычки и параметры — строки своей секции
+   habitSections (Р3/рецензия, habitSectionOf выше). */
 function siblingIndexes(item) {
+  if (item.area === 'habit') {
+    // убранный пункт соседом не считается и здесь
+    const sec = habitSectionOf(item);
+    const members = new Set(sec ? sec.items : []);
+    const out = [];
+    store.items.forEach((x, i) => { if (live(x) && members.has(x)) out.push(i); });
+    return out;
+  }
   const g = groupNameOf(item);
   const am = activeMode();
   const scope = x => (isAction(x) ? itemMode(x) : (x.area === 'min' ? am : null));
@@ -4329,6 +4413,14 @@ const ui = {
   mirrorRestoreConfirm: false, // «Восстановить из копии» — вторым тапом (28.A)
   mirrorKeepConfirm: false,    // «Оставить рабочую» — тоже: снапшот станет заменяемым
   mirrorFailed: false,         // восстановление не выполнено — молчать нельзя
+  // Обновление приложения (задача Р3). updateArmed — владелец нажал
+  // «Обновить»: только тогда controllerchange перезагружает страницу, иначе
+  // смена контроллера (чужой claim) не делает ничего. updateCheck — строка
+  // результата «Проверить обновления» в «Системе»: null | 'busy' | 'done' |
+  // 'failed'; живёт, пока владелец на «Настройках». Оба — память открытой
+  // страницы: в store не пишутся и перезапуск не переживают
+  updateArmed: false,
+  updateCheck: null,
   // свёрнутые секции «Настроек»: по умолчанию раскрыто только «Расписание».
   // «Блоки» и «Пункты» ушли — блоки стали карточками расписания, а
   // привычки получили свою секцию («Расписание 1/3», п. 2.3)
@@ -4561,9 +4653,19 @@ function motionLeave(node, done) {
   node.style.maxHeight = '0px';
   let fired = false;
   // done ровно один раз; если узел уже убран (напр. соседним решением,
-  // перерисовавшим весь разбор) — повторная перерисовка не нужна
-  const fin = () => { if (fired) return; fired = true; if (node.isConnected) done(); };
-  node.addEventListener('transitionend', fin, { once: true });
+  // перерисовавшим весь разбор) — повторная перерисовка не нужна.
+  // transitionend фильтруется по самому узлу (задача Р3, п. 0, риск 6 Р2),
+  // как у motionFold: переход ребёнка карточки (фокусная рамка, отклик
+  // кнопки) всплывает сюда же и оборвал бы уход раньше срока. Слушатель
+  // поэтому не { once: true } — чужое событие не должно его снимать
+  const fin = e => {
+    if (e && e.target !== node) return; // переход ребёнка всплыл — не наш
+    if (fired) return;
+    fired = true;
+    node.removeEventListener('transitionend', fin);
+    if (node.isConnected) done();
+  };
+  node.addEventListener('transitionend', fin);
   setTimeout(fin, MOTION_MS + MOTION_TAIL_MS);
 }
 
@@ -4819,7 +4921,7 @@ function renderToday() {
   // применимость ДНЯ, а не «есть сейчас» (задача 29/B): пункт вне
   // маски сегодняшнего дня не идёт ни в список, ни в знаменатель планки
   const items = dueDaily('min', t);
-  const { done, total, pct, closed } = todayCounts(items, t);
+  const { pct, closed, note } = todayCounts(items, t);
 
   // строка дня — ТРЕТЬЕЙ в шапке: над планкой и над списком. Ниже она
   // физически читалась бы как комментарий к сделанному (задача 28.E/B, п. 2.1).
@@ -4850,14 +4952,15 @@ function renderToday() {
   // измеряет, поэтому её нет вовсе (задача 16.1, состояние после чистки).
   // Список и планка стоят по ЗАПЛАНИРОВАННЫМ (items), а не по знаменателю:
   // всё пропущено — строки остаются на месте (вернуть можно только из них),
-  // планка пуста и честно говорит «0 из 0» (задача Р2). Строки блока, где
+  // планка пуста и честно говорит «0 из 0 · пропусков K» (задача Р2; хвост —
+  // задача Р3, п. 0.5). Строки блока, где
   // пропущено всё, свёрнуты в его строку («0 из 0 · пропусков K», п. 4) —
   // и возвращаются её развёрткой, а не пропадают
   if (items.length) {
     h += `
     <div class="dayline">
       <div class="bar"><i style="width:${pct}%"><b class="sheen" aria-hidden="true"></b></i></div>
-      <p class="bar-note${closed ? ' ok' : ''}" aria-live="polite">${closed ? 'День закрыт' : `<b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
+      <p class="bar-note${closed ? ' ok' : ''}" aria-live="polite">${note}</p>
     </div>`;
     h += `<div class="list">` + groupSections(items, t, false) + `</div>`;
   } else if (liveDaily().some(i => i.area === 'min' && itemMode(i) === modeOn(t))) {
@@ -4915,7 +5018,16 @@ function renderToday() {
    переданы применимые сегодня (dueDaily). */
 function groupSections(items, t, habit) {
   let h = '';
-  for (const sec of groupedItems(items)) {
+  // «Привычки» раскладываются тем же правилом, что секция «Привычки»
+  // «Настроек» (habitSections, задача Р3, п. 0.2): блоки активного режима с
+  // подписью, затем прочие имена без подписи, «Без блока» — последним и с
+  // заголовком, только когда выше стоят блоки. «Сегодня» — блоками своего
+  // режима (groupedItems): действия принадлежат режиму, пункты без блока
+  // стоят в секции без заголовка, как прежде
+  const secs = habit
+    ? habitSections(items)
+    : groupedItems(items).map(s => ({ name: s.group ? s.group.name : null, group: s.group, items: s.items }));
+  for (const sec of secs) {
     // Выполненный блок «Сегодня» — одной строкой (задача Р2, п. 4). Только
     // блок и только на «Сегодня»: пункты без блока не сворачиваются, а на
     // «Привычках» «все отмечены» нормой не является (та же причина, по
@@ -4924,13 +5036,21 @@ function groupSections(items, t, habit) {
     // выполненный блок уже свёрнут и ничего не проигрывает
     if (sec.group && !habit) {
       const b = blockTally(sec.items, t);
-      if (b.full && !unfoldedToday(sec.group.name)) { h += foldRow(sec.group, b); continue; }
+      if (b.full && !unfoldedToday(sec.group.name)) {
+        // точка «вчера — пропуск» не прячется свёрткой (задача Р3, п. 0.1)
+        h += foldRow(sec.group, b, sec.items.some(it => missedYesterday(it, t)));
+        continue;
+      }
     }
-    if (sec.group) {
-      const cap = (sec.group.caption || '').trim();
-      h += `<p class="g-label"><span>${esc(sec.group.name)}</span>${cap ? `<span class="g-cap">${esc(cap)}</span>` : ''}</p>`;
+    if (sec.name !== null) {
+      const cap = sec.group ? (sec.group.caption || '').trim() : '';
+      h += `<p class="g-label"><span>${esc(sec.name)}</span>${cap ? `<span class="g-cap">${esc(cap)}</span>` : ''}</p>`;
+    } else if (habit && h) {
+      // без блока — последними; заголовок нужен, только если выше стоят
+      // блоки: иначе строки читались бы продолжением последнего из них
+      h += `<p class="g-label"><span>Без блока</span></p>`;
     }
-    const chained = !!sec.group && sec.items.length > 1;
+    const chained = sec.name !== null && sec.items.length > 1;
     if (chained) h += `<div class="chain">`;
     for (const it of sec.items) h += dailyRow(it, t, habit, chained);
     if (chained) h += `</div>`;
@@ -4949,17 +5069,23 @@ function groupSections(items, t, habit) {
    aria-controls нет намеренно — строк блока в DOM нет, пока он свёрнут, и
    указывать было бы не на что (задача 26, п. 8.1). Имя для AT — словами,
    без знака: «Утро, 7:00: отмечено 5 из 5, пропусков 1». */
-function foldRow(g, b) {
+function foldRow(g, b, miss) {
   const cap = (g.caption || '').trim();
   const n = b.done;
   const k = b.skipped;
   const count = k
     ? `${n}&nbsp;из&nbsp;${n} · пропусков&nbsp;${k}`
     : `<span aria-hidden="true">&#10003;</span>&nbsp;${n}&nbsp;из&nbsp;${n}`;
-  const label = `${g.name}${cap ? ', ' + cap : ''}: отмечено ${n} из ${n}${k ? ', пропусков ' + k : ''}`;
+  // Точка «вчера — пропуск» (задача Р3, п. 0.1, решение архитектора): блок с
+  // ней сворачивается, как любой выполненный, но признак не прячется — тот
+  // же кружок, что у точки строки, справа от счёта. Это признак, а не вторая
+  // цель: подписи и «отметить» у него нет, тап по строке разворачивает блок,
+  // и ретро-отметка делается у самой строки пункта. Для AT — теми же словами,
+  // что у точки
+  const label = `${g.name}${cap ? ', ' + cap : ''}: отмечено ${n} из ${n}${k ? ', пропусков ' + k : ''}${miss ? ', вчера — пропуск' : ''}`;
   return `<button type="button" class="bfold" data-act="block-unfold" data-name="${esc(g.name)}" aria-expanded="false" aria-label="${esc(label)}">` +
     `<span class="bf-name">${esc(g.name)}</span>${cap ? `<span class="g-cap">${esc(cap)}</span>` : ''}` +
-    `<span class="bf-count">${count}</span></button>`;
+    `<span class="bf-count">${count}</span>${miss ? `<span class="bf-miss" aria-hidden="true"><i></i></span>` : ''}</button>`;
 }
 
 /* Строка ежедневного пункта: чекбокс, точка-маркер, ретро-отметка —
@@ -5409,6 +5535,13 @@ function renderTrain() {
    (сторож сравнивает их вывод). Пропущенные (задача Р2) выпадают из
    знаменателя тем же правилом, что в minDayMarks: «N из M» и «День закрыт»
    считают только непропущенные. */
+/* Счёт дня (задача Р3, п. 0.5, решение архитектора): «N из M», при
+   пропусках — «N из M · пропусков K» с приглушённым хвостом (.bar-skip),
+   при сплошных пропусках — «0 из 0 · пропусков K». Отдельной фразы нет:
+   «пропущено» запрещено, а «День закрыт» было бы неправдой. Закрытый день
+   — «День закрыт» без хвоста: акцентное слово экрана одно, и сцена та же.
+   Разметка счёта — тоже здесь (note): рендер и точечный путь печатают одну
+   строку, и расходиться им нечем. */
 function todayCounts(items, t) {
   let done = 0, skipped = 0;
   for (const i of items) {
@@ -5416,19 +5549,22 @@ function todayCounts(items, t) {
     else if (isSkipped(t, i.id)) skipped++;
   }
   const total = items.length - skipped;
-  return { done, total, pct: total ? Math.round(done / total * 100) : 0, closed: total > 0 && done === total };
+  const closed = total > 0 && done === total;
+  const tail = skipped ? `<span class="bar-skip"> · пропусков&nbsp;${skipped}</span>` : '';
+  const note = closed ? 'День закрыт' : `<b>${done}</b>&nbsp;из&nbsp;${total}${tail}`;
+  return { done, total, skipped, pct: total ? Math.round(done / total * 100) : 0, closed, note };
 }
 
 function updateDayline() {
   const t = todayKey();
   const items = dueDaily('min', t); // то же правило, что в renderToday: сторож сравнивает их вывод
-  const { done, total, pct, closed } = todayCounts(items, t);
+  const { pct, closed, note: text } = todayCounts(items, t);
   const bar = document.querySelector('#scr-today .bar i');
   if (bar) bar.style.width = pct + '%';
   const note = document.querySelector('#scr-today .bar-note');
   if (note) {
     note.classList.toggle('ok', closed);
-    note.innerHTML = closed ? 'День закрыт' : `<b>${done}</b>&nbsp;из&nbsp;${total}`;
+    note.innerHTML = text;
   }
 }
 
@@ -6463,7 +6599,14 @@ function blockCard(g, i, pos, count) {
    если блока с таким именем нет нигде. Блок убран во ВСЕХ режимах — строки нет:
    вернуть такой пункт в одиночку значило бы оставить живую ссылку на убранный
    блок, и следующий старт молча оживил бы блок (migrate), а владелец видел бы
-   блок, которого не возвращал. Дорога назад — возврат блока. */
+   блок, которого не возвращал. Дорога назад — возврат блока.
+   С задачи Р3 (п. 0.3) «жив» — в смысле holdsName: живой блок ЖИВОГО
+   режима. Блок убранного режима пункт не держит, и уход одноимённого блока
+   активного режима уводит пункт с собой (removeGroup) — значит, и дорога
+   назад у него через возврат того блока, а не строкой «Убранных». Строка
+   стоит и тогда, когда убранного блока с этим именем нет нигде: вернуть
+   пункт блоком было бы нечем, и прятать его значило бы оставить без дороги
+   назад (например, имя живёт только в блоке убранного режима). */
 function goneBesideBlock(it) {
   const name = groupNameOf(it);
   if (isAction(it)) {
@@ -6471,7 +6614,7 @@ function goneBesideBlock(it) {
     return !g || live(g);
   }
   const same = store.groups.filter(g => g.name === name);
-  return !same.length || same.some(live);
+  return same.some(holdsName) || !same.some(g => !live(g));
 }
 
 /* ── Переключатель режима (задача Р2) ─────────────────────────
@@ -6641,8 +6784,10 @@ function scheduleSection() {
    имени блока в мете: блок теперь стоит заголовком над строкой (п. 2.6) */
 function habitRow(it) {
   const vu = it.type === 'param' ? `порог ${fmtParam(it)}` : valUnit(it);
+  // data-dgroup — секция раскладки, а не сырое имя блока: соседи
+  // перетаскивания те же, что у стрелок (habitSectionOf, Р3/рецензия)
   return `
-      <div class="rowwrap drag-row" data-drag="item" data-drag-id="${esc(it.id)}" data-dgroup="${esc(groupNameOf(it))}">
+      <div class="rowwrap drag-row" data-drag="item" data-drag-id="${esc(it.id)}" data-dgroup="${esc(habitSectionName(it))}">
         <div class="row item">
           <button class="itxt" data-act="edit-open" data-id="${esc(it.id)}" aria-label="изменить «${esc(it.name)}»">
             <span class="tname">${esc(it.name)}</span>
@@ -6669,22 +6814,24 @@ function habitRow(it) {
    порядке store.groups. Смена режима меняет порядок заголовков, но привычка не
    пропадает и не переезжает в «Без блока»: её блок жив, пусть и в другом
    режиме. «Без блока» — пустое имя и имя, у которого живого блока нет нигде
-   (импорт), как было. Убранные — правилом goneBesideBlock, по всем режимам. */
+   (импорт), как было. Убранные — правилом goneBesideBlock, по всем режимам.
+   С задачи Р3 раскладка одна с дневным экраном (habitSections), и «живой
+   блок» в ней — живой блок ЖИВОГО режима (holdsName): имя, которое носит
+   только блок убранного режима, стоит в «Без блока». */
 function habitsSection() {
   const habits = store.items.filter(i => i.area === 'habit');
   const rowsOf = list => list.map(it => (live(it) ? habitRow(it) : (ui.goneNote === it.id ? goneNote(it, 'item') : ''))).join('');
-  const known = new Set();
   let h = '';
-  for (const g of liveGroups().concat(store.groups.filter(live))) {
-    if (known.has(g.name)) continue; // имя одно на заголовок, в каком бы режиме ни жил блок
-    known.add(g.name);
-    const rows = rowsOf(habits.filter(it => groupNameOf(it) === g.name));
-    if (rows) h += `<p class="g-label">${esc(g.name)}</p><div class="list">${rows}</div>`;
+  // раскладка — общая с дневным экраном «Привычки» (habitSections, задача
+  // Р3, п. 0.2); здесь заголовок — только имя, без подписи и без дней
+  for (const sec of habitSections(habits)) {
+    const rows = rowsOf(sec.items);
+    if (!rows) continue; // секция из одних убранных без короткого пути — не рисуется
+    if (sec.name !== null) h += `<p class="g-label">${esc(sec.name)}</p><div class="list">${rows}</div>`;
+    // без блока — последними. Заголовок «Без блока» нужен, только если выше
+    // стоят блоки: иначе строки читались бы продолжением последнего из них
+    else h += (h ? `<p class="g-label">Без блока</p>` : '') + `<div class="list">${rows}</div>`;
   }
-  // без блока — последними. Заголовок «Без блока» нужен, только если выше
-  // стоят блоки: иначе строки читались бы продолжением последнего из них
-  const looseRows = rowsOf(habits.filter(it => !known.has(groupNameOf(it))));
-  if (looseRows) h += (h ? `<p class="g-label">Без блока</p>` : '') + `<div class="list">${looseRows}</div>`;
   h += ui.addOpen
     ? addForm()
     : `<button class="btn wide" data-act="add-open" data-area="habit">Добавить привычку</button>`;
@@ -7308,7 +7455,23 @@ function systemSection() {
     }
     h += `</section>`;
   }
-  return h;
+  return h + versionBlock();
+}
+
+/* Последняя строка «Системы» (задача Р3): «Минимум · v48» и «Проверить
+   обновления», под ними — результат проверки строкой на месте. Номер —
+   ответ активного воркера, а не константа app.js: второго источника
+   версии в коде нет (sw.js, VERSION). Узел печатает рендер, число
+   приходит точечно (updateVersionLine) — по образцу строки резервной
+   копии. Service worker недоступен — кнопки нет: проверять нечем. */
+function versionBlock() {
+  const sw = swApi();
+  return `
+    <div class="appver">
+      <p class="muted" id="version-line">${esc(versionLineText())}</p>
+      ${sw ? `<button class="btn" data-act="update-check"${ui.updateCheck === 'busy' ? ' disabled' : ''}>Проверить обновления</button>` : ''}
+    </div>
+    ${sw ? `<p class="muted upd" id="update-check" role="status"${ui.updateCheck ? '' : ' hidden'}>${updateCheckHtml()}</p>` : ''}`;
 }
 
 /* ── Обработчики ───────────────────────────────────────────── */
@@ -8676,6 +8839,12 @@ function onClick(e) {
       renderSettings(); // обновить строку «Последний экспорт» (и погасить строку импорта)
       break;
 
+    // ── обновление приложения (задача Р3) ─────────────────────
+    // Обе — точечно: результат приходит асинхронно, и узел role="status"
+    // обязан пережить его, чтобы скринридер объявил изменение текста
+    case 'update-check': manualUpdateCheck(); break;
+    case 'update-apply': applyUpdate(); break;
+
     // ── чистка и её отмена (задача 16.1) ──────────────────────
     case 'wipe-open': ui.wipeOpen = true; ui.wipeConfirm = false; renderSettings(); break;
     case 'wipe-cancel': ui.wipeOpen = false; ui.wipeConfirm = false; renderSettings(); break;
@@ -8848,6 +9017,308 @@ function onInput(e) {
   }
 }
 
+/* ── Обновление приложения (задача Р3) ───────────────────────
+   Новая версия ПРЕДЛАГАЕТСЯ, а не применяется. До Р3 обновление было
+   тихим: воркер вытеснял старый сразу после установки (skipWaiting в
+   install), и новая версия доезжала при следующем запуске — или не
+   доезжала, пока iOS держал приложение в памяти. Теперь установленный
+   воркер ждёт, над экранами встаёт строка «Доступна версия vN —
+   Обновить», и перезагружается страница только по тапу владельца.
+
+   Инвариант: приложение НЕ ПЕРЕЗАГРУЖАЕТ СЕБЯ САМО. Перезагрузку зовёт
+   ровно одно место — controllerchange при взведённом ui.updateArmed (и
+   тап по «Обновить», когда воркер уже активирован другой вкладкой).
+   Без взвода смена контроллера не делает ничего: чужой claim — другой
+   вкладки, первой установки — не повод рвать владельцу форму под
+   пальцем, а перезагрузка по любому controllerchange при двух вкладках
+   давала бы петлю.
+
+   Проверка — registration.update(): при запуске, при возвращении из фона
+   (не чаще UPDATE_CHECK_MS — метка в памяти, не в store: это не данные
+   владельца) и по «Проверить обновления» в «Системе» (без троттлинга —
+   владелец спросил сам). Отказ сети у автопроверки молчит: офлайн —
+   обычное состояние приложения, а не событие. У ручной — говорит
+   строкой: владелец ждёт ответа.
+
+   Номер версии знает только воркер (sw.js, VERSION): страница спрашивает
+   его сообщением {type: 'version'} через MessageChannel. Не ответил за
+   VERSION_ASK_MS — номера нет, и строки говорят без него («Доступна
+   новая версия», «версия не определена»). Воркер v48 протокола не знает
+   вовсе, поэтому на переходе v48 → v49 ответа не будет — это ожидаемо. */
+
+const UPDATE_CHECK_MS = timing('UPDATE_CHECK_MS', 600000); // автопроверка — не чаще раза в 10 минут
+const VERSION_ASK_MS = timing('VERSION_ASK_MS', 1000);     // сколько ждать номер у воркера
+
+/* Перезагрузка — через хук, подменяемый тестом ДО загрузки app.js
+   объектом globalThis.MINIMUM_RELOAD (по образцу timing()): проверять
+   нужно именно то, КОГДА она зовётся, а jsdom location.reload не умеет.
+   Читается один раз при загрузке; в рантайме хука нет. */
+const RELOAD_HOOK = (typeof globalThis !== 'undefined' && typeof globalThis.MINIMUM_RELOAD === 'function')
+  ? globalThis.MINIMUM_RELOAD : null;
+
+function pageReload() {
+  if (RELOAD_HOOK) RELOAD_HOOK();
+  else location.reload();
+}
+
+/* «minimum-v48» → «v48». Формат — тот же, что у замка версии
+   (tools/deploy-hash.mjs, versionNumber); иное — null, и строка говорит
+   без номера, а не печатает владельцу мусор из чужого ответа. */
+function versionLabel(v) {
+  const m = /^minimum-(v\d+)$/.exec(typeof v === 'string' ? v : '');
+  return m ? m[1] : null;
+}
+
+/* Пора ли автопроверке: первой ещё не было — пора; прошло меньше
+   UPDATE_CHECK_MS — нет. Часы, ушедшие НАЗАД (now < last), и нечисловое
+   время проверку разрешают: метка из «будущего» иначе запирала бы
+   автопроверки на весь сдвиг часов, а лишний registration.update()
+   ничего не стоит. Чистая функция: время передаётся снаружи. */
+function updateCheckDue(last, now) {
+  if (typeof last !== 'number' || !isFinite(last)) return true;
+  const d = now - last;
+  return !(d >= 0 && d < UPDATE_CHECK_MS);
+}
+
+let swRegReady = null;    // Promise регистрации (null — service worker недоступен)
+let updateWaiting = null; // ожидающий воркер, которому сделано предложение
+let updateOffer = null;   // Promise показа предложения этому воркеру (номер спрошен)
+let updateVersion = null; // его номер ('v49') или null — не ответил
+let updateShown = false;  // номер получен или истёк таймаут — строка на экране
+let activeVersion;        // номер активного воркера: undefined — ждём, null — не определён
+let lastAutoCheck = null; // метка последней АВТОпроверки — память страницы, не store
+let reloading = false;    // перезагрузка уже позвана: второй controllerchange её не повторит
+
+function swApi() {
+  return (typeof navigator !== 'undefined' && navigator.serviceWorker) || null;
+}
+
+/* Номер у воркера: {type: 'version'} и порт MessageChannel для ответа.
+   Разрешается всегда — номером или null (таймаут, нет MessageChannel,
+   воркер недоступен). Порт закрывается в любом исходе: открытый порт
+   держал бы страницу, а в тестах — процесс. */
+function askVersion(target) {
+  return new Promise(resolve => {
+    let done = false, port = null;
+    const finish = v => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { if (port) port.close(); } catch {}
+      resolve(versionLabel(v));
+    };
+    const timer = setTimeout(() => finish(null), VERSION_ASK_MS);
+    try {
+      const ch = new MessageChannel();
+      port = ch.port1;
+      port.onmessage = ev => finish(ev && ev.data && ev.data.version);
+      target.postMessage({ type: 'version' }, [ch.port2]);
+    } catch { finish(null); }
+  });
+}
+
+/* Предложение ожидающему воркеру — только странице под живым
+   контроллером. Без него это первая установка: активировавшись, воркер
+   и так станет контроллером, обновлять нечего. Строка встаёт ОДИН раз —
+   когда номер получен или таймаут истёк: «новая версия», через секунду
+   переписанная в «v49», объявлялась бы скринридером дважды. */
+function offerUpdate(worker) {
+  const sw = swApi();
+  if (!worker || !sw || !sw.controller) return Promise.resolve();
+  if (updateWaiting === worker) return updateOffer;
+  updateWaiting = worker;
+  updateVersion = null;
+  updateShown = false;
+  // воркер, вытесненный более новым, становится лишним — предлагать его нельзя
+  if (typeof worker.addEventListener === 'function') {
+    worker.addEventListener('statechange', () => { if (worker.state === 'redundant') dropOffer(worker); });
+  }
+  updateOffer = askVersion(worker).then(v => {
+    if (updateWaiting !== worker) return;
+    updateVersion = v;
+    updateShown = true;
+    updateNote();
+  });
+  return updateOffer;
+}
+
+function dropOffer(worker) {
+  if (updateWaiting !== worker) return;
+  updateWaiting = null;
+  updateOffer = null;
+  updateVersion = null;
+  updateShown = false;
+  ui.updateArmed = false; // взвод принадлежал этому воркеру
+  updateNote();
+}
+
+/* Установка завершилась так или иначе: installed, activating, activated
+   или redundant. registration.update() разрешается, когда установка лишь
+   НАЧАТА, поэтому ручной проверке и updatefound нужен этот исход. */
+function installSettled(w) {
+  return new Promise(resolve => {
+    const settled = () => w.state !== 'installing';
+    if (settled()) { resolve(); return; }
+    const on = () => {
+      if (!settled()) return;
+      w.removeEventListener('statechange', on);
+      resolve();
+    };
+    w.addEventListener('statechange', on);
+  });
+}
+
+function watchInstalling(w) {
+  if (!w) return;
+  installSettled(w).then(() => { if (w.state === 'installed') offerUpdate(w); });
+}
+
+/* Проверка: update(), затем установка, если она началась, затем
+   ожидающий — предложение. Отказ (нет сети, нет регистрации) — reject. */
+async function runUpdateCheck() {
+  const reg = await swRegReady;
+  if (!reg || typeof reg.update !== 'function') throw new Error('нет регистрации');
+  await reg.update();
+  if (reg.installing) await installSettled(reg.installing);
+  if (reg.waiting) await offerUpdate(reg.waiting);
+}
+
+/* Автопроверка: троттлинг и молчание при отказе */
+function checkForUpdate(manual) {
+  if (!swRegReady) return Promise.resolve();
+  if (manual) return manualUpdateCheck();
+  const now = Date.now();
+  if (!updateCheckDue(lastAutoCheck, now)) return Promise.resolve();
+  lastAutoCheck = now;
+  return runUpdateCheck().catch(() => {});
+}
+
+/* «Проверить обновления»: кнопка неактивна, строка «Проверяю…», затем
+   результат на месте. Ушёл владелец с «Настроек», пока шла проверка, —
+   результат не сохраняется: говорить его некому, а увиденный позже, он
+   был бы устаревшим. Найденное предложение при этом остаётся — оно
+   живёт в #update-note, на любом экране. */
+function manualUpdateCheck() {
+  if (!swRegReady || ui.updateCheck === 'busy') return Promise.resolve();
+  ui.updateCheck = 'busy';
+  updateCheckLine();
+  return runUpdateCheck().then(() => 'done', () => 'failed').then(res => {
+    const here = ui.tab === 'settings' && !ui.reviewOpen && !ui.trainOpen;
+    ui.updateCheck = here ? res : null;
+    updateCheckLine();
+  });
+}
+
+/* «Обновить»: взвод, затем skipWaiting ожидающему. Перезагрузит страницу
+   controllerchange, когда новый воркер активируется и заберёт её (claim).
+   Воркер уже контроллер — его активировала другая вкладка, и
+   controllerchange прошёл без взвода: перезагрузка — по этому же тапу. */
+function applyUpdate() {
+  const w = updateWaiting;
+  if (!w) { updateNote(); return; }
+  ui.updateArmed = true;
+  updateNote(); // «Обновляю…»
+  const sw = swApi();
+  if (sw && sw.controller === w) {
+    if (!reloading) { reloading = true; pageReload(); }
+    return;
+  }
+  try { w.postMessage({ type: 'skipWaiting' }); }
+  catch { dropOffer(w); }
+}
+
+/* Текст и кнопка предложения — одна функция на #update-note и на строку
+   результата в «Системе»: «Обновить» там и там — одна операция. После
+   тапа кнопки нет: второе нажатие ничего бы не добавило. */
+function offerHtml(text) {
+  return ui.updateArmed
+    ? `<span>Обновляю…</span>`
+    : `<span>${esc(text)}</span><button class="btn primary" data-act="update-apply">Обновить</button>`;
+}
+
+/* Постоянный узел над экранами — точечно, по образцу storageNote().
+   Домен без DOM выходит сразу. Строку «Системы» ведёт тот же вызов:
+   предложение, найденное автопроверкой, меняет и её результат. */
+function updateNote() {
+  if (typeof document === 'undefined') return;
+  const p = el('update-note');
+  if (p) {
+    const on = !!updateWaiting && updateShown;
+    p.innerHTML = on ? offerHtml('Доступна ' + (updateVersion ? 'версия ' + updateVersion : 'новая версия')) : '';
+    p.hidden = !on;
+  }
+  updateCheckLine();
+}
+
+function updateCheckHtml() {
+  switch (ui.updateCheck) {
+    case 'busy': return '<span>Проверяю…</span>';
+    case 'failed': return '<span>Не удалось проверить — нет сети?</span>';
+    case 'done':
+      return updateWaiting && updateShown
+        ? offerHtml('Доступна ' + (updateVersion || 'новая версия'))
+        : '<span>Это последняя версия</span>';
+    default: return '';
+  }
+}
+
+/* Результат проверки и доступность кнопки — точечно: рендер печатает
+   ту же разметку той же функцией (versionBlock). Узлов нет (экран не
+   «Настройки» ещё не рисовался) — выходит молча. */
+function updateCheckLine() {
+  if (typeof document === 'undefined') return;
+  const p = el('update-check');
+  if (p) {
+    p.innerHTML = updateCheckHtml();
+    p.hidden = !ui.updateCheck;
+  }
+  const b = document.querySelector('#scr-settings [data-act="update-check"]');
+  if (b) b.disabled = ui.updateCheck === 'busy';
+}
+
+function versionLineText() {
+  const sw = swApi();
+  if (!sw || !sw.controller || activeVersion === null) return 'Минимум · версия не определена';
+  return activeVersion ? 'Минимум · ' + activeVersion : 'Минимум';
+}
+
+function updateVersionLine() {
+  if (typeof document === 'undefined') return;
+  const p = el('version-line');
+  if (p) p.textContent = versionLineText();
+}
+
+/* Запуск: слушатель controllerchange, номер активного воркера,
+   регистрация с updateViaCache: 'none' (скрипт воркера мимо HTTP-кэша —
+   иначе GitHub Pages с max-age отдавал бы прежний sw.js, и новая версия
+   не находилась бы до истечения кэша), ожидающий воркер и начатая
+   установка, первая автопроверка. */
+function startUpdates() {
+  const sw = swApi();
+  if (!sw) return;
+  sw.addEventListener('controllerchange', () => {
+    if (!ui.updateArmed || reloading) return; // без взвода — ничего
+    reloading = true;
+    pageReload();
+  });
+  if (sw.controller) {
+    askVersion(sw.controller).then(v => { activeVersion = v; updateVersionLine(); });
+  } else {
+    activeVersion = null;
+  }
+  swRegReady = Promise.resolve()
+    .then(() => sw.register('./sw.js', { updateViaCache: 'none' }))
+    .then(reg => {
+      if (reg && typeof reg.addEventListener === 'function') {
+        reg.addEventListener('updatefound', () => watchInstalling(reg.installing));
+      }
+      if (reg && reg.installing) watchInstalling(reg.installing);
+      if (reg && reg.waiting) offerUpdate(reg.waiting);
+      return reg || null;
+    }, () => null);
+  checkForUpdate(false);
+}
+
 /* ── Запуск ────────────────────────────────────────────────── */
 
 async function init() {
@@ -8899,7 +9370,13 @@ async function init() {
       // вкладку, с которой лист открыт, вернуть её скролл и фокус — как
       // это делает «Готово» (задача 26, п. 4.1). Замер снимается ДО close*.
       const back = sheetReturn();
-      if (b.dataset.tab !== ui.tab) { ui.missOpen = {}; ui.raiseEdit = {}; }
+      if (b.dataset.tab !== ui.tab) {
+        ui.missOpen = {};
+        ui.raiseEdit = {};
+        // результат «Проверить обновления» — строка на месте, а не справка:
+        // «Это последняя версия», прочитанная через день, была бы неправдой
+        if (ui.updateCheck !== 'busy') ui.updateCheck = null;
+      }
       resetConfirms(); // взведённое подтверждение не переживает уход с экрана
       closeReview();
       closeTrain();
@@ -8908,14 +9385,15 @@ async function init() {
       if (back && back.tab === ui.tab) { window.scrollTo(0, back.y); focusSrc(back.src); }
     }));
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { syncDay(); armDayTimer(); }
+    // возвращение из фона — и автопроверка обновления (не чаще UPDATE_CHECK_MS)
+    if (document.visibilityState === 'visible') { syncDay(); armDayTimer(); checkForUpdate(false); }
     else flushMirror(); // уход в фон — немедленный сброс незаписанного зеркала
   });
   window.addEventListener('focus', syncDay);
   window.addEventListener('pagehide', flushMirror);
   renderAll();
   armDayTimer();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  startUpdates(); // регистрация воркера, предложение обновления, номер версии (задача Р3)
   // Сверка с зеркалом — последней строкой и только при валидном localStorage
   // (в пустой ветке зеркало уже прочитано выше). Await стоит ПОСЛЕ рендера:
   // кадр отдан браузеру, старт не удлиняется (п. 2.4), а тесты получают
@@ -8992,6 +9470,9 @@ if (typeof module !== 'undefined' && module.exports) {
     goneBesideBlock,
     // живой одноимённый блок другого режима — уход блока и слова его последствия (Р2/рецензия)
     hasLiveNamesake,
+    // держит имя только живой блок живого режима; раскладка привычек — одна на
+    // дневной экран и секцию «Настроек» (задача Р3, п. 0.2–0.3)
+    holdsName, habitSections, habitSectionOf, habitSectionName,
     // «Не сегодня» (задача Р2, этап 4): пропуск — false в days{}, только
     // сегодня, только у действия минимума; число пропусков сетки разбора
     isSkipped, skipToday, unskipToday, weekSkips,
@@ -9010,6 +9491,10 @@ if (typeof module !== 'undefined' && module.exports) {
     // задача 27.1: ремонт по приёмке
     lastSaveOk, wipedRaw, setWipedRaw, pendingThisWeek,
     holdScrollTarget, unwrapDayMinutes, domFormKey, currentFormKey,
+    // обновление приложения (задача Р3): номер из ответа воркера и троттлинг
+    // автопроверки — чистые функции; остальное живёт на service worker API
+    // и закреплено интерфейсным уровнем с подменой navigator.serviceWorker
+    versionLabel, updateCheckDue,
     // константы времени (задача 23): TIMING — значения этой загрузки,
     // TIMING_DEFAULTS — рантайм приложения, подмене не подверженный
     TIMING, TIMING_DEFAULTS

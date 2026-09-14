@@ -1,6 +1,6 @@
 'use strict';
 /* Смоук service worker: sw.js исполняется через vm с мок-scope
-   (self/caches/fetch/Response) — без jsdom и без реального SW-окружения. */
+   (self/caches/fetch/Request/Response) — без jsdom и без реального SW-окружения. */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -22,32 +22,55 @@ class FakeResponse {
   clone() { return new FakeResponse(this.body, { status: this.status, headers: this.headers }); }
 }
 
+/* Запрос с режимом HTTP-кэша: установка качает ASSETS запросами
+   cache: 'reload', а не голыми строками (Р3/рецензия) */
+class FakeRequest {
+  constructor(url, init = {}) {
+    this.url = url;
+    this.cache = init.cache ?? 'default';
+  }
+}
+
 /* Свежий vm-контекст с мок-scope; поведение сети и кэша задаётся снаружи */
-function bootSW({ cacheMatch = async () => undefined, netFetch } = {}) {
+function bootSW({ cacheMatch = async () => undefined, netFetch, cacheKeys = [] } = {}) {
   const listeners = {};
   const puts = [];
+  // вызовы жизненного цикла — для тестов задачи Р3: когда воркер
+  // вытесняет прежний (skipWaiting), забирает страницы (claim) и что чистит
+  const calls = { skipWaiting: 0, claim: 0, opened: [], added: [], deleted: [], order: [] };
   const ctx = {
     console,
     URL,
     Response: FakeResponse,
+    Request: FakeRequest,
     location: { origin: 'https://example.org' },
     fetch: netFetch || (async () => { throw new Error('offline'); }),
     caches: {
       match: cacheMatch,
-      open: async () => ({ put: async (req, res) => puts.push({ url: req.url, res }), addAll: async () => {} }),
-      keys: async () => [],
-      delete: async () => true
+      open: async name => {
+        calls.opened.push(name);
+        return {
+          put: async (req, res) => puts.push({ url: req.url, res }),
+          // строка — голый URL (режим кэша default), запрос — его url и режим
+          addAll: async list => {
+            calls.added.push([...list].map(r => (typeof r === 'string' ? { url: r, cache: 'default' } : { url: r.url, cache: r.cache })));
+            calls.order.push('addAll');
+          }
+        };
+      },
+      keys: async () => [...cacheKeys],
+      delete: async k => { calls.deleted.push(k); calls.order.push('delete'); return true; }
     },
     self: {
       addEventListener: (type, fn) => { listeners[type] = fn; },
-      skipWaiting: () => {},
-      clients: { claim: () => {} }
+      skipWaiting: () => { calls.skipWaiting++; calls.order.push('skipWaiting'); return Promise.resolve(); },
+      clients: { claim: () => { calls.claim++; calls.order.push('claim'); return Promise.resolve(); } }
     }
   };
   vm.createContext(ctx);
   vm.runInContext(SW, ctx);
   const assets = vm.runInContext('ASSETS', ctx); // лексические const видны следующему скрипту контекста
-  return { listeners, puts, assets, ctx };
+  return { listeners, puts, assets, ctx, calls };
 }
 
 /* Прогон fetch-события до ответа и завершения фоновых записей */
@@ -386,4 +409,106 @@ test('замок: четыре способа обезоружить дают к
   assert.equal(lockStatus(dir), 1, 'изменение после релиза без подъёма VERSION');
 
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/* ── Задача Р3, п. 1: протокол сообщений и жизненный цикл ─────
+   Новая версия предлагается, а не применяется: установка только кладёт
+   файлы в кэш и ЖДЁТ, skipWaiting — по сообщению страницы, которое она
+   шлёт по тапу «Обновить». Номер версии страница спрашивает у воркера:
+   второго источника версии в app.js нет. Объекты из vm-контекста —
+   чужого realm, поэтому ответы сравниваются через JSON, а не deepEqual
+   (у них другой Object.prototype). */
+
+const json = v => JSON.parse(JSON.stringify(v));
+
+async function swMessage(listeners, data, ports) {
+  const waits = [];
+  listeners.message({ data, ports, waitUntil: p => waits.push(p) });
+  await Promise.all(waits);
+}
+
+test('Р3/1: {type: "version"} — ответ {version: VERSION} в порт MessageChannel', async () => {
+  const { listeners, ctx, calls } = bootSW();
+  assert.equal(typeof listeners.message, 'function', 'обработчик message есть');
+  const got = [];
+  await swMessage(listeners, { type: 'version' }, [{ postMessage: m => got.push(m) }]);
+  assert.deepEqual(json(got), [{ version: vm.runInContext('VERSION', ctx) }]);
+  assert.equal(got[0].version, swVersion(), 'номер — та самая строка VERSION, что читает замок');
+  assert.equal(calls.skipWaiting, 0, 'вопрос о версии воркер не активирует');
+});
+
+test('Р3/1: незнакомый тип, пустое сообщение, «version» без порта — без ошибок и без ответа', async () => {
+  const { listeners, calls } = bootSW();
+  const got = [];
+  const port = { postMessage: m => got.push(m) };
+  for (const data of [{ type: 'reload' }, { type: 'VERSION' }, { type: 'skipwaiting' }, {}, null, undefined,
+    'version', 'skipWaiting', 42, ['version']]) {
+    assert.doesNotThrow(() => listeners.message({ data, ports: [port] }), JSON.stringify(data) ?? 'undefined');
+  }
+  assert.doesNotThrow(() => listeners.message({ data: { type: 'version' }, ports: [] }), 'пустой список портов');
+  assert.doesNotThrow(() => listeners.message({ data: { type: 'version' } }), 'портов нет вовсе');
+  assert.doesNotThrow(() => listeners.message({ data: { type: 'version' }, ports: [{}] }), 'порт без postMessage');
+  assert.deepEqual(got, [], 'ответа нет никому');
+  assert.equal(calls.skipWaiting, 0, 'и строка «skipWaiting» вместо объекта воркер не активирует');
+});
+
+test('Р3/1: установка кладёт ASSETS в кэш VERSION и ЖДЁТ; skipWaiting — только по сообщению', async () => {
+  const { listeners, ctx, calls, assets } = bootSW();
+  const V = vm.runInContext('VERSION', ctx);
+  const waits = [];
+  listeners.install({ waitUntil: p => waits.push(p) });
+  await Promise.all(waits);
+  assert.equal(waits.length, 1, 'установка под waitUntil');
+  assert.deepEqual(calls.opened, [V]);
+  assert.deepEqual(calls.added.map(list => list.map(r => r.url)), [[...assets]], 'стратегия кэша прежняя: весь ASSETS');
+  assert.equal(calls.skipWaiting, 0,
+    'установка не вытесняет активный воркер — иначе ожидающего не бывает, и предложить обновление нечем');
+  // и в самом обработчике вызова нет (комментарии не в счёт)
+  const install = SW.slice(SW.indexOf("addEventListener('install'"), SW.indexOf("addEventListener('activate'"))
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(install, /skipWaiting/);
+
+  await swMessage(listeners, { type: 'skipWaiting' });
+  assert.equal(calls.skipWaiting, 1, 'сообщение страницы активирует ожидающий');
+  assert.equal(calls.claim, 0, 'claim — дело активации, а не сообщения');
+});
+
+test('Р3/1: активация — чистит чужие кэши, затем забирает страницы (clients.claim)', async () => {
+  const V = swVersion();
+  const { listeners, calls } = bootSW({ cacheKeys: ['minimum-v47', V, 'minimum-v48', 'чужой'] });
+  const waits = [];
+  listeners.activate({ waitUntil: p => waits.push(p) });
+  await Promise.all(waits);
+  assert.deepEqual([...calls.deleted].sort(), ['minimum-v47', 'minimum-v48', 'чужой'].sort(), 'свой кэш цел, прочие сняты');
+  assert.equal(calls.claim, 1, 'открытые страницы переходят под новый воркер');
+  assert.equal(calls.order.at(-1), 'claim', 'claim — после чистки');
+  assert.equal(calls.skipWaiting, 0);
+});
+
+test('Р3/1: app.js регистрирует воркер с updateViaCache: "none" ровно в одном месте; номера версии в app.js нет', () => {
+  const APP = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  assert.match(APP, /\.register\('\.\/sw\.js', \{ updateViaCache: 'none' \}\)/,
+    'скрипт воркера — мимо HTTP-кэша: иначе прежний sw.js из кэша прятал бы новую версию');
+  assert.equal((APP.match(/\.register\(/g) || []).length, 1, 'регистрация одна');
+  // единственный источник номера — VERSION в sw.js: строкового литерала версии в app.js нет
+  assert.doesNotMatch(APP, /['"`]minimum-v\d+/, 'второго источника версии нет');
+  assert.doesNotMatch(APP, /location\.reload\(\)[\s\S]*location\.reload\(\)/, 'перезагрузка зовётся из одного места');
+});
+
+/* Р3/рецензия: GitHub Pages отдаёт файлы с max-age=600, и addAll по голым
+   строкам брал их из HTTP-кэша устройства, пока свежи. Вторая установка в
+   пределах десяти минут (хотфикс за релизом) клала под новый VERSION
+   прежние app.js, styles.css и index.html, а «Минимум · v50» называл код,
+   которого на устройстве нет (замер в Chromium: кэш minimum-v50 с app.js
+   v49). Скрипт воркера мимо кэша уже идёт (updateViaCache), ASSETS — нет. */
+test('Р3/рецензия: установка качает ASSETS мимо HTTP-кэша — каждый запрос cache: "reload", ни одной голой строки', async () => {
+  const { listeners, calls, assets } = bootSW();
+  const waits = [];
+  listeners.install({ waitUntil: p => waits.push(p) });
+  await Promise.all(waits);
+  assert.equal(calls.added.length, 1, 'addAll один');
+  const got = calls.added[0];
+  assert.deepEqual(got.map(r => r.url), [...assets], 'те же адреса и тот же порядок');
+  assert.deepEqual(got.map(r => r.cache), [...assets].map(() => 'reload'),
+    'режим default взял бы свежий по max-age ответ прежней версии');
 });

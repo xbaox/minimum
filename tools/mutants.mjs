@@ -1322,8 +1322,15 @@ const MUTANTS = [
     // якорь обновлён в задаче Р2: возврат разделился по режиму — блок режима
     // живого действия и блок живого глобального пункта, если одноимённого
     // живого нет нигде. Снимаются обе ветки: порча прежняя — ни один блок не
-    // возвращается
-    edits: [['    for (const g of s.groups) if (g.removedAt !== null && liveActions.has(JSON.stringify([g.mode, g.name]))) g.removedAt = null;\n    for (const name of liveGlobal) {\n      if (s.groups.some(g => g.name === name && g.removedAt === null)) continue;\n      const g = s.groups.find(x => x.name === name);\n      if (g) g.removedAt = null;\n    }\n', '']]
+    // возвращается.
+    // якорь обновлён в задаче Р3: в цикл по глобальным именам встал
+    // комментарий о holdsName, и цельный текст блока исчез. Ветки снимаются
+    // двумя заменами без комментария: строка возврата блоков действий
+    // удаляется, цикл глобальных имён идёт по пустому списку — порча та же
+    edits: [
+      ['    for (const g of s.groups) if (g.removedAt !== null && liveActions.has(JSON.stringify([g.mode, g.name]))) g.removedAt = null;\n', ''],
+      ['    for (const name of liveGlobal) {\n', '    for (const name of []) {\n']
+    ]
   },
   {
     id: 'R1-миграция-не-чинит-подпись-блока',
@@ -1551,7 +1558,10 @@ const MUTANTS = [
     id: 'R2-убранные-судят-глобальный-по-активному-режиму',
     file: 'app.js',
     note: 'до задачи: goneBesideBlock ищет блок глобального пункта в активном режиме — пункт блока, убранного во всех режимах, стоит в «Убранных», и одиночный возврат молча оживит блок на следующем старте',
-    edits: [['  const same = store.groups.filter(g => g.name === name);\n  return !same.length || same.some(live);',
+    // якорь обновлён в задаче Р3: глобальный пункт судится через holdsName
+    // (живой блок живого режима), и строка стоит ещё и тогда, когда убранного
+    // тёзки нет нигде; порча прежняя — блок ищется в одном активном режиме
+    edits: [['  const same = store.groups.filter(g => g.name === name);\n  return same.some(holdsName) || !same.some(g => !live(g));',
       '  const g = findGroup(name);\n  return !g || live(g);']]
   },
   {
@@ -1712,6 +1722,166 @@ const MUTANTS = [
     file: 'app.js',
     note: 'ошибка: импорт убранного режима, действующего сегодня, оставляет его убранным — активный режим, которого нет в выборе',
     edits: [['    if (am && am.removedAt !== null) am.removedAt = null;\n', '']]
+  },
+
+  /* ── Задача Р3: номер версии, автопроверка, «держит имя», раскладка
+     привычек, хвост счёта дня ──────────────────────────────────────
+     Решение архитектора: мутанты — ТОЛЬКО для новых доменных функций Р3:
+     versionLabel, updateCheckDue, holdsName (и его чтение в hasLiveNamesake,
+     renameGroupCore и goneBesideBlock), habitSections — и для доменного
+     правила todayCounts (хвост «· пропусков K» в note). Service worker,
+     предложение обновления, «Система», признак точки на свёрнутой строке и
+     фильтр motionLeave сюда не входят: это не доменные функции.
+     «до задачи» в note — поведение, каким оно было до Р3; «ошибка» —
+     правдоподобная порча нового кода. */
+  {
+    id: 'R3-номер-версии-без-границ-формата',
+    file: 'app.js',
+    note: 'ошибка: versionLabel ищет номер без ^ и $ — «minimum-v48a», «other-minimum-v48» и ответ с хвостом печатаются номером',
+    edits: [['/^minimum-(v\\d+)$/.exec(', '/minimum-(v\\d+)/.exec(']]
+  },
+  {
+    id: 'R3-номер-версии-из-не-строки',
+    file: 'app.js',
+    note: 'ошибка: versionLabel приводит чужой ответ воркера к строке — массив [\'minimum-v48\'] читается номером',
+    edits: [["typeof v === 'string' ? v : ''", 'String(v)']]
+  },
+  {
+    id: 'R3-номер-версии-полным-именем',
+    file: 'app.js',
+    note: 'ошибка: versionLabel отдаёт имя кеша целиком — «Минимум · minimum-v48» вместо «v48»',
+    edits: [['  return m ? m[1] : null;', '  return m ? m[0] : null;']]
+  },
+  {
+    id: 'R3-автопроверка-без-метки-не-пора',
+    file: 'app.js',
+    note: 'ошибка: updateCheckDue при отсутствии прошлой проверки отвечает «рано» — при запуске обновление не ищется',
+    edits: [["  if (typeof last !== 'number' || !isFinite(last)) return true;", "  if (typeof last !== 'number' || !isFinite(last)) return false;"]]
+  },
+  {
+    id: 'R3-автопроверка-граница-срока',
+    file: 'app.js',
+    note: 'ошибка: updateCheckDue не включает границу — ровно через UPDATE_CHECK_MS ещё «рано»',
+    edits: [['  return !(d >= 0 && d < UPDATE_CHECK_MS);', '  return !(d >= 0 && d <= UPDATE_CHECK_MS);']]
+  },
+  {
+    id: 'R3-часы-назад-запирают-автопроверку',
+    file: 'app.js',
+    note: 'ошибка: updateCheckDue не видит часов, ушедших назад, — метка «из будущего» запирает автопроверку на весь сдвиг',
+    edits: [['  return !(d >= 0 && d < UPDATE_CHECK_MS);', '  return !(d < UPDATE_CHECK_MS);']]
+  },
+  {
+    id: 'R3-блок-убранного-режима-держит-имя',
+    file: 'app.js',
+    note: 'до задачи: holdsName не смотрит на режим — живой блок убранного режима держит привычки и счётчики своим именем',
+    edits: [['  const m = findMode(blockMode(g));\n  return !m || live(m);', '  return true;']]
+  },
+  {
+    id: 'R3-убранный-блок-держит-имя',
+    file: 'app.js',
+    note: 'ошибка: holdsName не проверяет уход самого блока — убранный блок держит глобальные пункты, как живой',
+    edits: [['  if (!g || !live(g)) return false;\n  const m = findMode(blockMode(g));', '  if (!g) return false;\n  const m = findMode(blockMode(g));']]
+  },
+  {
+    id: 'R3-блок-без-записи-режима-не-держит',
+    file: 'app.js',
+    note: 'ошибка: holdsName читает режим, которого нет в store, убранным — блок записи, собранной без modes, не держит никого',
+    edits: [['  return !m || live(m);', '  return !!m && live(m);']]
+  },
+  {
+    id: 'R3-уход-блока-судит-тёзку-без-режима',
+    file: 'app.js',
+    note: 'до задачи: hasLiveNamesake считает тёзкой живой блок убранного режима — «Убрать блок» оставляет привычки под невидимым блоком, и последствие называет «останутся»',
+    edits: [['x.name === g.name && holdsName(x)', 'x.name === g.name && live(x)']]
+  },
+  {
+    id: 'R3-переименование-держит-ушедших-в-один-день',
+    file: 'app.js',
+    note: 'до задачи: убранный тёзка держит глобальные пункты, ушедшие с ним в один день, — при переименовании они остаются при старом имени',
+    edits: [
+      ['  const held = store.groups.some(x => x !== g && x.name === from && holdsName(x));',
+        '  const held = it => store.groups.some(x => x !== g && x.name === from &&\n    (holdsName(x) || (!live(it) && x.removedAt === it.removedAt)));'],
+      ['    } else if (groupNameOf(it) === from && !held) {', '    } else if (groupNameOf(it) === from && !held(it)) {']
+    ]
+  },
+  {
+    id: 'R3-переименование-держит-тёзкой-убранного-режима',
+    file: 'app.js',
+    note: 'до задачи: renameGroupCore судит тёзку по live — блок убранного режима держит привычки и счётчики при переименовании',
+    edits: [['x.name === from && holdsName(x)', 'x.name === from && live(x)']]
+  },
+  {
+    id: 'R3-убранные-держит-блок-убранного-режима',
+    file: 'app.js',
+    note: 'до задачи: goneBesideBlock судит глобальный пункт по live — пункт, ушедший с блоком основного при тёзке в убранном режиме, стоит в «Убранных» второй дорогой назад',
+    edits: [['  return same.some(holdsName) || !same.some(g => !live(g));', '  return same.some(live) || !same.some(g => !live(g));']]
+  },
+  {
+    id: 'R3-убранные-прячут-пункт-без-дороги-назад',
+    file: 'app.js',
+    note: 'ошибка: goneBesideBlock переводит прежнее правило на holdsName дословно (!same.length) — имя живёт только в блоке убранного режима, убранного блока нет: пункт пропадает из «Убранных» без дороги назад',
+    edits: [['  return same.some(holdsName) || !same.some(g => !live(g));', '  return same.some(holdsName) || !same.length;']]
+  },
+  {
+    id: 'R3-привычки-только-по-блокам-режима',
+    file: 'app.js',
+    note: 'до задачи (дневные «Привычки»): раскладка только по блокам активного режима — привычка, чей блок живёт в другом режиме, уходит в «Без блока»',
+    edits: [['  for (const g of own.concat(store.groups.filter(holdsName))) {', '  for (const g of own) {']]
+  },
+  {
+    id: 'R3-заголовок-по-блоку-убранного-режима',
+    file: 'app.js',
+    note: 'до задачи («Настройки»): прочие имена берутся у любых живых блоков — имя блока убранного режима становится заголовком привычек',
+    edits: [['  for (const g of own.concat(store.groups.filter(holdsName))) {', '  for (const g of own.concat(store.groups.filter(live))) {']]
+  },
+  {
+    id: 'R3-секция-с-блоком-чужого-режима',
+    file: 'app.js',
+    note: 'ошибка: habitSections отдаёт в group блок другого режима — дневные «Привычки» печатают чужую подпись',
+    edits: [['group: own.includes(g) ? g : null', 'group: g']]
+  },
+  {
+    id: 'R3-одно-имя-две-секции',
+    file: 'app.js',
+    note: 'ошибка: habitSections не склеивает одноимённые блоки режимов — имя, живущее в двух режимах, даёт два заголовка',
+    edits: [['    if (known.has(g.name)) continue;\n    known.add(g.name);', '    known.add(g.name);']]
+  },
+  {
+    id: 'R3-пустая-секция-рождается',
+    file: 'app.js',
+    note: 'ошибка: habitSections рождает секцию блока без привычек — пустой заголовок на «Привычках»',
+    edits: [['    if (list.length) out.push({ name: g.name,', '    out.push({ name: g.name,']]
+  },
+  {
+    id: 'R3-раскладка-привычек-по-основному-режиму',
+    file: 'app.js',
+    note: 'ошибка: habitSections без названного режима берёт основной, а не активный — при выбранных «Каникулах» порядок и подписи основного',
+    edits: [['function habitSections(items, mode) {\n  const m = mode === undefined ? activeMode() : mode;',
+      'function habitSections(items, mode) {\n  const m = mode === undefined ? MAIN_MODE : mode;']]
+  },
+  {
+    id: 'R3-хвост-пропусков-снят',
+    file: 'app.js',
+    note: 'до задачи: счёт дня «Сегодня» без хвоста — «0 из 1» при пропуске, «0 из 0» при сплошных пропусках, пропуск числом не назван',
+    edits: [['  const tail = skipped ? `<span class="bar-skip"> · пропусков&nbsp;${skipped}</span>` : \'\';', '  const tail = \'\';']]
+  },
+  {
+    id: 'R3-хвост-при-нуле-пропусков',
+    file: 'app.js',
+    note: 'ошибка: хвост печатается и без пропусков — «0 из 2 · пропусков 0»',
+    edits: [['  const tail = skipped ? `<span', '  const tail = skipped >= 0 ? `<span']]
+  },
+  {
+    id: 'R3-хвост-у-закрытого-дня',
+    file: 'app.js',
+    note: 'ошибка: «День закрыт» получает хвост пропусков — у акцентного слова экрана появляется приписка',
+    edits: [["  const note = closed ? 'День закрыт' : ", "  const note = closed ? 'День закрыт' + tail : "]]
+  },
+  {
+    id: 'R3-хвост-без-приглушения',
+    file: 'app.js',
+    note: 'ошибка: хвост без .bar-skip — «· пропусков K» печатается голосом счёта, а не приглушённо',
+    edits: [['<span class="bar-skip"> · пропусков', '<span> · пропусков']]
   }
 ];
 
