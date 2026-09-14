@@ -211,20 +211,26 @@ const MUTANTS = [
     id: '26.2-подтверждение-снова-в-шапке',
     file: 'app.js',
     note: 'узел «Сохранено» возвращается в шапку экрана, за 1939 px от нажатой кнопки',
+    // якорь обновлён в задаче Р1: строка пункта разделилась на строку
+    // действия (actionRow) и строку привычки (habitRow), и узел у якоря
+    // печатается в ОБЕИХ — прежний текст встречался дважды. Снимаются оба
     edits: [
       ["  let h = `<header class=\"page\"><p class=\"overline\">Устройство приложения</p><h1>Настройки</h1></header>`;",
         "  let h = `<header class=\"page\"><p class=\"overline\">Устройство приложения</p><h1>Настройки</h1></header>`;\n  if (ui.savedAt) { h += `<p class=\"flash\" role=\"status\">${esc(ui.savedAt.text)}</p>`; ui.savedAt = null; }"],
-      ["        ${flashAt('item:' + it.id)}\n", '']
+      ["        ${flashAt('item:' + it.id)}\n      </div>`;\n}\n\n/* Список действий", "      </div>`;\n}\n\n/* Список действий"],
+      ["        ${flashAt('item:' + it.id)}\n      </div>`;\n}\n\n/* Секция «Привычки»", "      </div>`;\n}\n\n/* Секция «Привычки»"]
     ]
   },
   {
     id: '26.2-отказ-закрывает-форму',
     file: 'app.js',
     note: 'занятое имя блока снова закрывает форму молча и уносит правку',
+    // якорь обновлён в задаче Р1: проверки имени ушли в доменную updateGroup
+    // (имя, подпись и дни — одной записью), обработчик получает причину
+    // отказа. Предмет прежний — отказ снова закрывает форму молча
     edits: [[
-      `      if (!nm) { refuse(b, 'Название не заполнено'); break; }
-      if (nm !== from && findGroup(nm)) { refuse(b, 'Блок с таким именем уже есть'); break; }`,
-      `      if (!nm || (nm !== from && findGroup(nm))) { ui.groupRename = null; renderSettings(); break; }`]]
+      "      if (!r.ok) { refuse(b, groupRefusal(r, el('g-name') ? el('g-name').value : from)); break; }",
+      '      if (!r.ok) { ui.groupRename = null; renderSettings(); break; }']]
   },
   {
     id: '26.3-черновик-тренировки-теряется',
@@ -442,7 +448,10 @@ const MUTANTS = [
     id: '27.1-Д4-flash-по-всему-документу',
     file: 'app.js',
     note: 'Д4: узел подтверждения снова ищется по всему документу — берётся чужой со скрытого экрана, страница прыгает',
-    edits: [["const visibleFlash = () => document.querySelector('main .screen:not([hidden]) .flash:not(.keep)');",
+    // якорь обновлён в задаче Р1: выборка по видимому экрану вынесена в
+    // общий shownIn (им же ищется .gone-note), и узлы в [hidden] свёрнутой
+    // карточки пропускаются. Порча — только у visibleFlash, как прежде
+    edits: [["const visibleFlash = () => shownIn('.flash:not(.keep)');",
       "const visibleFlash = () => document.querySelector('.flash:not(.keep)');"]]
   },
   {
@@ -472,7 +481,10 @@ const MUTANTS = [
     note: 'Д7: взведённое «Подтвердить: стереть» снова переживает возврат — один тап уничтожает обмен',
     // якорь обновлён в задаче 28.D: closeDetail() из ветки ушёл вместе с
     // листом детали; сбрасывать подтверждения остался один resetConfirms
-    edits: [['      ui.wipeOpen = false;\n      resetConfirms();\n      // копия могла нести другую границу дня', '      // копия могла нести другую границу дня']]
+    // якорь обновлён в задаче Р1: между resetConfirms и сменой дня встал
+    // resetSettingsView (формы — к прежним данным); он подтверждений чистки
+    // не гасит, и предмет мутанта не заслоняет
+    edits: [['      ui.wipeOpen = false;\n      resetConfirms();\n      resetSettingsView(); // и открытые формы', '      resetSettingsView(); // и открытые формы']]
   },
   {
     id: '27.1-Д8-invalid-date',
@@ -508,7 +520,9 @@ const MUTANTS = [
     id: '27.1-9.1-форма-блока-без-черновика',
     file: 'app.js',
     note: '9.1: форма блока снова без ключа — введённое имя пропадает при перерисовке по чужому поводу',
-    edits: [["  if (ui.groupAdd) return 'group:new';\n  if (ui.groupRename !== null) return 'group:' + ui.groupRename;\n", '']]
+    // якорь обновлён в задаче Р1: ключ формы добавления стал 'group+new' —
+    // 'group:new' совпадал с ключом правки блока по имени «new»
+    edits: [["  if (ui.groupAdd) return 'group+new';\n  if (ui.groupRename !== null) return 'group:' + ui.groupRename;\n", '']]
   },
   {
     id: '27.1-9.2-отказ-не-объявляется',
@@ -632,7 +646,10 @@ const MUTANTS = [
     id: '28B-5-потеря-категории-не-называется',
     file: 'app.js',
     note: 'блоки, weekLog, история, значения сессий и решения по параметрам снова вне счёта — импорт молчит о потере',
-    edits: [["  ['groups', 'блок', 'блока', 'блоков'],\n  ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],\n  ['history', 'запись истории', 'записи истории', 'записей истории'],\n  ['schedule', 'отрезок расписания', 'отрезка расписания', 'отрезков расписания'],\n  ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],\n  ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']\n", '']]
+    // якорь обновлён в задаче Р1: между schedule и entries встали категории
+    // blockDays и groupLog. Они снимаются вместе с прочими — до 28.B не было
+    // и их; по отдельности их держат мутанты R1-потери-*
+    edits: [["  ['groups', 'блок', 'блока', 'блоков'],\n  ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],\n  ['history', 'запись истории', 'записи истории', 'записей истории'],\n  ['schedule', 'отрезок расписания', 'отрезка расписания', 'отрезков расписания'],\n  ['blockDays', 'отрезок дней блока', 'отрезка дней блока', 'отрезков дней блока'],\n  ['groupLog', 'запись о блоке', 'записи о блоке', 'записей о блоке'],\n  ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],\n  ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']\n", '']]
   },
   {
     id: '28B-6-неделя-закрывается-одним-тапом',
@@ -777,15 +794,20 @@ const MUTANTS = [
     id: '28E-A-возврат-позже-воскрешает-прежний-отрезок',
     file: 'app.js',
     note: 'возврат через неделю снимает removedAt у прежней записи — дни паузы задним числом входят в знаменатель',
-    edits: [['  if (it.removedAt === t) {\n    it.removedAt = null;',
-      '  if (true) {\n    it.removedAt = null;']]
+    // якорь обновлён в задаче Р1: ядро возврата (restoreItemCore) сперва
+    // запоминает расписание для отката — возврат «как блок» меняет его в
+    // той же ветке
+    edits: [['  if (it.removedAt === t) {\n    const was = it.schedule;',
+      '  if (true) {\n    const was = it.schedule;']]
   },
   {
     id: '28E-A-убрать-одним-тапом',
     file: 'app.js',
     note: '«Убрать» срабатывает с первого тапа — последствие не названо, и промах по кнопке уводит пункт',
-    edits: [['      if (ui.removeConfirm !== key) { ui.removeConfirm = key; renderSettings(); break; }',
-      '      if (false) { ui.removeConfirm = key; renderSettings(); break; }']]
+    // якорь обновлён в задаче Р1: ту же строку взводки получил уход блока
+    // (group-remove), и текст встречался дважды. Якорь — ключ пункта
+    edits: [["      const key = kind + ':' + id;\n      if (ui.removeConfirm !== key) { ui.removeConfirm = key; renderSettings(); break; }",
+      "      const key = kind + ':' + id;\n      if (false) { ui.removeConfirm = key; renderSettings(); break; }"]]
   },
   /* ── Задача 28.E, часть B: строка дня ────────────────────────
      Исключение из запрета на лозунги держится своими границами: один
@@ -898,16 +920,29 @@ const MUTANTS = [
   {
     id: '29A-подсказка-зовёт-пункт-привычкой',
     file: 'app.js',
-    note: 'подсказка снова называет привычкой любой новый пункт, включая минимум',
-    edits: [["${ui.addArea === 'habit' ? 'Одна новая привычка за раз' : 'Одно новое дело за раз'}: последнее добавлено меньше 14 дней назад.",
-      'Правило системы: одна новая привычка за раз. Последний пункт добавлен меньше 14 дней назад.']]
+    note: 'подсказка снова говорит текстом до задачи 29/A: «правило системы», которого в «Системе» нет, и «последний пункт» вместо предмета формы',
+    // Переписан в задаче Р1. Ветка минимума снята вместе с формой
+    // добавления минимума и полем ui.addArea: действия заводятся быстрым
+    // добавлением, где подсказки нет вовсе (это сторожит тест З22/7.2, а
+    // строку «Одно новое дело за раз» — его же doesNotMatch по APP). Вторая
+    // половина прежнего предмета — «называет привычкой минимум» — ушла вместе
+    // с формой: назвать минимум больше негде. Осталась первая: мутант
+    // возвращает прежний текст в единственную оставшуюся форму
+    edits: [['<p class="hint">Одна новая привычка за раз: последнее добавлено меньше 14 дней назад.</p>',
+      '<p class="hint">Правило системы: одна новая привычка за раз. Последний пункт добавлен меньше 14 дней назад.</p>']]
   },
   {
     id: '29A-взводка-блока-вне-шаблона',
     file: 'app.js',
-    note: 'удаление блока снова взводится вне общего шаблона и молчит о судьбе пунктов',
-    edits: [["${ui.groupDelete === g.name ? 'Подтвердить: удалить блок' : 'Удалить блок'}",
-      "${ui.groupDelete === g.name ? 'Подтвердить удаление' : 'Удалить'}"]]
+    note: 'уход блока снова взводится вне общего шаблона «Подтвердить: {глагол} {предмет}» — кнопка без предмета и словом «удаление»',
+    // Переписан в задаче Р1. Удаления блока больше нет (deleteGroup,
+    // «Удалить блок» и ui.groupDelete сняты: блок несёт дни, от которых
+    // зависит прошлое, и по словарю конституции он убирается). Взводка
+    // второго тапа у блока осталась — у «Убрать блок», — и предмет мутанта
+    // переехал туда: подпись кнопки выпадает из шаблона и возвращает
+    // прежнее слово. Шаблон — тот же, что у «Убрать» пункта
+    edits: [["${armed ? 'Подтвердить: убрать блок' : 'Убрать блок'}",
+      "${armed ? 'Подтвердить удаление' : 'Удалить'}"]]
   },
   {
     id: '29A-акцент-вернулся-в-справку',
@@ -920,22 +955,29 @@ const MUTANTS = [
     id: '29B-маска-игнорируется',
     file: 'app.js',
     note: 'применимость снова читает только отрезок жизни: расписание не влияет ни на что',
-    edits: [["  return livedOn(item, dayKey) && scheduleOn(item, dayKey)[weekdayOf(dayKey)] === '1';",
+    // якорь обновлён в задаче Р1: день недели проверяет inEffectiveDays
+    // (своя маска ∧ дни блока); снимается вся проверка, как прежде
+    edits: [['  return livedOn(item, dayKey) && inEffectiveDays(item, dayKey);',
       '  return livedOn(item, dayKey);']]
   },
   {
     id: '29B-маска-переписывает-прошлое',
     file: 'app.js',
     note: 'scheduleOn отдаёт НЫНЕШНЮЮ маску для любого дня — ровно дефект поля active (28.E/A)',
-    edits: [['  for (let i = segs.length - 1; i >= 0; i--) {\n    if (segs[i].from <= dayKey) return segs[i].mask;\n  }\n  return WEEK_ALL;',
-      '  return segs.length ? segs[segs.length - 1].mask : WEEK_ALL;']]
+    // якорь обновлён в задаче Р1: тот же цикл дословно получил blockMaskOn
+    // (дни блока — те же отрезки). Якорь — строка списка отрезков пункта
+    edits: [['  const segs = Array.isArray(item && item.schedule) ? item.schedule : [];\n  for (let i = segs.length - 1; i >= 0; i--) {\n    if (segs[i].from <= dayKey) return segs[i].mask;\n  }\n  return WEEK_ALL;',
+      '  const segs = Array.isArray(item && item.schedule) ? item.schedule : [];\n  return segs.length ? segs[segs.length - 1].mask : WEEK_ALL;']]
   },
   {
     id: '29B-смена-маски-затирает-отрезки',
     file: 'app.js',
     note: 'setSchedule заменяет весь список одним отрезком: прошлое теряет свои маски',
-    edits: [['  if (segs.length && segs[segs.length - 1].from === t) segs.pop(); // сегодняшний — переписывается',
-      '  segs.length = 0;']]
+    // якорь обновлён в задаче Р1: ядро смены (scheduleCore) снимает весь
+    // хвост с from ≥ сегодня, а не только сегодняшний отрезок, и пишет
+    // отрезок в опустевший список всегда. Порча прежняя — список обнуляется
+    edits: [['  while (segs.length && segs[segs.length - 1].from >= t) segs.pop();\n  const prev = segs.length ? segs[segs.length - 1].mask : WEEK_ALL;\n  if (prev !== mask || !segs.length)',
+      '  segs.length = 0;\n  const prev = segs.length ? segs[segs.length - 1].mask : WEEK_ALL;\n  if (prev !== mask || !segs.length)']]
   },
   {
     id: '29B-сквозной-день-рвёт-серию',
@@ -1034,6 +1076,280 @@ const MUTANTS = [
     file: 'app.js',
     note: 'потеря отрезков расписания при импорте снова проходит молча (инвариант 6)',
     edits: [['    schedule: sum(s && s.items, x => x.schedule),', '    schedule: 0,']]
+  },
+
+  /* ── Задача «Расписание 1/3» (Р1): дни блока, журнал, быстрое добавление ─
+     Блок получил дни недели, и от него стали зависеть прошлые числа его
+     действий. Отсюда три оси, и мутанты идут по ним: (1) эффективные дни —
+     ∧ с днями блока того дня, по журналу принадлежности, и пороги планки,
+     которые считают по ним; (2) блок из «удаляется» стал «убирается» — уход,
+     возврат, копия, занятость имени, отказы по днях; (3) интерфейс и данные
+     — быстрое добавление, форма действия, migrate, счёт потерь, разбор.
+     «до задачи» в note — мутант возвращает поведение, каким оно было до Р1;
+     «ошибка» — правдоподобная порча нового кода. */
+  {
+    id: 'R1-эффективная-маска-без-дней-блока',
+    file: 'app.js',
+    note: 'до задачи: effectiveMaskOn отдаёт только свою маску — дни блока не ограничивают действие',
+    edits: [['  return g ? andMask(own, blockMaskOn(g, dayKey)) : own;', '  return own;']]
+  },
+  {
+    id: 'R1-горячая-применимость-без-дней-блока',
+    file: 'app.js',
+    note: 'ошибка: inEffectiveDays (горячий путь серии и рекорда) забывает ∧ с блоком и расходится с effectiveMaskOn',
+    edits: [["  return !g || blockMaskOn(g, dayKey)[wd] === '1';", '  return true;']]
+  },
+  {
+    id: 'R1-groupOn-игнорирует-журнал',
+    file: 'app.js',
+    note: 'до задачи: блок дня — нынешний item.group; перенос в будний блок задним числом выбрасывает действие из прошлых выходных',
+    edits: [['  if (!log.length) return groupNameOf(item);', '  return groupNameOf(item);']]
+  },
+  {
+    id: 'R1-смена-блока-без-журнала',
+    file: 'app.js',
+    note: 'до задачи: setItemGroup меняет только item.group — истории принадлежности нет, прошлое переписывается',
+    edits: [["  if (item.type === 'daily' && item.area === 'min') {\n    const t = todayKey();\n    const log = Array.isArray(item.groupLog)",
+      "  if (false) {\n    const t = todayKey();\n    const log = Array.isArray(item.groupLog)"]]
+  },
+  {
+    id: 'R1-повышение-при-неделе-без-дней',
+    file: 'app.js',
+    note: 'ошибка: guard m = 0 снят у повышения — raiseNeed(0) = 0, и пункт с пустой неделей «держится» без единой отметки',
+    edits: [['  if (ms.some(m => m === 0)) return false;\n  if (!W.every((w, i) => planWeekCount(item, w) >= raiseNeed(ms[i]))) return false;',
+      '  if (!W.every((w, i) => planWeekCount(item, w) >= raiseNeed(ms[i]))) return false;']]
+  },
+  {
+    id: 'R1-понижение-при-неделе-без-дней',
+    file: 'app.js',
+    note: 'ошибка: guard m = 0 снят у понижения — тот же пункт готов и к повышению, и к понижению в одном разборе',
+    edits: [['  if (ms.some(m => m === 0)) return false;\n  if (!W.every((w, i) => planWeekCount(item, w) <= lowerNeed(ms[i]))) return false;',
+      '  if (!W.every((w, i) => planWeekCount(item, w) <= lowerNeed(ms[i]))) return false;']]
+  },
+  {
+    id: 'R1-повышение-считает-отметки-вне-плана',
+    file: 'app.js',
+    note: 'до задачи: числитель повышения — все отметки недели (itemWeekCount), отметка в дне вне плана засчитывается',
+    edits: [['planWeekCount(item, w) >= raiseNeed(ms[i])', 'itemWeekCount(item, w) >= raiseNeed(ms[i])']]
+  },
+  {
+    id: 'R1-понижение-считает-отметки-вне-плана',
+    file: 'app.js',
+    note: 'до задачи: числитель понижения — все отметки недели (itemWeekCount), отметка вне плана прячет «не держится»',
+    edits: [['planWeekCount(item, w) <= lowerNeed(ms[i])', 'itemWeekCount(item, w) <= lowerNeed(ms[i])']]
+  },
+  {
+    id: 'R1-журнал-блока-неидемпотентен',
+    file: 'app.js',
+    note: 'ошибка: normGroupLog дописывает нынешний блок ПОСЛЕ дедупа — migrate(migrate(x)) ≠ migrate(x), в журнале два состояния одного дня',
+    edits: [
+      ['  if (log.length && log[log.length - 1].group !== cur) {\n    const lastFrom = log[log.length - 1].from;\n    log.push({ from: today > lastFrom ? today : lastFrom, group: cur });\n  }\n', ''],
+      ['    out.push(e);\n  }\n  if (out.length && out[0].from > addedAt) out[0].from = addedAt;',
+        '    out.push(e);\n  }\n  if (out.length && out[out.length - 1].group !== cur) {\n    const lastFrom = out[out.length - 1].from;\n    out.push({ from: today > lastFrom ? today : lastFrom, group: cur });\n  }\n  if (out.length && out[0].from > addedAt) out[0].from = addedAt;']
+    ]
+  },
+  {
+    id: 'R1-стрелки-блоков-считают-убранные',
+    file: 'app.js',
+    note: 'до задачи: moveGroup меняется местами с убранным блоком — стрелка «срабатывает», а на экране ничего не движется',
+    edits: [['  const idxs = liveGroupIndexes();\n  const at = idxs.indexOf(i);', '  const idxs = store.groups.map((_, k) => k);\n  const at = idxs.indexOf(i);']]
+  },
+  {
+    id: 'R1-перетаскивание-блоков-считает-убранные',
+    file: 'app.js',
+    note: 'до задачи: reorderGroup считает позицию среди всех блоков — убранный занимает место в порядке живых',
+    edits: [['  if (!g || !live(g)) return false;\n  const idxs = liveGroupIndexes();', '  if (!g || !live(g)) return false;\n  const idxs = store.groups.map((_, k) => k);']]
+  },
+  {
+    id: 'R1-уход-блока-оставляет-пункты',
+    file: 'app.js',
+    note: 'ошибка: removeGroup уводит только блок — его действия остаются на «Сегодня» без заголовка и с днями невидимого блока',
+    edits: [['  g.removedAt = t;\n  for (const it of touched) it.removedAt = t;', '  g.removedAt = t;']]
+  },
+  {
+    id: 'R1-уход-блока-только-ежедневные',
+    file: 'app.js',
+    note: 'ошибка: removeGroup уводит только ежедневные — счётчик и параметр блока остаются живыми в убранном блоке',
+    edits: [['  const touched = store.items.filter(it => live(it) && groupNameOf(it) === g.name);',
+      "  const touched = store.items.filter(it => live(it) && it.type === 'daily' && groupNameOf(it) === g.name);"]]
+  },
+  {
+    id: 'R1-возврат-блока-без-пунктов',
+    file: 'app.js',
+    note: 'ошибка: restoreGroup возвращает пустой блок — ушедшие с ним действия остаются в «Убранных» поштучно',
+    edits: [['  const back = store.items.filter(it => groupNameOf(it) === g.name && it.removedAt === when).map(it => it.id);', '  const back = [];']]
+  },
+  {
+    id: 'R1-копия-блока-с-привычками',
+    file: 'app.js',
+    note: 'ошибка: duplicateGroup копирует и привычки — они становятся действиями минимума (area min в копии)',
+    edits: [["    .filter(it => live(it) && it.area === 'min' && (it.type === 'daily' || it.type === 'weekly') &&",
+      "    .filter(it => live(it) && (it.type === 'daily' || it.type === 'weekly') &&"]]
+  },
+  {
+    id: 'R1-копия-блока-без-дней',
+    file: 'app.js',
+    note: 'ошибка: копия блока не получает дни источника — будний блок копируется ежедневным',
+    edits: [['    days: m !== WEEK_ALL ? [{ from: t, mask: m }] : [],', '    days: [],']]
+  },
+  {
+    id: 'R1-имя-занято-только-в-списке-блоков',
+    file: 'app.js',
+    note: 'до задачи: nameTaken смотрит только store.groups — переименование в осиротевшее имя применяет дни блока к прошлому чужих пунктов',
+    edits: [['  return store.items.some(it => groupNameOf(it) === n ||\n    (Array.isArray(it.groupLog) && it.groupLog.some(e => e && e.group === n)));', '  return false;']]
+  },
+  {
+    id: 'R1-вход-в-убранный-блок-без-отказа',
+    file: 'app.js',
+    note: 'ошибка: groupJoinRefusal выключен — пункт молча входит в убранный блок: на экране «без блока», а маска невидимого блока режет дни',
+    edits: [["  return g && !live(g) ? `Блок «${g.name}» убран — вернуть можно в «Убранных»` : null;", '  return null;']]
+  },
+  {
+    id: 'R1-правка-блока-оставляет-действие-без-дней',
+    file: 'app.js',
+    note: 'ошибка: updateGroup не проверяет zeroDaysIn — сужение дней блока оставляет действие без единого дня, неотличимым от убранного',
+    edits: [['    const names = zeroDaysIn(from, mask);', '    const names = [];']]
+  },
+  {
+    id: 'R1-новый-блок-оставляет-действие-без-дней',
+    file: 'app.js',
+    note: 'ошибка: addGroup в осиротевшее имя не проверяет zeroDaysIn — действия с этим именем входят в блок без единого дня',
+    edits: [['  if (zeroDaysIn(n, m).length) return false;\n', '']]
+  },
+  {
+    id: 'R1-форма-нового-блока-не-называет-действия-без-дней',
+    file: 'app.js',
+    note: 'ошибка: «Добавить блок» не спрашивает zeroDaysIn — отказ домена проходит молча, форма закрывается без записи и без строки',
+    edits: [['      const zero = byName || maskDays(mask) === 0 ? [] : zeroDaysIn(nm, mask);', '      const zero = [];']]
+  },
+  {
+    id: 'R1-правка-действия-оставляет-без-дней',
+    file: 'app.js',
+    note: 'ошибка: форма действия не проверяет итоговый блок — перенос в блок с чужими днями сохраняет пункт без единого дня',
+    edits: [['  if ((st.touched || moved) && maskDays(andMask(mask !== null ? mask : st.now, fm)) === 0) {', '  if (false) {']]
+  },
+  {
+    id: 'R1-свои-дни-режут-биты-вне-блока',
+    file: 'app.js',
+    note: 'ошибка: mergeOwnMask обнуляет свою маску вне дней блока — при переносе в блок с другими днями дни, которых владелец не снимал, потеряны',
+    edits: [["  for (let i = 0; i < 7; i++) out += w[i] === '1' ? p[i] : o[i];", "  for (let i = 0; i < 7; i++) out += w[i] === '1' ? p[i] : '0';"]]
+  },
+  {
+    id: 'R1-расписание-пишется-без-касания',
+    file: 'app.js',
+    note: 'ошибка: «Сохранить» без касания дней пишет показанный выбор (своя ∧ блок) своей маской — «как блок» застывает днями блока на сегодня',
+    edits: [['function editDaysOutcome(it, st, finalGroup, shownName) {\n  let mask = null;', 'function editDaysOutcome(it, st, finalGroup, shownName) {\n  let mask = st.pick;']]
+  },
+  {
+    id: 'R1-тип-меняется-не-в-день-заведения',
+    file: 'app.js',
+    note: 'ошибка: canChangeType не проверяет день заведения — ежедневный с историей отметок становится счётчиком, отметки остаются без пункта',
+    edits: [["  return !!item && item.area === 'min' && (item.type === 'daily' || item.type === 'weekly') &&\n    item.addedAt === todayKey();",
+      "  return !!item && item.area === 'min' && (item.type === 'daily' || item.type === 'weekly');"]]
+  },
+  {
+    id: 'R1-быстрое-добавление-режет-по-косой',
+    file: 'app.js',
+    note: 'ошибка: «/» считается разделителем подписи — «Подтягивания / отжимания» становится именем «Подтягивания» с подписью',
+    edits: [['    const m = /^(.*?)\\s+·(?:\\s+(.*))?$/.exec(line);', '    const m = /^(.*?)\\s+[·\\/](?:\\s+(.*))?$/.exec(line);']]
+  },
+  {
+    id: 'R1-быстрое-добавление-режет-по-последней-точке',
+    file: 'app.js',
+    note: 'ошибка: жадная группа режет по ПОСЛЕДНЕМУ « · » — «Чтение · 20 мин · перед сном» даёт имя «Чтение · 20 мин»',
+    edits: [['    const m = /^(.*?)\\s+·(?:\\s+(.*))?$/.exec(line);', '    const m = /^(.*)\\s+·(?:\\s+(.*))?$/.exec(line);']]
+  },
+  {
+    id: 'R1-отказ-быстрого-добавления-закрывает-форму',
+    file: 'app.js',
+    note: 'до задачи 26 (правило отказов): отказ записи закрывает быструю форму молча — набранные строки пропадают',
+    edits: [["      if (!made.length) { refuse(b, 'Не добавлено: хранилище недоступно'); break; }", '      if (!made.length) { ui.quickFor = null; renderSettings(); break; }']]
+  },
+  {
+    id: 'R1-преемник-не-опознаётся',
+    file: 'app.js',
+    note: 'до задачи: laterSegmentOf выключен — прежний отрезок стоит в «Убранных» рядом с живым преемником, и «Вернуть» заводит дубль',
+    edits: [['function laterSegmentOf(item) {\n  if (!item || live(item) || !item.removedAt) return null;', 'function laterSegmentOf(item) {\n  return null;']]
+  },
+  {
+    id: 'R1-миграция-не-возвращает-блок-живого-пункта',
+    file: 'app.js',
+    note: 'ошибка: импорт живого пункта в убранный блок оставляет блок убранным — маска невидимого блока режет дни, снять нечем',
+    edits: [['    for (const g of s.groups) if (g.removedAt !== null && liveNames.has(g.name)) g.removedAt = null;\n', '']]
+  },
+  {
+    id: 'R1-миграция-не-чинит-подпись-блока',
+    file: 'app.js',
+    note: 'ошибка: migrate берёт подпись блока как есть — undefined и число доезжают до рендера и экспорта',
+    edits: [["        caption: typeof g.caption === 'string' ? g.caption.trim() : '',", '        caption: g.caption,']]
+  },
+  {
+    id: 'R1-миграция-не-чинит-дни-блока',
+    file: 'app.js',
+    note: 'ошибка: migrate берёт дни блока как есть — мусорные отрезки, пустая маска и ведущий «все семь» остаются в каноне',
+    edits: [['        days: normBlockDays(g.days),', '        days: g.days,']]
+  },
+  {
+    id: 'R1-потери-дней-блока-не-называются',
+    file: 'app.js',
+    note: 'ошибка: категория blockDays в dataCounts обнулена — импорт, роняющий отрезки дней блока, молчит (инвариант 6)',
+    edits: [['    blockDays: sum(s && s.groups, x => x.days),', '    blockDays: 0,']]
+  },
+  {
+    id: 'R1-потери-журнала-блока-не-называются',
+    file: 'app.js',
+    note: 'ошибка: категория groupLog в dataCounts обнулена — импорт, роняющий записи о блоке, молчит (инвариант 6)',
+    edits: [['    groupLog: sum(s && s.items, x => x.groupLog),', '    groupLog: 0,']]
+  },
+  {
+    id: 'R1-убранный-блок-на-дневном-экране',
+    file: 'app.js',
+    note: 'до задачи: groupedItems рисует заголовки и убранных блоков — ушедшее из виду остаётся на «Сегодня»',
+    edits: [['    if (!live(g)) continue;\n    known.add(g.name);', '    known.add(g.name);']]
+  },
+  {
+    id: 'R1-пустой-день-зовёт-заводить-пункты',
+    file: 'app.js',
+    note: 'до задачи: в день без запланированных действий «Сегодня» пишет «Пунктов пока нет — добавить можно…» и зовёт заводить заведённое',
+    edits: [["  } else if (liveDaily().some(i => i.area === 'min')) {", '  } else if (false) {']]
+  },
+  {
+    id: 'R1-сетка-разбора-считает-отметки-вне-плана',
+    file: 'app.js',
+    note: 'ошибка: weekPlan считает done по всем отметкам, а planned по плану — сетка разбора читается «2 из 1»',
+    edits: [['    if (!dueOn(item, k)) continue;\n    planned++;\n    if (isMarked(k, item.id)) done++;',
+      '    if (isMarked(k, item.id)) done++;\n    if (!dueOn(item, k)) continue;\n    planned++;']]
+  },
+  {
+    id: 'R1-подпись-плана-при-семи-днях',
+    file: 'app.js',
+    note: 'ошибка: «запланировано 7 дней» печатается у каждого ежедневного действия — подпись, которая ничего не сообщает',
+    edits: [['          if (p.planned < 7) {', '          if (p.planned <= 7) {']]
+  },
+  {
+    id: 'R1-убрать-блок-одним-тапом',
+    file: 'app.js',
+    note: 'до задачи (по образцу «Удалить блок»): «Убрать блок» срабатывает с первого тапа — блок и все его действия уходят промахом по кнопке',
+    edits: [["      const key = 'group:' + nm;\n      if (ui.removeConfirm !== key) { ui.removeConfirm = key; renderSettings(); break; }\n", "      const key = 'group:' + nm;\n"]]
+  },
+  {
+    id: 'R1-блок-берётся-не-за-шапку',
+    file: 'app.js',
+    note: 'ошибка: долгое нажатие в теле карточки поднимает весь блок — строки действий становятся ручкой перетаскивания',
+    edits: [["  if (row.dataset.drag === 'group' && !e.target.closest('.bhead')) return;\n", '']]
+  },
+  {
+    id: 'R1-импорт-не-гасит-формы',
+    file: 'app.js',
+    note: 'ошибка: importJSON не зовёт resetSettingsView — быстрая форма, форма блока и свёртка остаются открытыми над чужими данными',
+    edits: [['    resetSettingsView();\n    ui.missOpen = {};', '    ui.missOpen = {};']]
+  },
+  {
+    id: 'R1-система-снова-удаляет-блоки',
+    file: 'app.js',
+    note: 'до задачи: «Система» говорит, что блоки удаляются и пункты не трогают, — словарь «удалить/убрать» расходится с интерфейсом',
+    edits: [["text: 'Блоки заводятся, переименовываются и убираются в Настройках → Расписание; убранный блок уводит из виду свои действия и привычки, отметки остаются.'",
+      "text: 'Блоки заводятся, переименовываются и удаляются в Настройках; удаление блока пункты не трогает.'"]]
   }
 ];
 

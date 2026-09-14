@@ -62,6 +62,22 @@ function removeItemThroughUi(doc, id) {
   rm().click();
 }
 
+/* Отказ записи на время fn: localStorage подменяется геттером окна — тем же
+   приёмом, что в тесте баннера хранилища. Присвоить setItem самому Storage
+   нельзя: такое присваивание по спецификации пишет ключ «setItem». */
+function withBrokenStorage(window, fn) {
+  const real = window.localStorage;
+  const broken = {
+    getItem: k => real.getItem(k),
+    setItem: () => { throw new Error('quota'); },
+    removeItem: k => real.removeItem(k)
+  };
+  Object.defineProperty(window, 'localStorage', { configurable: true, get: () => broken });
+  try { return fn(); } finally {
+    Object.defineProperty(window, 'localStorage', { configurable: true, get: () => real });
+  }
+}
+
 /* Отметить пункт в первых n днях календарной недели с понедельником mon */
 function fillWeek(days, id, mon, n) {
   for (let i = 0; i < n; i++) {
@@ -336,9 +352,11 @@ test('формы редактирования и добавления откры
   const { document } = await boot();
   document.querySelector('#tabs button[data-tab="settings"]').click();
 
-  // редактирование первого пункта
+  // редактирование первого пункта. Имя — по данным, а не по .tname: в строке
+  // «Расписания» за именем идёт подпись .csub («Расписание 1/3», п. 4.7г)
   const editBtn = document.querySelector('[data-act="edit-open"]');
-  const itemName = editBtn.querySelector('.tname').textContent;
+  const itemName = JSON.parse(document.defaultView.localStorage.getItem(NS))
+    .items.find(i => i.id === editBtn.dataset.id).name;
   editBtn.click();
   const eName = document.getElementById('e-name');
   assert.ok(eName, 'форма редактирования открылась');
@@ -346,9 +364,14 @@ test('формы редактирования и добавления откры
   document.querySelector('[data-act="edit-cancel"]').click();
   assert.equal(document.getElementById('e-name'), null);
 
-  // добавление
-  document.querySelector('[data-act="add-open"]').click();
-  assert.ok(document.getElementById('f-name'), 'форма добавления открылась');
+  // добавление действий — быстрой формой в блоке (форма добавления минимума
+  // снята, п. 2.4); форма добавления привычки — своей кнопкой с областью
+  document.querySelector('[data-act="quick-open"]').click();
+  assert.ok(document.getElementById('q-lines'), 'быстрое добавление открылось');
+  document.querySelector('[data-act="quick-cancel"]').click();
+  assert.equal(document.getElementById('q-lines'), null);
+  document.querySelector('[data-act="add-open"][data-area="habit"]').click();
+  assert.ok(document.getElementById('f-name'), 'форма добавления привычки открылась');
   assert.ok(document.getElementById('f-type'));
   document.querySelector('[data-act="add-cancel"]').click();
   assert.equal(document.getElementById('f-name'), null);
@@ -504,15 +527,21 @@ test('правка значения: невалид — отказ без зап
   seed.days = {};
   const { document, window } = await boot({ seed });
   document.querySelector('#tabs button[data-tab="settings"]').click();
+  // строка ищется по id, а не по тексту имени: в «Расписании» за именем
+  // стоит подпись .csub («Расписание 1/3», п. 4.7г)
+  const ids = { 'Правка': 'e1', 'Недельный': 'w1' };
   const openEdit = name => [...document.querySelectorAll('[data-act="edit-open"]')]
-    .find(b => b.querySelector('.tname').textContent === name).click();
+    .find(b => b.dataset.id === ids[name]).click();
   const savedItem = name => JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.name === name);
 
-  assert.match(document.getElementById('scr-settings').textContent, /Планка: 10 → 12/);
+  // история планки переехала из строки в форму правки (п. 2.4): строка
+  // компактная, справка о прошлом — у пункта
+  assert.doesNotMatch(document.getElementById('scr-settings').textContent, /Планка:/, 'в строке истории нет');
+  openEdit('Правка');
+  assert.match(document.querySelector('#scr-settings [data-form="edit"]').textContent, /Планка: 10 → 12/);
 
   // невалидный ввод — отказ: ни значения, ни истории, ни «Сохранено»,
   // и правка названия в той же форме тоже не записана (всё или ничего)
-  openEdit('Правка');
   document.getElementById('e-name').value = 'Другое имя';
   document.getElementById('e-value').value = '1о';
   document.querySelector('[data-act="edit-save"]').click();
@@ -532,7 +561,10 @@ test('правка значения: невалид — отказ без зап
   document.querySelector('[data-act="edit-save"]').click();
   assert.equal(savedItem('Правка').value, null);
   assert.equal(savedItem('Правка').history.length, 2);
-  assert.doesNotMatch(document.getElementById('scr-settings').textContent, /Планка:/);
+  // «Планка:» скрыта и там, где она теперь живёт, — в форме правки
+  openEdit('Правка');
+  assert.doesNotMatch(document.querySelector('#scr-settings [data-form="edit"]').textContent, /Планка:/);
+  document.querySelector('[data-act="edit-cancel"]').click();
 
   // цель weekly: пустое и невалидное поле — отказ, старая цель на месте
   openEdit('Недельный');
@@ -652,19 +684,51 @@ test('открытая форма переживает перестановку 
     sel.dispatchEvent(new window.Event('change', { bubbles: true }));
   };
 
-  // форма добавления: смена типа weekly → daily → weekly не сбрасывает цель
-  document.querySelector('[data-act="add-open"]').click();
-  document.getElementById('f-name').value = 'Чтение';
-  document.getElementById('f-value').value = '15';
-  changeType('weekly');
-  document.getElementById('f-goal').value = '5';
+  // Форма добавления минимума со своей сменой типа (daily/weekly) снята
+  // («Расписание 1/3», п. 2.4). Смена типа, скрывающая поле, осталась у
+  // формы привычки (привычка/параметр): предмет прежний — скрытое сменой
+  // типа поле возвращается с набранным, а не с умолчанием
+  document.querySelector('[data-act="add-open"][data-area="habit"]').click();
+  document.getElementById('f-name').value = 'Подъём';
+  changeType('param');
+  document.getElementById('f-pstep').value = '-10';
   changeType('daily');
-  assert.equal(document.getElementById('f-goal'), null); // поле цели скрыто
-  changeType('weekly');
-  assert.equal(document.getElementById('f-name').value, 'Чтение');
-  assert.equal(document.getElementById('f-value').value, '15');
-  assert.equal(document.getElementById('f-goal').value, '5'); // цель не сброшена на 3
+  assert.equal(document.getElementById('f-pstep'), null); // поле шага скрыто
+  changeType('param');
+  assert.equal(document.getElementById('f-name').value, 'Подъём');
+  assert.equal(document.getElementById('f-pstep').value, '-10'); // шаг не сброшен на пустой
   document.querySelector('[data-act="add-cancel"]').click();
+
+  // быстрое добавление переживает перестановку соседнего пункта в том же блоке
+  document.querySelector('[data-act="quick-open"]').click();
+  document.getElementById('q-lines').value = 'Кровать\nРазвитие · 10 мин';
+  [...document.querySelectorAll('[data-act="move-down"]')].find(b => !b.disabled).click();
+  assert.ok(document.getElementById('q-lines'), 'форма всё ещё открыта');
+  assert.equal(document.getElementById('q-lines').value, 'Кровать\nРазвитие · 10 мин');
+  document.querySelector('[data-act="quick-cancel"]').click();
+
+  // Смена типа daily/weekly вернулась — в форму ПРАВКИ действия в день его
+  // заведения («Расписание 1/3», этап C, п. 2.5). Предмет прежней формы
+  // добавления минимума: цель, набранная у счётчика, переживает смену типа
+  // туда и обратно, а не возвращается пустой
+  document.querySelector('[data-act="quick-open"]').click();
+  document.getElementById('q-lines').value = 'Счётчик на пробу';
+  document.querySelector('[data-act="quick-save"]').click();
+  const born = JSON.parse(window.localStorage.getItem(NS)).items.find(i => i.name === 'Счётчик на пробу');
+  [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === born.id).click();
+  const editType = v => {
+    const sel = document.getElementById('e-type');
+    sel.value = v;
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  };
+  assert.equal(document.getElementById('e-goal'), null, 'у ежедневного цели нет');
+  editType('weekly');
+  document.getElementById('e-goal').value = '4';
+  editType('daily');
+  assert.equal(document.getElementById('e-goal'), null); // поле цели скрыто
+  editType('weekly');
+  assert.equal(document.getElementById('e-goal').value, '4'); // цель не сброшена на пустую
+  document.querySelector('[data-act="edit-cancel"]').click();
 
   // форма редактирования переживает перестановку соседнего пункта
   const editBtn = document.querySelector('[data-act="edit-open"]');
@@ -772,8 +836,9 @@ test('смена границы дня не перерисовывает «Пу�
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).settings.dayBoundary, 0);
 
   // граница сдвинула логический день (02:30: вчера → сегодня), но первый же
-  // клик применяется, а не глотается stale-guard'ом
-  document.querySelector('[data-act="add-open"]').click();
+  // клик применяется, а не глотается stale-guard'ом. Кнопка добавления — с
+  // областью: у минимума формы добавления больше нет («Расписание 1/3», п. 4.7б)
+  document.querySelector('[data-act="add-open"][data-area="habit"]').click();
   assert.ok(document.getElementById('f-name'), 'форма открылась с первого клика');
 });
 
@@ -1109,8 +1174,9 @@ test('«Привычки»: пустая секция — тихая строк�
   const seed = dueSeed(); // habitSeeded: soft-блок поставит false, посева нет — привычек нет
   const { document } = await boot({ seed });
   document.querySelector('#tabs button[data-tab="habits"]').click();
+  // путь ведёт в секцию привычек: секция «Пункты» уходит («Расписание 1/3», п. 2.1)
   assert.match(document.getElementById('scr-habits').textContent,
-    /Привычек пока нет — добавить можно в Настройках → Пункты\./);
+    /Привычек пока нет — добавить можно в Настройках → Привычки\./);
 });
 
 test('разбор: секции «Минимум» и «Привычки», карточка параметра, готовность', async () => {
@@ -1181,18 +1247,25 @@ test('разбор: «Оставить» фиксирует отказ и пор
   assert.deepEqual(saved.paramDecided.pt, { week: prevMonday(), from: 90, to: null });
 });
 
-test('«Пункты»: две группы, формы обеих областей, параметр добавляется и правится', async () => {
+/* Две области — две секции «Настроек» («Расписание 1/3», п. 2.3): прежде это
+   были два заголовка h2 внутри «Пунктов». Добавление минимума — быстрой
+   формой в карточке блока, добавление привычки — прежней формой. */
+test('«Расписание» и «Привычки»: секции обеих областей, формы, параметр добавляется и правится', async () => {
   const { document, window } = await boot();
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const scr = document.getElementById('scr-settings');
 
-  const h2s = [...scr.querySelectorAll('h2')].map(x => x.textContent);
-  assert.ok(h2s.includes('Минимум') && h2s.includes('Привычки'));
+  const sectOf = re => [...scr.querySelectorAll('details.sect')].find(d => re.test(d.querySelector('summary').textContent));
+  const sched = sectOf(/^Расписание/), habits = sectOf(/^Привычки/);
+  assert.ok(sched && habits, 'обе секции найдены');
+  assert.ok(sched.querySelector('[data-act="quick-open"]'), 'минимум добавляется в «Расписании»');
+  assert.equal(sched.querySelector('[data-act="add-open"]'), null, 'формы добавления минимума больше нет');
   const addBtns = [...scr.querySelectorAll('[data-act="add-open"]')];
-  assert.deepEqual(addBtns.map(b => b.dataset.area), ['min', 'habit']);
+  assert.deepEqual(addBtns.map(b => b.dataset.area), ['habit']);
+  assert.ok(habits.contains(addBtns[0]), 'кнопка привычки — в своей секции');
 
   // форма привычек: тип «привычка» — только название и подпись
-  addBtns[1].click();
+  addBtns[0].click();
   assert.ok(document.getElementById('f-name'));
   assert.equal(document.getElementById('f-value'), null, 'без значения в формах привычек');
   const typeSel = document.getElementById('f-type');
@@ -1951,20 +2024,24 @@ test('цепочка: «Привычки» и «Сегодня» рендеря�
   assert.match(document.getElementById('scr-habits').textContent, /Вечер/);
 });
 
+/* Блоки — карточки «Расписания» («Расписание 1/3», п. 2.4): шапка с именем,
+   стрелками и шевроном свёртки, правка раскрывается тапом по шапке.
+   Удаление снято, блок убирается вторым тапом (п. 4.7в) — набор проверок
+   прежний: последствие названо между тапами, пункты и отметки целы. */
 test('редактор блоков: строка — имя и стрелки, правка раскрывается тапом', async () => {
   const { document, window } = await boot({ seed: chainSeed() });
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
   const blocks = () => [...document.querySelectorAll('#scr-settings [data-act="group-open"]')]
-    .map(b => b.closest('.rowwrap'));
-  const rowOf = name => blocks().find(r => r.querySelector('.tname').textContent === name);
+    .map(b => b.closest('.bcard'));
+  const rowOf = name => blocks().find(r => r.querySelector('.bhead .tname').textContent === name);
 
-  // список в порядке store.groups; в свёрнутой строке — только имя и стрелки
-  assert.deepEqual(blocks().map(r => r.querySelector('.tname').textContent), ['Вечер', 'Утро']);
+  // список в порядке store.groups; в шапке — имя, стрелки и свёртка
+  assert.deepEqual(blocks().map(r => r.querySelector('.bhead .tname').textContent), ['Вечер', 'Утро']);
   const row = rowOf('Вечер');
   assert.equal(row.querySelector('label.switch'), null, 'тумблера цепочки нет');
-  assert.equal(row.querySelector('[data-act="group-del"]'), null, 'кнопок правки в строке нет');
-  assert.deepEqual([...row.querySelectorAll('.ictl .btn')].map(b => b.dataset.act), ['group-up', 'group-down']);
+  assert.equal(row.querySelector('[data-act="group-remove"]'), null, 'кнопок правки в шапке нет');
+  assert.deepEqual([...row.querySelectorAll('.bhead .ictl .btn')].map(b => b.dataset.act), ['group-up', 'group-down', 'group-fold']);
   assert.equal(document.getElementById('g-name'), null, 'правка свёрнута');
 
   // порядок
@@ -2008,22 +2085,24 @@ test('редактор блоков: строка — имя и стрелки, 
   document.querySelector('[data-act="group-add-save"]').click();
   assert.deepEqual(saved().groups.map(g => g.name), ['Утро', 'Ночь', 'День']);
 
-  // удаление — вторым тапом; пункты и отметки остаются
+  // уход — вторым тапом; пункты и отметки остаются
   document.querySelector('#tabs button[data-tab="today"]').click();
   [...document.querySelectorAll('#scr-today input[data-act="mark"]')].find(i => i.dataset.id === 'c1').click();
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  rowOf('Ночь').querySelector('[data-act="group-open"]').click(); // удаление живёт в раскрытой правке
-  const del = () => rowOf('Ночь').querySelector('[data-act="group-del"]');
-  assert.match(del().textContent, /^Удалить блок$/);
-  del().click();
-  assert.match(del().textContent, /Подтвердить: удалить блок/);
-  assert.match(rowOf('Ночь').textContent, /Пункты останутся/, 'последствие названо между тапами');
-  assert.ok(saved().groups.find(g => g.name === 'Ночь'), 'первый тап не удаляет');
-  del().click();
+  rowOf('Ночь').querySelector('[data-act="group-open"]').click(); // уход живёт в раскрытой правке
+  const rm = () => rowOf('Ночь').querySelector('[data-act="group-remove"]');
+  assert.match(rm().textContent, /^Убрать блок$/);
+  rm().click();
+  assert.match(rm().textContent, /Подтвердить: убрать блок/);
+  assert.match(rowOf('Ночь').textContent, /Блок уйдёт из списков вместе с действиями и привычками\. Отметки и прошлые дни останутся как есть\./,
+    'последствие названо между тапами');
+  assert.ok(!saved().groups.find(g => g.name === 'Ночь').removedAt, 'первый тап не убирает');
+  rm().click();
   s = saved();
-  assert.equal(s.groups.find(g => g.name === 'Ночь'), undefined);
+  assert.equal(s.groups.find(g => g.name === 'Ночь').removedAt, daysAgo(0), 'блок убран, а не стёрт');
   assert.equal(s.items.length, 5, 'пункты остались');
-  assert.equal(s.items.filter(i => i.group === '').length, 4); // c1..c3 плюс исходный безгруппный
+  assert.deepEqual(s.items.filter(i => i.group === 'Ночь').map(i => i.id), ['c1', 'c2', 'c3'], 'при своём блоке');
+  assert.equal(s.items.find(i => i.id === 'n1').removedAt, null, 'чужой пункт на месте');
   assert.equal(s.days[daysAgo(0)].c1, true, 'отметка не тронута');
 });
 
@@ -2034,8 +2113,10 @@ test('поле «Блок»: select из заведённых, «+ Новый б
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
   const sel = () => document.getElementById('e-group');
+  // строка — по id (п. 4.7г): за именем в «Расписании» может стоять подпись
+  const ids = { 'Свет': 'c1' };
   const openEdit = name => [...document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]')]
-    .find(b => b.querySelector('.tname').textContent === name).click();
+    .find(b => b.dataset.id === ids[name]).click();
   const pickLast = () => {
     sel().selectedIndex = sel().options.length - 1; // «+ Новый блок…» — всегда последний
     sel().dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -2062,7 +2143,8 @@ test('поле «Блок»: select из заведённых, «+ Новый б
   const s = saved();
   assert.equal(s.items.find(i => i.id === 'c1').group, 'Ритуал');
   assert.deepEqual(s.groups.map(g => g.name), ['Вечер', 'Утро', 'Ритуал']);
-  assert.deepEqual(Object.keys(s.groups[2]), ['name']);
+  // v19: блок, заведённый из формы пункта, — в канонической форме
+  assert.deepEqual(s.groups[2], { name: 'Ритуал', caption: '', days: [], removedAt: null });
 
   // выбор из списка — обычная смена блока
   openEdit('Свет');
@@ -2078,7 +2160,7 @@ test('поле «Блок»: имя не из списка (импорт) вид
   const { document, window } = await boot({ seed });
   document.querySelector('#tabs button[data-tab="settings"]').click();
   [...document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]')]
-    .find(b => b.querySelector('.tname').textContent === 'Свет').click();
+    .find(b => b.dataset.id === 'c1').click(); // по id, а не по тексту имени (п. 4.7г)
 
   const sel = document.getElementById('e-group');
   const marked = [...sel.options].find(o => o.value === 'Чужой');
@@ -2133,8 +2215,9 @@ test('источники: ни --warn и .broken, ни признака цепо
   for (const word of [/Модул/, /модул/, /Групп/, /групп/]) {
     assert.doesNotMatch(code, word, `слово ${word} в коде app.js`);
   }
-  // «Блоки» — заголовок секции «Настроек» (задача 16B), «Блок» — поле формы
-  assert.match(js, /sect\('groups', 'Блоки'/);
+  // «Расписание» — секция «Настроек» с карточками блоков (была «Блоки», задача
+  // 16B; «Расписание 1/3», п. 2.3), «Блок» — поле формы
+  assert.match(js, /sect\('schedule', 'Расписание'/);
   assert.match(js, /<span>Блок<\/span>/);
 });
 
@@ -2332,27 +2415,32 @@ test('разбор: открывается строкой «Прогресса»
   assert.equal(document.getElementById('scr-today').hidden, false);
 });
 
-test('«Настройки»: секции по порядку, раскрыты только «Пункты», состояние держится', async () => {
+test('«Настройки»: секции по порядку, раскрыто только «Расписание», состояние держится', async () => {
   const { document } = await boot();
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const sects = () => [...document.querySelectorAll('#scr-settings details.sect')];
   const titles = () => sects().map(s => s.querySelector('summary').textContent.replace('›', '').trim());
 
-  // «Упражнения» добавились в фазе D — между «Пунктами» и «Данными»
-  assert.deepEqual(titles(), ['Блоки', 'Пункты', 'Упражнения', 'Данные', 'Система']);
-  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, false, false, false]);
+  // «Упражнения» добавились в фазе D; «Блоки» и «Пункты» стали «Расписанием» и
+  // «Привычками» («Расписание 1/3», п. 2.3). Раскрыта по умолчанию — первая
+  assert.deepEqual(titles(), ['Расписание', 'Привычки', 'Упражнения', 'Данные', 'Система']);
+  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [true, false, false, false, false]);
 
-  // содержимое прежних экранов на месте, внутри своих секций
+  // содержимое на месте, внутри своих секций: блоки, граница и зачёт дня —
+  // в «Расписании», форма привычки — в «Привычках»
   assert.match(sects()[0].textContent, /Добавить блок/);
-  assert.match(sects()[1].textContent, /Граница дня/);
+  assert.match(sects()[0].textContent, /Добавить действия/);
+  assert.match(sects()[0].textContent, /Граница дня/);
+  assert.match(sects()[0].textContent, /Зачёт дня/);
+  assert.match(sects()[1].textContent, /Добавить привычку/);
   assert.match(sects()[2].textContent, /Добавить упражнение/);
   assert.ok(sects()[3].querySelector('[data-act="export"]'));
   assert.match(sects()[4].textContent, /Пять правил/);
 
   // раскрытие запоминается: перерисовка после действия секцию не захлопывает
   sects()[3].querySelector('summary').click();
-  document.querySelector('#scr-settings [data-act="add-open"]').click(); // перерисовка «Настроек»
-  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [false, true, false, true, false]);
+  document.querySelector('#scr-settings [data-act="quick-open"]').click(); // перерисовка «Настроек»
+  assert.deepEqual(sects().map(s => s.hasAttribute('open')), [true, false, false, true, false]);
 });
 
 /* ── Задача 16, фаза C. Разбор как три решения ─────────────── */
@@ -2641,7 +2729,9 @@ test('перетаскивание: pointerdown → pointermove → pointerup п
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const rows = () => [...document.querySelectorAll('#scr-settings [data-drag="item"]')];
-  assert.deepEqual(rows().map(r => r.dataset.dragId), ['a1', 'a2', 'b1', 'a3']);
+  // строки стоят в карточках своих блоков («Расписание 1/3», п. 2.4): сначала
+  // все пункты «Утра», затем «Вечера» — порядок внутри блока по items[]
+  assert.deepEqual(rows().map(r => r.dataset.dragId), ['a1', 'a2', 'a3', 'b1']);
 
   stubRows(rows());
   const row = rows()[0]; // «Первый», блок «Утро»
@@ -2649,9 +2739,21 @@ test('перетаскивание: pointerdown → pointermove → pointerup п
   await hold();
   assert.equal(row.classList.contains('drag-live'), true, 'захват после удержания');
 
-  // ведём палец ниже середины строки a3 (её прямоугольник 380..440)
-  document.dispatchEvent(pointer(window, 'pointermove', 100, 415));
-  document.dispatchEvent(pointer(window, 'pointerup', 100, 415));
+  // Порог — СЕРЕДИНА соседа, и проверяется он с обеих сторон (Р1/ревью):
+  // карточки блоков сдвинули a3 на 320..380 (середина 350), а палец прежде
+  // оставался на 415 — за нижним краем строки, и порог «за серединой» не
+  // проверял уже ничто. Чуть выше середины a3 пункт встаёт вторым
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 345));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 345));
+  assert.deepEqual(saved().items.map(i => i.id), ['a2', 'a1', 'b1', 'a3'], 'выше середины a3 — вторым');
+
+  // …чуть ниже середины — последним. Строки перерисованы: a1 теперь вторая
+  stubRows(rows());
+  assert.deepEqual(rows().map(r => r.dataset.dragId), ['a2', 'a1', 'a3', 'b1']);
+  rows()[1].dispatchEvent(pointer(window, 'pointerdown', 100, 290));
+  await hold();
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 355));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 355));
 
   // среди соседей по блоку пункт встал последним; чужой блок остался
   // на своём месте в store.items (позиции блока «Утро» — 0, 1 и 3)
@@ -2707,10 +2809,11 @@ test('перетаскивание: блоки и упражнения тоже 
   const saved = () => JSON.parse(window.localStorage.getItem(NS));
   document.querySelector('#tabs button[data-tab="settings"]').click();
 
-  // блоки: второй встаёт первым
+  // блоки: второй встаёт первым. Карточку берут за шапку — тело карточки
+  // захвата не даёт («Расписание 1/3», п. 4.3; отдельный тест ниже)
   const gRows = () => [...document.querySelectorAll('#scr-settings [data-drag="group"]')];
   stubRows(gRows());
-  gRows()[1].dispatchEvent(pointer(window, 'pointerdown', 100, 290));
+  gRows()[1].querySelector('.bhead').dispatchEvent(pointer(window, 'pointerdown', 100, 290));
   await hold();
   document.dispatchEvent(pointer(window, 'pointermove', 100, 215));
   document.dispatchEvent(pointer(window, 'pointerup', 100, 215));
@@ -2829,10 +2932,16 @@ test('пустое хранилище: все экраны и листы рен�
   assert.match(prog.textContent, /Цепь заполнится с первой отметки\./);
   assert.match(prog.textContent, /Серия начнётся с первого зачтённого дня\./);
 
-  // «Настройки» пусты, но живы
+  // «Настройки» пусты, но живы. Строки «Блоков пока нет» больше нет: без
+  // блоков стоит карточка «Без блока» с быстрым добавлением — действию есть
+  // где родиться («Расписание 1/3», п. 2.4)
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const sett = document.getElementById('scr-settings');
-  assert.match(sett.textContent, /Блоков пока нет/);
+  const loose = sett.querySelector('.bcard.loose');
+  assert.ok(loose, 'карточка «Без блока» на месте');
+  assert.match(loose.textContent, /Без блока/);
+  assert.equal(loose.querySelector('[data-act="quick-open"]').dataset.name, '');
+  assert.equal(loose.querySelectorAll('.rowwrap').length, 0, 'строк нет');
   assert.match(sett.textContent, /Упражнений пока нет/);
   assert.equal(sett.querySelectorAll('[data-drag]').length, 0);
 });
@@ -3734,11 +3843,12 @@ const openDetail = (document) => {
    поэтому хелперы не введены — но сторож нужен и без них: он ловит любую
    будущую правку шаблонов форм, случайную или в ходе такого рефакторинга.
 
-   Снимок — outerHTML всех девяти форм (число сверяется ассертом
+   Снимок — outerHTML всех одиннадцати форм (число сверяется ассертом
    ниже; в комментарии стояло «девяти» при двенадцати формах — счёт отстал
    на пять, задача 26, п. 7.1; две формы заметок ушли с экраном, задача
    28.C; две формы формулы и форма лестницы — с листом детали, задача 28.D,
-   и число снова сошлось на девяти, но уже других).
+   и число снова сошлось на девяти, но уже других; «Расписание 1/3», этап C,
+   добавило два вида правки действия — «свои дни» и день заведения).
    Дат в формах нет, идентификаторы в сиде фиксированы,
    поэтому снимок стабилен от запуска к запуску.
    Пересобрать после осознанной правки разметки:
@@ -3778,7 +3888,10 @@ function markupSeed() {
   const prev = prevMonday();
   return {
     schemaVersion: 15,
-    groups: [{ name: 'Утро' }],
+    // «Утро» — будни («Расписание 1/3», этап C): у действия в режиме «свои»
+    // чипы выходных недоступны, и снимок это держит. Дата отрезка в разметку
+    // форм не попадает — снимок от дня прогона не зависит
+    groups: [{ name: 'Утро', days: [{ from: addKey(prev, -14), mask: '1111100' }] }],
     items: [
       { id: 'fx-item', name: 'Пункт минимума', value: 10, unit: 'мин', type: 'daily', area: 'min',
         goal: null, note: 'подпись', group: 'Утро', active: true, addedAt: addKey(prev, -14),
@@ -3816,10 +3929,17 @@ test('З20/C.5: разметка форм совпадает со снимком
     return s;
   };
 
-  // формы «Пунктов»: правка минимума, привычки, параметра и добавление
+  // формы «Расписания» и «Привычек»: правка минимума, привычки, параметра и
+  // добавление привычки. Форма добавления минимума (add-min) снята вместе с
+  // кнопкой «Добавить пункт»; её место заняло быстрое добавление («Расписание
+  // 1/3», п. 4.7д). Правка действия снята в трёх видах (этап C, п. 2.5):
+  // «как блок» без «Типа», «свои дни» того же действия и действие дня
+  // заведения — с «Типом» и чипами без блока
   settings();
   [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'fx-item').click();
   grab('edit-min');
+  document.querySelector('[data-act="days-own"]').click();
+  grab('edit-min-own');
   document.querySelector('[data-act="edit-cancel"]').click();
   [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'fx-habit').click();
   grab('edit-habit');
@@ -3827,15 +3947,26 @@ test('З20/C.5: разметка форм совпадает со снимком
   [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'fx-param').click();
   grab('edit-param');
   document.querySelector('[data-act="edit-cancel"]').click();
-  [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'min').click();
-  grab('add-min');
-  document.querySelector('[data-act="add-cancel"]').click();
   [...document.querySelectorAll('[data-act="add-open"]')].find(b => b.dataset.area === 'habit').click();
   grab('add-habit');
   document.querySelector('[data-act="add-cancel"]').click();
+  // Действие дня заведения без блока — тем путём, каким действие рождается
+  // (addActions), с фиксированным id: разметка не должна плавать. Заводится
+  // ПОСЛЕ снимка добавления привычки: свежий пункт владельца дал бы той форме
+  // подсказку «одна новая за раз» и сдвинул бы снимок, которого этап не касался
+  const [fresh] = document.defaultView.addActions('', [{ name: 'Новое действие', note: '' }]);
+  fresh.id = 'fx-new';
+  document.defaultView.save();
+  settings();
+  [...document.querySelectorAll('[data-act="edit-open"]')].find(b => b.dataset.id === 'fx-new').click();
+  grab('edit-min-new');
+  document.querySelector('[data-act="edit-cancel"]').click();
+  [...document.querySelectorAll('[data-act="quick-open"]')].find(b => b.dataset.name === 'Утро').click();
+  grab('quick');
+  document.querySelector('[data-act="quick-cancel"]').click();
 
-  // блоки и упражнения
-  openSect(/Блоки/);
+  // блоки (с днями и пресетами) и упражнения. «Расписание» раскрыто по
+  // умолчанию: тап по его заголовку здесь свернул бы секцию
   document.querySelector('[data-act="group-open"]').click();
   grab('group-edit');
   document.querySelector('[data-act="group-cancel"]').click();
@@ -3851,8 +3982,20 @@ test('З20/C.5: разметка форм совпадает со снимком
   document.querySelector('[data-act="ex-add-cancel"]').click();
 
   // Форм листа детали здесь больше нет: две формулы и лестница ушли
-  // вместе с листом (задача 28.D). Снимок пересобран.
-  assert.equal(Object.keys(got).length, 9, 'сняты все формы');
+  // вместе с листом (задача 28.D). Добавление минимума ушло, быстрое
+  // добавление пришло — счёт прежний; правка действия прибавила два вида
+  // («Расписание 1/3», этап C) — одиннадцать. Снимок пересобран.
+  assert.equal(Object.keys(got).length, 11, 'сняты все формы');
+  assert.ok(got['group-edit'].includes('data-act="days-preset"'), 'форма блока — с днями и пресетами');
+  assert.ok(got['group-add'].includes('data-act="day-toggle"'), 'форма добавления блока — тоже');
+  // виды правки действия — действительно разные, а не три копии одного
+  assert.ok(got['edit-min'].includes('data-act="days-own"') && !got['edit-min'].includes('data-act="day-toggle"'),
+    '«как блок» — строкой, без чипов');
+  assert.ok(got['edit-min'].includes('Тип: ежедневный') && !got['edit-min'].includes('id="e-type"'), 'не в день заведения тип — тихой строкой');
+  assert.ok(got['edit-min-own'].includes('data-act="days-inherit"') && got['edit-min-own'].includes('— не в днях блока" disabled'),
+    '«свои дни» — чипы, выходные недоступны');
+  assert.ok(got['edit-min-new'].includes('id="e-type"') && got['edit-min-new'].includes('data-act="day-toggle"') &&
+    !got['edit-min-new'].includes('days-own'), 'день заведения — «Тип»; без блока — прежние чипы');
 
   // запись — только по явной переменной окружения (п. 3.2)
   if (process.env.MARKUP_SNAPSHOT === 'write') {
@@ -3963,17 +4106,19 @@ test('З22/4: взведённое подтверждение гаснет пр�
   assert.match(document.querySelector('[data-act="wipe-do"]').textContent, /Подтвердить: стереть/);
   document.querySelector('[data-act="wipe-cancel"]').click();
 
-  // 2. удаление блока
+  // 2. уход блока (удаление снято, «Расписание 1/3», п. 4.7в)
   const groupSect = () => [...document.querySelectorAll('#scr-settings details.sect')]
-    .find(d => /Блоки/.test(d.querySelector('summary').textContent));
-  groupSect().querySelector('summary').click();
+    .find(d => /Расписание/.test(d.querySelector('summary').textContent));
+  assert.ok(groupSect(), 'секция «Расписание» найдена');
+  if (!groupSect().open) groupSect().querySelector('summary').click();
   document.querySelector('[data-act="group-open"]').click();
-  document.querySelector('[data-act="group-del"]').click();
-  assert.match(document.querySelector('[data-act="group-del"]').textContent, /Подтвердить: удалить блок/);
+  document.querySelector('[data-act="group-remove"]').click();
+  assert.match(document.querySelector('[data-act="group-remove"]').textContent, /Подтвердить: убрать блок/);
   away();
   // правка блока переживает уход (её никто не отменял), а подтверждение — нет
-  assert.match(document.querySelector('[data-act="group-del"]').textContent, /^Удалить блок$/);
+  assert.match(document.querySelector('[data-act="group-remove"]').textContent, /^Убрать блок$/);
   assert.equal(saved().groups.length, 1, 'блок на месте');
+  assert.equal(saved().groups[0].removedAt, null, 'и не убран');
 });
 
 /* Прежде подпись следовала за ТУМБЛЕРОМ и обновлялась точечно, без
@@ -4122,6 +4267,10 @@ test('З22/7.3: шапка листа тренировки не повторяе
   assert.match(head.querySelector('.overline').textContent, /\d/, 'надстрочник — день записи');
 });
 
+/* Ветка минимума у подсказки снята вместе с формой добавления минимума
+   («Расписание 1/3», п. 2.4): действия заводятся быстрым добавлением,
+   подсказки там нет. Предмет теста прежний — подсказку вызывают только
+   пункты владельца, и она называет предмет той формы, в которой стоит. */
 test('З22/7.2: подсказка «одно новое дело за раз» — только по пунктам владельца, и предмет по области', async () => {
   // засеянный store: девять пунктов одной датой — подсказки нет
   const { document, window } = await boot();
@@ -4130,26 +4279,28 @@ test('З22/7.2: подсказка «одно новое дело за раз» 
   assert.equal(new Set(store.items.map(i => i.addedAt)).size, 1, 'посев одной датой');
 
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  document.querySelector('[data-act="add-open"]').click();
+  const addHabit = () => document.querySelector('[data-act="add-open"][data-area="habit"]');
+  addHabit().click();
   assert.equal(document.querySelector('#scr-settings .hint'), null, 'посев подсказку не вызывает');
+  document.querySelector('[data-act="add-cancel"]').click();
 
   // пункт владельца, заведённый на следующий день, — вызывает
   shiftWindowDate(window, 86400000);
   document.dispatchEvent(new window.Event('visibilitychange'));
-  document.querySelector('[data-act="add-open"]').click();
+  addHabit().click();
   document.getElementById('f-name').value = 'Своё';
   document.querySelector('[data-act="add-save"]').click();
-  document.querySelector('[data-act="add-open"]').click();
-  // область МИНИМУМА: подсказка не смеет называть пункт привычкой (задача 29/A).
-  // Прежде текст был один на обе ветки, и ownerNewestItem area не различает.
-  assert.match(document.querySelector('#scr-settings .hint').textContent,
-    /^Одно новое дело за раз: последнее добавлено меньше 14 дней назад\.$/);
-  document.querySelector('[data-act="add-cancel"]').click();
-  document.querySelector('[data-act="add-open"][data-area="habit"]').click();
+  addHabit().click();
   assert.match(document.querySelector('#scr-settings .hint').textContent,
     /^Одна новая привычка за раз: последнее добавлено меньше 14 дней назад\.$/);
   // «правило системы» из текста ушло: такого правила в «Системе» нет
   assert.doesNotMatch(document.querySelector('#scr-settings .hint').textContent, /Правило системы/);
+  document.querySelector('[data-act="add-cancel"]').click();
+  // у формы, где заводится МИНИМУМ, подсказки нет вовсе — и привычкой она
+  // пункт не назовёт (задача 29/A): строки минимума в приложении больше нет
+  document.querySelector('[data-act="quick-open"]').click();
+  assert.equal(document.querySelector('#scr-settings [data-form="quick"] .hint'), null);
+  assert.doesNotMatch(APP, /Одно новое дело за раз/);
 });
 
 test('З22/7.2: стёртый store — первый пункт владельца подсказку не глушит', async () => {
@@ -4158,14 +4309,16 @@ test('З22/7.2: стёртый store — первый пункт владель�
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 0);
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).settings.seed17, true);
 
+  // секция привычек — по заголовку («Пункты» ушли, «Расписание 1/3», п. 2.3)
   const openItems = () => {
     document.querySelector('#tabs button[data-tab="settings"]').click();
-    [...document.querySelectorAll('#scr-settings details.sect')]
-      .find(d => /^Пункты/.test(d.querySelector('summary').textContent))
-      .querySelector('summary').click();
+    const s = [...document.querySelectorAll('#scr-settings details.sect')]
+      .find(d => /^Привычки/.test(d.querySelector('summary').textContent));
+    assert.ok(s, 'секция «Привычки» найдена');
+    if (!s.open) s.querySelector('summary').click();
   };
   openItems();
-  document.querySelector('[data-act="add-open"]').click();
+  document.querySelector('[data-act="add-open"][data-area="habit"]').click();
   assert.equal(document.querySelector('#scr-settings .hint'), null, 'заводить пока нечего');
   document.getElementById('f-name').value = 'Первая';
   document.querySelector('[data-act="add-save"]').click();
@@ -4174,7 +4327,7 @@ test('З22/7.2: стёртый store — первый пункт владель�
   // три дня спустя владелец заводит вторую — подсказка обязана показаться
   shiftWindowDate(window, 3 * 86400000);
   document.dispatchEvent(new window.Event('visibilitychange'));
-  document.querySelector('[data-act="add-open"]').click();
+  document.querySelector('[data-act="add-open"][data-area="habit"]').click();
   assert.match(document.querySelector('#scr-settings .hint').textContent,
     /последнее добавлено меньше 14 дней назад/);
 });
@@ -5419,13 +5572,15 @@ test('З26/2.1: подтверждение стоит у своей строки
   const { document } = await boot({ seed: flashSeed() });
   openSettings(document);
 
-  // блок
-  openSect(document, /Блоки/);
+  // блок: секция — «Расписание», якорь — карточка блока, а не строка
+  // («Расписание 1/3», пп. 2.3–2.4)
+  assert.ok(openSect(document, /Расписание/), 'секция «Расписание» найдена');
   [...document.querySelectorAll('[data-act="group-open"]')].find(x => x.dataset.name === 'Вечер').click();
   document.getElementById('g-name').value = 'Ночь';
   document.querySelector('[data-act="group-save"]').click();
   let flash = document.querySelector('#scr-settings .flash');
-  assert.ok(flash.closest('.rowwrap').textContent.includes('Ночь'), 'подтверждение у переименованного блока');
+  assert.equal(flash.closest('.bcard').dataset.dragId, 'Ночь', 'подтверждение у переименованного блока');
+  assert.equal(flash.closest('.bbody'), null, 'у шапки, а не в теле карточки');
 
   // упражнение
   openSect(document, /Упражнения/);
@@ -5458,16 +5613,20 @@ const REFUSALS = [
     field: 'e-name', bad: '  ', save: 'edit-save', say: /Название не заполнено/ },
   { name: 'правка недельного', open: d => byId(d, 'edit-open', 'f-w').click(),
     field: 'e-goal', bad: '0', save: 'edit-save', say: /Цель не принята/ },
-  { name: 'добавление пункта', open: d => [...d.querySelectorAll('[data-act="add-open"]')].find(x => x.dataset.area === 'min').click(),
+  // Форма добавления минимума снята («Расписание 1/3», п. 2.4): её строки
+  // перенесены на то, чем минимум заводится теперь, — быстрое добавление, —
+  // и на форму добавления привычки, где осталось поле «Название»
+  { name: 'добавление привычки', open: d => d.querySelector('[data-act="add-open"][data-area="habit"]').click(),
     field: 'f-name', bad: '', save: 'add-save', say: /Название не заполнено/,
-    pre: d => { d.getElementById('f-value').value = '7'; } },
-  { name: 'добавление пункта — значение', open: d => [...d.querySelectorAll('[data-act="add-open"]')].find(x => x.dataset.area === 'min').click(),
-    field: 'f-value', bad: 'три', save: 'add-save', say: /Значение не принято/,
-    pre: d => { d.getElementById('f-name').value = 'Новый'; } },
-  { name: 'правка блока', sect: /Блоки/, open: d => d.querySelector('[data-act="group-open"]').click(),
-    field: 'g-name', bad: 'Вечер', save: 'group-save', say: /Блок с таким именем уже есть/ },
-  { name: 'добавление блока', sect: /Блоки/, open: d => d.querySelector('[data-act="group-add-open"]').click(),
-    field: 'g-add', bad: 'Утро', save: 'group-add-save', say: /Блок с таким именем уже есть/ },
+    pre: d => { d.getElementById('f-note').value = 'подпись'; } },
+  { name: 'быстрое добавление — ни одной строки', open: d => d.querySelector('[data-act="quick-open"]').click(),
+    field: 'q-lines', bad: '  \n   \n', save: 'quick-save', say: /Ни одной строки/ },
+  // одна таблица отказов на правку и добавление блока (п. 1.4): прежние
+  // «Блок с таким именем уже есть» и «Это имя уже занято» слились в одну фразу
+  { name: 'правка блока', sect: /Расписание/, open: d => d.querySelector('[data-act="group-open"]').click(),
+    field: 'g-name', bad: 'Вечер', save: 'group-save', say: /Это имя уже занято/ },
+  { name: 'добавление блока', sect: /Расписание/, open: d => d.querySelector('[data-act="group-add-open"]').click(),
+    field: 'g-add', bad: 'Утро', save: 'group-add-save', say: /Это имя уже занято/ },
   { name: 'правка упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-open"]').click(),
     field: 'x-name', bad: ' ', save: 'ex-save', say: /Название не заполнено/ },
   { name: 'добавление упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-add-open"]').click(),
@@ -5502,14 +5661,20 @@ test('З26/2.3–2.5: все формы отказывают одинаково 
 });
 
 test('З26/2.5: те же формы, принятый ввод — «Сохранено» и закрытие', async () => {
+  // Якорь у каждой формы свой (Р1/ревью): у пункта и упражнения — ИХ строка
+  // (row — id правленой строки, у форм добавления — строка с новым именем),
+  // у блока — шапка его карточки (card). Общее «.rowwrap или .bcard»
+  // пропускало узел, выпавший из строки недельного счётчика в список карточки
   const OK = [
-    { name: 'правка пункта', open: d => byId(d, 'edit-open', 'f-1').click(), field: 'e-name', good: 'Первый+', save: 'edit-save' },
-    { name: 'правка недельного', open: d => byId(d, 'edit-open', 'f-w').click(), field: 'e-goal', good: '4', save: 'edit-save' },
-    { name: 'добавление пункта', open: d => [...d.querySelectorAll('[data-act="add-open"]')].find(x => x.dataset.area === 'min').click(), field: 'f-name', good: 'Новый', save: 'add-save' },
-    { name: 'правка блока', sect: /Блоки/, open: d => d.querySelector('[data-act="group-open"]').click(), field: 'g-name', good: 'Рассвет', save: 'group-save' },
-    { name: 'добавление блока', sect: /Блоки/, open: d => d.querySelector('[data-act="group-add-open"]').click(), field: 'g-add', good: 'День', save: 'group-add-save' },
-    { name: 'правка упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-open"]').click(), field: 'x-name', good: 'Жим узким', save: 'ex-save' },
-    { name: 'добавление упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-add-open"]').click(), field: 'x-add-name', good: 'Присед', save: 'ex-add-save' }
+    { name: 'правка пункта', open: d => byId(d, 'edit-open', 'f-1').click(), field: 'e-name', good: 'Первый+', save: 'edit-save', row: 'f-1' },
+    { name: 'правка недельного', open: d => byId(d, 'edit-open', 'f-w').click(), field: 'e-goal', good: '4', save: 'edit-save', row: 'f-w' },
+    // добавление минимума — быстрой формой, у неё своё подтверждение
+    // («Добавлено: N»), и оно проверяется тестами «Р1/» ниже
+    { name: 'добавление привычки', open: d => d.querySelector('[data-act="add-open"][data-area="habit"]').click(), field: 'f-name', good: 'Новая', save: 'add-save', row: null },
+    { name: 'правка блока', sect: /Расписание/, open: d => d.querySelector('[data-act="group-open"]').click(), field: 'g-name', good: 'Рассвет', save: 'group-save', card: 'Рассвет' },
+    { name: 'добавление блока', sect: /Расписание/, open: d => d.querySelector('[data-act="group-add-open"]').click(), field: 'g-add', good: 'День', save: 'group-add-save', card: 'День' },
+    { name: 'правка упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-open"]').click(), field: 'x-name', good: 'Жим узким', save: 'ex-save', row: 'f-ex' },
+    { name: 'добавление упражнения', sect: /Упражнения/, open: d => d.querySelector('[data-act="ex-add-open"]').click(), field: 'x-add-name', good: 'Присед', save: 'ex-add-save', row: null }
   ];
   for (const f of OK) {
     const { document } = await boot({ seed: flashSeed() });
@@ -5524,7 +5689,18 @@ test('З26/2.5: те же формы, принятый ввод — «Сохра
     assert.ok(flash, `${f.name}: подтверждение показано`);
     assert.equal(flash.textContent, 'Сохранено', f.name);
     assert.equal(flash.classList.contains('keep'), false, `${f.name}: подтверждение гаснет само`);
-    assert.ok(flash.closest('.rowwrap'), `${f.name}: узел у строки записи`);
+    // у блока «строка записи» — его карточка («Расписание 1/3», п. 2.4), и
+    // узел стоит у шапки, а не в теле карточки
+    if (f.card) {
+      assert.equal(flash.closest('.bcard').dataset.dragId, f.card, `${f.name}: узел в карточке блока`);
+      assert.equal(flash.closest('.bbody'), null, `${f.name}: у шапки, а не в теле карточки`);
+      assert.equal(flash.closest('.rowwrap'), null, `${f.name}: не в строке действия`);
+    } else {
+      const row = flash.closest('.rowwrap');
+      assert.ok(row, `${f.name}: узел у строки записи`);
+      if (f.row) assert.equal(row.dataset.dragId, f.row, `${f.name}: у той самой строки`);
+      else assert.ok(row.textContent.includes(f.good), `${f.name}: у строки нового пункта`);
+    }
   }
 });
 
@@ -5838,6 +6014,13 @@ test('З26/6.1: ни одной тач-цели без отклика на на�
   const seed = sheetSeed();
   seed.exercises = [{ id: 'sx', name: 'Жим', unit: 'кг', value: 60, history: [], active: true, addedAt: addKey(prevMonday(), -14) }];
   seed.days[daysAgo(2)] = { it1: true }; // пункт начат, вчера пропуск — будет точка
+  // «Расписание 1/3», п. 4.1: карточка блока, убранный блок в «Убранных» —
+  // у них свои цели (шеврон свёртки, «Вернуть» блока)
+  seed.groups = [{ name: 'Утро', caption: '7:00' }, { name: 'Прежний', removedAt: daysAgo(3) }];
+  seed.items[0].group = 'Утро';
+  // будний блок без действий — цель для формы правки в режиме «свои дни»
+  // (этап C): в нём у действия есть недоступные чипы выходных
+  seed.groups.push({ name: 'Будни', days: [{ from: addKey(prevMonday(), -14), mask: '1111100' }] });
   const { document } = await boot({ seen: undefined, seed });
 
   const seen = new Set();
@@ -5857,6 +6040,26 @@ test('З26/6.1: ни одной тач-цели без отклика на на�
     }
     scan();
   }
+  // формы «Расписания» несут свои цели — чипы дней, пресеты, «Дублировать»,
+  // «Убрать блок», поле быстрого добавления; обход открывает каждую (п. 4.1)
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  for (const open of ['group-open', 'group-add-open', 'quick-open']) {
+    document.querySelector(`#scr-settings [data-act="${open}"]`).click();
+    assert.ok(document.querySelector('#scr-settings [data-form]'), 'форма открыта: ' + open);
+    scan();
+  }
+  // форма правки действия: «как блок» («Свои дни»), затем «свои дни» в
+  // будничном блоке — чипы, из них выходные недоступны, и «Как блок» (этап C)
+  document.querySelector('#scr-settings [data-act="edit-open"][data-id="it1"]').click();
+  assert.ok(document.querySelector('#scr-settings [data-form="edit"] [data-act="days-own"]'), 'режим «как блок»');
+  scan();
+  const pickSel = document.getElementById('e-group');
+  pickSel.value = 'Будни';
+  pickSel.dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
+  document.querySelector('#scr-settings [data-act="days-own"]').click();
+  assert.ok(document.querySelector('#scr-settings [data-form="edit"] .days .btn.day:disabled'), 'в режиме «свои» есть недоступные чипы');
+  assert.ok(document.querySelector('#scr-settings [data-form="edit"] [data-act="days-inherit"]'), 'и «Как блок»');
+  scan();
   document.querySelector('#tabs button[data-tab="today"]').click();
   document.querySelector('#scr-today [data-act="miss-note"]').click(); // раскрытая подпись даёт «отметить»
   scan();
@@ -6012,12 +6215,13 @@ test('З26/7: устаревших комментариев про «два ли
   // лестницей. Комментарий обязан называть их число верно
   assert.doesNotMatch(app, /три листа поверх них/);
   assert.match(app, /ДВА листа поверх них/);
-  // счёт форм в комментарии сторожа сходится с его же ассертом (было «девяти»)
+  // счёт форм в комментарии сторожа сходится с его же ассертом (было «девяти»;
+  // «Расписание 1/3», этап C, добавило два вида правки действия — одиннадцать)
   const dom = fs.readFileSync(path.join(ROOT, 'tests', 'dom.test.js'), 'utf8');
   const said = /outerHTML всех ([а-я]+) форм/.exec(dom)[1];
   const checked = /Object\.keys\(got\)\.length, (\d+),/.exec(dom)[1];
-  assert.equal(said, 'девяти');
-  assert.equal(checked, '9');
+  assert.equal(said, 'одиннадцати');
+  assert.equal(checked, '11');
   // docs/plan.md помечен историческим, а не выдаёт себя за источник задач
   const plan = fs.readFileSync(path.join(ROOT, 'docs', 'plan.md'), 'utf8');
   assert.match(plan, /исторический/i);
@@ -6409,7 +6613,8 @@ test('З27/5.4: подтверждения гасятся возвратом —
   // после чистки состояние пустое — менять не на что, и копия при возврате
   // просто убирается. Наработаем отметку, чтобы обмен был настоящим
   document.querySelector('#tabs button[data-tab="settings"]').click();
-  document.querySelector('#scr-settings [data-act="add-open"]').click();
+  // заводится привычкой: форма добавления осталась только у неё (п. 4.7б)
+  document.querySelector('#scr-settings [data-act="add-open"][data-area="habit"]').click();
   document.getElementById('f-name').value = 'Новый после чистки';
   document.querySelector('#scr-settings [data-act="add-save"]').click();
   document.querySelector('#tabs button[data-tab="settings"]').click();
@@ -6781,25 +6986,31 @@ test('З28B/3: лист тренировки возвращает фокус н�
   assert.equal(af.closest('section.screen').hidden, false);
 });
 
-/* 8.4. Формы «Настроек»: общий вид по всем сочетаниям. */
+/* 8.4. Формы «Настроек»: общий вид по всем сочетаниям. Быстрое добавление
+   («Расписание 1/3», п. 4.7е) — седьмая форма экрана и в переборе тоже;
+   кнопка добавления пункта — с областью: без неё селектор теперь ничего не
+   значит (п. 4.7б). */
 const SETTINGS_FORMS = [
   { key: 'пункт-правка', act: 'edit-open', field: 'e-name' },
-  { key: 'пункт-добавить', act: 'add-open', field: 'f-name' },
+  { key: 'пункт-добавить', act: 'add-open', area: 'habit', field: 'f-name' },
+  { key: 'быстрое', act: 'quick-open', field: 'q-lines' },
   { key: 'блок-правка', act: 'group-open', field: 'g-name' },
   { key: 'блок-добавить', act: 'group-add-open', field: 'g-add' },
   { key: 'упр-правка', act: 'ex-open', field: 'x-name' },
   { key: 'упр-добавить', act: 'ex-add-open', field: 'x-add-name' }
 ];
+const formBtn = f => `#scr-settings [data-act="${f.act}"]` + (f.area ? `[data-area="${f.area}"]` : '');
 
 function openAllSettingsSections(document) {
-  for (const re of [/Блоки/, /Пункты/, /Упражнения/]) {
+  for (const re of [/Расписание/, /Привычки/, /Упражнения/]) {
     const s = [...document.querySelectorAll('#scr-settings details.sect')]
       .find(x => re.test(x.querySelector('summary').textContent));
-    if (s && !s.open) s.querySelector('summary').click();
+    assert.ok(s, 'секция найдена: ' + re);
+    if (!s.open) s.querySelector('summary').click();
   }
 }
 
-test('З28B/4: на «Настройках» форма одна, и черновик прежней цел — все 30 сочетаний', async () => {
+test('З28B/4: на «Настройках» форма одна, и черновик прежней цел — все 42 сочетания', async () => {
   const seed = trainSeed();
   seed.groups = [{ name: 'Утро' }];
   seed.items[0].group = 'Утро';
@@ -6812,21 +7023,21 @@ test('З28B/4: на «Настройках» форма одна, и черно�
       const { document } = await boot({ seed });
       document.querySelector('#tabs button[data-tab="settings"]').click();
       openAllSettingsSections(document);
-      document.querySelector(`#scr-settings [data-act="${a.act}"]`).click();
+      document.querySelector(formBtn(a)).click();
       const inp = document.getElementById(a.field);
       assert.ok(inp, `${a.key}: форма открыта`);
       inp.value = 'ЧЕРНОВИК';
-      document.querySelector(`#scr-settings [data-act="${b.act}"]`).click();
+      document.querySelector(formBtn(b)).click();
       const forms = [...document.querySelectorAll('#scr-settings [data-form]')];
       assert.equal(forms.length, 1, `${a.key} → ${b.key}: на экране одна форма`);
       assert.equal(document.getElementById(a.field), null, `${a.key} → ${b.key}: первая закрыта`);
       // возврат к первой: набранное на месте
-      document.querySelector(`#scr-settings [data-act="${a.act}"]`).click();
+      document.querySelector(formBtn(a)).click();
       assert.equal(document.getElementById(a.field).value, 'ЧЕРНОВИК',
         `${a.key} → ${b.key}: черновик первой формы цел`);
     }
   }
-  assert.equal(пар, 30, 'проверены все сочетания');
+  assert.equal(пар, 42, 'проверены все сочетания');
 });
 
 test('З28B/4: «Отмена» черновик отбрасывает, а не прячет', async () => {
@@ -7185,12 +7396,26 @@ function schedSeed(mask, extra) {
   return seed;
 }
 
+/* Сдвинуть «сейчас» окна на delta ЛОГИЧЕСКИХ дней — к полудню местной даты
+   (Р1/ревью). Сдвиг на delta · 24 реальных часа через перевод стрелок
+   уводит местные часы на час, и около границы дня 04:00 логический ключ
+   уезжал на соседний день: в America/Toronto — регионе владельца — тесты
+   падали или проходили в зависимости от часа прогона. Полдень лежит
+   далеко от границы при любом переводе; отсчёт — от «сейчас» самого окна,
+   поэтому сдвиги складываются. */
+function shiftWindowDays(window, delta) {
+  const now = new window.Date();
+  const day = new Date(now.getTime() - 4 * 3600000); // логический день — та же формула, что dayKey
+  const noon = new Date(day.getFullYear(), day.getMonth(), day.getDate() + delta, 12);
+  shiftWindowDate(window, noon.getTime() - now.getTime());
+}
+
 /* Сдвинуть окно к ближайшему дню недели dow (0 — понедельник) и дать
    приложению перерисоваться сменой логического дня (инвариант 8). */
 async function moveToWeekday(window, document, dow) {
-  const cur = (new Date(new Date().getTime() - 4 * 3600000).getDay() + 6) % 7;
+  const cur = (new Date(new window.Date().getTime() - 4 * 3600000).getDay() + 6) % 7;
   const delta = ((dow - cur) + 7) % 7 || 7;
-  shiftWindowDate(window, delta * 86400000);
+  shiftWindowDays(window, delta);
   document.dispatchEvent(new window.Event('visibilitychange'));
   return delta;
 }
@@ -7231,7 +7456,7 @@ test('З29B/6.4: «только воскресенье» — в среду пу�
 });
 
 /* ── B.2.2 / B.2.8: день без применимых пунктов ──────────────── */
-test('З29B/6.3 (B.2.8): ноль применимых в дне — прежнее пустое состояние, без NaN', async () => {
+test('З29B/6.3 (B.2.8): ноль применимых в дне — пустое состояние без планки, без NaN', async () => {
   const seed = schedSeed('0000001');
   seed.items = seed.items.filter(i => i.id === 'sun' || i.type === 'weekly');
   const { document, window } = await boot({ seed });
@@ -7239,8 +7464,12 @@ test('З29B/6.3 (B.2.8): ноль применимых в дне — прежн�
   const today = document.getElementById('scr-today');
   assert.equal(today.querySelector('.dayline'), null, 'планки нет — измерять нечего');
   assert.doesNotMatch(today.textContent, /NaN|undefined|Infinity/);
-  // и это ровно то пустое состояние, что было до расписания (задача 22)
-  assert.match(today.textContent, /Пунктов пока нет/);
+  // Прежде здесь ждали «Пунктов пока нет» — пустое состояние задачи 22. Но
+  // пункт ЗАВЕДЁН, он просто не стоит в среде, и строка звала бы заводить
+  // заведённое. С «Расписанием 1/3» (п. 2.1) у дня без дел своя строка;
+  // прежняя осталась за хранилищем, где действий нет вовсе (тест Р1/ ниже).
+  assert.match(today.textContent, /На сегодня в расписании ничего нет\./);
+  assert.doesNotMatch(today.textContent, /Пунктов пока нет/);
 });
 
 test('З29B/6.3 (B.2.2): сквозной день в цепи гаснет, а не читается пропуском', async () => {
@@ -7265,7 +7494,10 @@ test('З29B/6.3 (B.2.2): сквозной день в цепи гаснет, а 
 /* ── B.2.3: полоса недели привычки ───────────────────────────── */
 test('З29B/6.3 (B.2.3): дни вне маски в полосе привычки инертны, счёт прежний', async () => {
   const seed = schedSeed('1010100', { area: 'habit', normPerWeek: 3, id: 'sun', name: 'Зал' });
-  const { document } = await boot({ seed });
+  const { document, window } = await boot({ seed });
+  // привычка с маской Пн/Ср/Пт на экране только в свои дни: без фиксации
+  // дня недели тест падал во вторник, четверг и выходные (дефект даты 29/B)
+  await moveToWeekday(window, document, 0);
   document.querySelector('#tabs button[data-tab="habits"]').click();
   const wrap = [...document.querySelectorAll('#scr-habits .rowwrap')]
     .find(w => /Зал/.test(w.textContent));
@@ -7362,7 +7594,9 @@ test('З29B/6.5: время сохраняется, печатается пер�
   document.querySelector('#tabs button[data-tab="settings"]').click();
   const srow = [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')]
     .find(x => x.dataset.id === id);
-  assert.equal(srow.querySelector('.note').textContent, '23:30 · на кухню');
+  // строка «Расписания» компактная («Расписание 1/3», п. 2.4): подпись идёт
+  // за именем в .csub, и время в ней — по-прежнему первым, дальше значение
+  assert.equal(srow.querySelector('.csub').textContent, ' · 23:30 · на кухню · 10 мин');
 });
 
 /* B.3.3: сортировки по времени НЕТ — порядок пунктов ручной (инвариант 17).
@@ -7405,4 +7639,2241 @@ test('З29B/6.3 (B.2.7): «Минимум закрыт N из 7» — знаме
   const { document } = await boot({ seed });
   document.querySelector('#scr-today [data-act="goto-review"]').click();
   assert.match(document.getElementById('scr-review').textContent, /Минимум закрыт \d из 7 дней/);
+});
+
+/* ══ «Расписание 1/3», доменный этап: единственная связка с интерфейсом ══
+   Форма правки пункта меняет блок через setItemGroup: у действия, заведённого
+   до сегодняшнего дня, перенос пишет журнал принадлежности, и прошлые дни
+   помнят прежний блок. Остальной интерфейс задачи — следующим этапом. */
+test('Р1/связка: смена блока в форме правки пишет журнал принадлежности', async () => {
+  const seed = chainSeed();
+  const { document, window } = await boot({ seed });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const born = seed.items.find(i => i.id === 'c1').addedAt;
+  assert.ok(born < daysAgo(0), 'пункт заведён раньше сегодняшнего дня');
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const openEdit = id => [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')]
+    .find(b => b.dataset.id === id).click();
+  const pick = value => {
+    const sel = document.getElementById('e-group');
+    sel.value = value;
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  };
+
+  openEdit('c1');
+  pick('Утро');
+  let c1 = saved().items.find(i => i.id === 'c1');
+  assert.equal(c1.group, 'Утро');
+  assert.deepEqual(c1.groupLog, [{ from: born, group: 'Вечер' }, { from: daysAgo(0), group: 'Утро' }],
+    'прежний блок — с дня заведения, новый — с сегодняшнего');
+
+  // сохранение без смены блока журнал не трогает
+  openEdit('c1');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.deepEqual(saved().items.find(i => i.id === 'c1').groupLog, c1.groupLog);
+
+  // обратно в тот же день — истории нет
+  openEdit('c1');
+  pick('Вечер');
+  c1 = saved().items.find(i => i.id === 'c1');
+  assert.equal(c1.group, 'Вечер');
+  assert.deepEqual(c1.groupLog, []);
+});
+
+/* ── Р1/рецензия: связки обработчиков с доменными отказами ─────── */
+
+/* Имя, оставшееся только в журналах принадлежности пунктов, занято
+   (nameTaken): переименование другого блока в него применило бы чужие дни к
+   прошлому этих пунктов. Прежде такое имя получали удалением блока; удаление
+   снято («Расписание 1/3», п. 4.7в), и осиротевшее имя в журнале теперь
+   приносит только файл — тест берёт его из сида. Имя убранного блока —
+   своя фраза: путь назад к нему существует. Обработчик обязан сказать
+   отказ, а не закрыть форму молча с прежним именем. */
+test('Р1/рецензия: «Сохранить» блока с именем из журнала — отказ строкой, форма цела', async () => {
+  const seed = chainSeed();
+  const born = seed.items[0].addedAt;
+  seed.schemaVersion = 18;
+  seed.items.find(i => i.id === 'c1').groupLog = [{ from: born, group: 'Старый' }, { from: addKey(born, 3), group: 'Вечер' }];
+  seed.groups.push({ name: 'Ушедший', removedAt: addKey(born, 5) });
+  const { document, window } = await boot({ seed });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  openSettings(document);
+  const open = name => [...document.querySelectorAll('#scr-settings [data-act="group-open"]')]
+    .find(b => b.dataset.name === name).click();
+  assert.ok(saved().items.find(i => i.id === 'c1').groupLog.some(e => e.group === 'Старый'),
+    'имя живёт только в журнале пункта');
+  assert.equal(saved().groups.some(g => g.name === 'Старый'), false, 'блока с ним нет');
+
+  open('Утро');
+  const before = window.localStorage.getItem(NS);
+  const trySave = (typed, say) => {
+    document.getElementById('g-name').value = typed;
+    document.querySelector('#scr-settings [data-act="group-save"]').click();
+    const said = document.querySelector('#scr-settings .flash.keep');
+    assert.ok(said, 'отказ сказан: ' + typed);
+    assert.match(said.textContent, say);
+    assert.ok(said.nextElementSibling.contains(document.querySelector('[data-act="group-save"]')), 'строка у нажатой кнопки');
+    assert.equal(document.querySelectorAll('#scr-settings .flash.keep').length, 1, 'повторный отказ заменяет прежний');
+    assert.equal(document.querySelector('#scr-settings .flash:not(.keep)'), null, '«Сохранено» не показано');
+    assert.ok(document.getElementById('g-name'), 'форма открыта');
+    assert.equal(document.getElementById('g-name').value, typed, 'введённое цело');
+    assert.equal(window.localStorage.getItem(NS), before, 'в store не записано ничего');
+  };
+  trySave('Старый', /^Это имя уже занято$/);
+  trySave('Ушедший', /^Блок «Ушедший» убран — вернуть можно в «Убранных»$/);
+  assert.deepEqual(saved().groups.map(g => g.name), ['Вечер', 'Утро', 'Ушедший']);
+});
+
+/* Прежде здесь стоял отказ «Удалить блок» блоку с днями: его дни держат
+   прошлые числа действий. Удаление снято («Расписание 1/3», п. 4.7в), и тот
+   же предмет — дни блока и прошлое его действий целы — держит уход: блок
+   убирается, но его дни и принадлежность пунктов остаются в store. Отказ
+   записи — строкой у кнопки, форма и подтверждение на месте. */
+test('Р1/рецензия: «Убрать блок» с днями — дни и пункты целы, отказ записи — строкой', async () => {
+  const seed = chainSeed();
+  const born = seed.items[0].addedAt;
+  seed.groups = [{ name: 'Вечер', days: [{ from: born, mask: '1111100' }] }, { name: 'Утро' }];
+  const { document, window } = await boot({ seed });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  openSettings(document);
+  [...document.querySelectorAll('#scr-settings [data-act="group-open"]')].find(b => b.dataset.name === 'Вечер').click();
+  const rm = () => document.querySelector('#scr-settings [data-act="group-remove"]');
+  rm().click();
+
+  // отказ хранилища: строка у кнопки, форма открыта, в store — ничего
+  const before = window.localStorage.getItem(NS);
+  withBrokenStorage(window, () => rm().click());
+  const said = document.querySelector('#scr-settings .flash.keep');
+  assert.ok(said, 'отказ сказан');
+  assert.match(said.textContent, /Не убрано: хранилище недоступно/);
+  assert.equal(window.localStorage.getItem(NS), before, 'в store не записано ничего');
+  assert.ok(document.getElementById('g-name'), 'форма открыта');
+
+  // уход: блок убран, его дни на месте, пункты при нём и ушли вместе с ним
+  rm().click(); // взвести заново: отказ снял взводку
+  rm().click();
+  const s = saved();
+  const g = s.groups.find(x => x.name === 'Вечер');
+  assert.equal(g.removedAt, daysAgo(0));
+  assert.deepEqual(g.days, [{ from: born, mask: '1111100' }], 'дни блока целы');
+  assert.deepEqual(s.items.filter(i => i.group === 'Вечер').map(i => i.id), ['c1', 'c2', 'c3'], 'пункты в блоке');
+  assert.equal(s.items.filter(i => i.group === 'Вечер').every(i => i.removedAt === daysAgo(0)), true);
+});
+
+/* Действие, у которого своих дней в днях блока не осталось, возвращается
+   «как блок». Это смена маски за владельца — она называется строкой, как
+   зажатие нормы; обычный возврат — прежнее «Сохранено». */
+test('Р1/рецензия: «Вернуть» действие без единого дня — «как блок», и это названо', async () => {
+  const seed = chainSeed();
+  const born = seed.items[0].addedAt;
+  seed.groups = [{ name: 'Вечер', days: [{ from: born, mask: '1111100' }] }, { name: 'Утро' }];
+  const c1 = seed.items.find(i => i.id === 'c1');
+  c1.schedule = [{ from: born, mask: '0000011' }]; // в днях блока — ни одного (пришло импортом)
+  c1.removedAt = daysAgo(1);
+  const c2 = seed.items.find(i => i.id === 'c2');
+  c2.removedAt = daysAgo(1);
+  const { document, window } = await boot({ seed });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  openSettings(document);
+  const restore = id => [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="item-restore"]')]
+    .find(b => b.dataset.id === id).click();
+
+  restore('c1');
+  let s = saved();
+  const copy = s.items[s.items.findIndex(i => i.id === 'c1') + 1];
+  assert.equal(copy.name, 'Свет');
+  assert.deepEqual(copy.schedule, [{ from: daysAgo(0), mask: '1111111' }], 'своя маска — «все семь», то есть как блок');
+  assert.deepEqual(s.items.find(i => i.id === 'c1').schedule, [{ from: born, mask: '0000011' }], 'прежняя запись не тронута');
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.ok(flash, 'подтверждение есть');
+  assert.match(flash.textContent, /Вернулся с днями блока/);
+  assert.ok(flash.closest('.rowwrap').querySelector(`[data-id="${copy.id}"]`), 'у вернувшейся строки');
+
+  restore('c2');
+  s = saved();
+  const copy2 = s.items[s.items.findIndex(i => i.id === 'c2') + 1];
+  assert.deepEqual(copy2.schedule, [{ from: daysAgo(0), mask: '1111111' }]);
+  const flash2 = document.querySelector('#scr-settings .flash');
+  assert.equal(flash2.textContent, 'Сохранено', 'обычный возврат — обычное подтверждение');
+});
+
+/* Карточка понижения называет те числа, по которым решено: отметки в днях
+   плана. Отметка вне плана (отмечено, потом в тот же день сужены дни)
+   остаётся в days{}, но в числитель порога не идёт. */
+test('Р1/рецензия: «Сделать легче» — отметки вне дней плана в счёт не идут', async () => {
+  const seed = dueSeed();
+  const prev = prevMonday();
+  seed.groups = [{ name: 'Выходные', days: [{ from: addKey(prev, -14), mask: '0000011' }] }];
+  seed.items[0].group = 'Выходные';
+  seed.items[0].value = 20;
+  seed.items[0].history = [{ date: addKey(prev, -14), value: 20 }];
+  // отметки только по понедельникам — вне плана; первая, до окна, делает пункт начатым
+  seed.days = { [addKey(prev, -14)]: { it1: true }, [addKey(prev, -7)]: { it1: true }, [prev]: { it1: true } };
+  const { document } = await boot({ seed });
+  openReview(document);
+  const card = document.querySelector('#scr-review .card.lower');
+  assert.ok(card, 'понижение предложено: по плану 0 из 2 обе недели');
+  assert.match(card.textContent, /Тестовый пункт — 0 и 0 из 2 за две недели/);
+});
+
+/* ══ «Расписание 1/3», этап A: дневные экраны, разбор, тексты ════════
+   Разметка заголовка блока с подписью, пустое «Сегодня», знаменатель
+   сетки разбора по дням плана и тексты «Системы». «Настройки» этим
+   этапом не перестраиваются. */
+
+const R1_ALL = '1111111';
+
+/* Действие (или привычка) в канонической форме v19: журнал принадлежности
+   блоку — только у ежедневного пункта минимума */
+function r1Action(id, name, since, group, mask, extra) {
+  const it = Object.assign({
+    id, name, value: null, unit: '', type: 'daily', area: 'min',
+    goal: null, note: '', group, removedAt: null, addedAt: since, at: '',
+    schedule: [{ from: since, mask }], groupLog: [],
+    raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+    formula: null, ladder: null, ladderLog: []
+  }, extra || {});
+  if (!(it.type === 'daily' && it.area === 'min')) delete it.groupLog;
+  return it;
+}
+
+const r1Block = (name, caption, days) => ({ name, caption: caption || '', days: days || [], removedAt: null });
+
+/* Store схемы v19 без посева: блоки и пункты — только переданные */
+function r1Store(groups, items, days) {
+  return {
+    schemaVersion: SCHEMA_VERSION, items, groups, days: days || {}, weekLog: [], reviews: [],
+    pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
+    paramDecided: {}, draftOneChange: '', weekStart: curMonday(),
+    settings: { dayBoundary: 4, dayThreshold: 0.8, exportedAt: null, calendarSince: curMonday(), habitSeeded: true, seed17: true }
+  };
+}
+
+/* Фикстура владельца (п. 6 задачи) — одна на оба уровня тестов, данные и
+   сборка в tests/r1-owner.js. Здесь сборка идёт через window jsdom-окна,
+   затем окно уезжает к нужному дню недели (0 — понедельник): фикстура от
+   даты прогона не зависит. */
+const { R1_OWNER, buildR1Owner } = require('./r1-owner.js');
+
+async function bootR1Owner(dow) {
+  const { window, document } = await boot({ seed: r1Store([], []) });
+  buildR1Owner(window, assert);
+  window.renderAll();
+  await moveToWeekday(window, document, dow);
+  return { window, document };
+}
+
+/* Заголовки блоков экрана: [имя, подпись | null] */
+const r1Labels = scr => [...scr.querySelectorAll('.list .g-label')]
+  .map(l => [l.firstElementChild.textContent, l.querySelector('.g-cap') ? l.querySelector('.g-cap').textContent : null]);
+
+test('Р1/2.1: фикстура владельца — вторник: 20 действий, «0 из 20», заголовки с подписями, «Выходного» нет', async () => {
+  const { document } = await bootR1Owner(1);
+  const scr = document.getElementById('scr-today');
+  assert.equal(scr.querySelectorAll('.list input[data-act="mark"]').length, 20, '20 строк');
+  assert.match(scr.querySelector('.bar-note').textContent, /^0\s*из\s*20$/);
+  assert.deepEqual(r1Labels(scr), [
+    ['Утро', '7:00'], ['Школа', '9:00–15:15 · вт, чт до 13:55'], ['Дом + Спорт', 'с 15:20'],
+    ['Учеба', 'до 20:30'], ['Вечер', 'до 22:30']
+  ], 'будний «Выходной» не рендерится, остальные — по порядку store.groups, с подписью справа');
+  const names = [...scr.querySelectorAll('.list .row .tname')].map(n => n.textContent.trim());
+  assert.equal(names.includes('Прогулка'), false, 'действия выходного блока нет');
+  assert.equal(names.includes('Блок 3'), false, 'свои дни «Блока 3» — пн, ср, пт: во вторник его нет');
+  assert.ok(names.includes('Блок 2'), 'а соседи по «Учебе» на месте');
+  // имя и подпись — два узла: подпись приглушённо справа, а не хвост имени
+  const lbl = scr.querySelector('.list .g-label');
+  assert.equal(lbl.children.length, 2);
+  assert.equal(lbl.lastElementChild.className, 'g-cap');
+  // подпись действия из строки после « · » — на своём месте в строке
+  const row = [...scr.querySelectorAll('.list .rowwrap')].find(r => r.querySelector('.tname').textContent.trim() === 'Спорт');
+  assert.equal(row.querySelector('.note').textContent, 'отключить интернет на телефоне');
+});
+
+test('Р1/2.1: фикстура владельца — суббота: 12 действий, «0 из 12», «Школы» и «Дом + Спорт» нет', async () => {
+  const { document } = await bootR1Owner(5);
+  const scr = document.getElementById('scr-today');
+  assert.equal(scr.querySelectorAll('.list input[data-act="mark"]').length, 12, '12 строк');
+  assert.match(scr.querySelector('.bar-note').textContent, /^0\s*из\s*12$/);
+  assert.deepEqual(r1Labels(scr), [
+    ['Утро', '7:00'], ['Учеба', 'до 20:30'], ['Выходной', null], ['Вечер', 'до 22:30']
+  ], 'будние блоки в субботу не рендерятся; у блока без подписи узла подписи нет');
+  assert.doesNotMatch(scr.textContent, /Школа|Дом \+ Спорт|Звонок родным|Переодеться/);
+  assert.equal(scr.querySelectorAll('.list .g-cap').length, 3, 'пустой подписи не печатается');
+});
+
+test('Р1/2.1: фикстура владельца — понедельник: 21, «Блок 3» стоит в «Учебе» своими днями', async () => {
+  const { document } = await bootR1Owner(0);
+  const scr = document.getElementById('scr-today');
+  assert.equal(scr.querySelectorAll('.list input[data-act="mark"]').length, 21);
+  assert.match(scr.querySelector('.bar-note').textContent, /^0\s*из\s*21$/);
+  const b3 = [...scr.querySelectorAll('.list .rowwrap')].find(r => r.querySelector('.tname').textContent.trim() === 'Блок 3');
+  assert.ok(b3, '«Блок 3» в понедельник на экране');
+  assert.equal(b3.closest('.chain').previousElementSibling.firstElementChild.textContent, 'Учеба', 'в своём блоке');
+});
+
+test('Р1/2.1: блок без сегодняшних пунктов скрыт на обоих экранах; подпись видна и на «Привычках»', async () => {
+  const since = addKey(curMonday(), -14);
+  const seed = r1Store([
+    r1Block('Утро', '7:00'),
+    r1Block('Вечер', 'до 22:30 <b>&</b>'),   // дни блока — все семь, но у действия свои
+    r1Block('Зал', 'с 18:00')
+  ], [
+    r1Action('a1', 'Кровать', since, 'Утро', R1_ALL),
+    r1Action('a2', 'Душ', since, 'Вечер', '1101111'),         // без среды
+    r1Action('h1', 'Отбой', since, 'Вечер', R1_ALL, { area: 'habit', normPerWeek: 7 }),
+    r1Action('h2', 'Жим', since, 'Зал', '1101111', { area: 'habit', normPerWeek: 6 })
+  ]);
+  seed.settings.calendarSince = since;
+  const { document, window } = await boot({ seed });
+  await moveToWeekday(window, document, 2); // среда
+  const today = document.getElementById('scr-today');
+  assert.deepEqual(r1Labels(today), [['Утро', '7:00']],
+    '«Вечер» в среду пуст — дни блока его допускают, но единственное действие в среде не стоит');
+  assert.match(today.querySelector('.bar-note').textContent, /^0\s*из\s*1$/);
+
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const habits = document.getElementById('scr-habits');
+  assert.deepEqual(r1Labels(habits), [['Вечер', 'до 22:30 <b>&</b>']],
+    'подпись — та же на «Привычках»; «Зал» без сегодняшних привычек скрыт');
+  assert.equal(habits.querySelector('.g-cap').children.length, 0, 'подпись экранирована: слово владельца, не разметка');
+});
+
+test('Р1/2.1: «На сегодня в расписании ничего нет.» — только когда действия заведены, но не в этом дне', async () => {
+  const since = addKey(curMonday(), -14);
+  const seedWith = (items) => {
+    const s = r1Store([r1Block('Выходной', '', [{ from: since, mask: '0000011' }])], items);
+    s.settings.calendarSince = since;
+    return s;
+  };
+  const walk = extra => r1Action('walk', 'Прогулка', since, 'Выходной', R1_ALL, Object.assign({ note: '40 минут' }, extra));
+
+  // (1) будний день: действие есть, в дне не стоит — строка дня, планки нет
+  const a = await boot({ seed: seedWith([walk()]) });
+  await moveToWeekday(a.window, a.document, 1);
+  const ta = a.document.getElementById('scr-today');
+  assert.match(ta.textContent, /На сегодня в расписании ничего нет\./);
+  assert.doesNotMatch(ta.textContent, /Пунктов пока нет/, 'не звать заводить заведённое');
+  assert.equal(ta.querySelector('.dayline'), null, 'измерять нечего');
+  assert.equal(ta.querySelector('.list'), null);
+  assert.equal(ta.querySelector('.g-label'), null, 'и заголовка пустого блока нет');
+
+  // (2) суббота: то же действие на месте — строки нет, планка есть
+  const b = await boot({ seed: seedWith([walk()]) });
+  await moveToWeekday(b.window, b.document, 5);
+  const tb = b.document.getElementById('scr-today');
+  assert.doesNotMatch(tb.textContent, /На сегодня в расписании ничего нет/);
+  assert.match(tb.querySelector('.bar-note').textContent, /^0\s*из\s*1$/);
+
+  // (3) действие убрано — живых нет вовсе: прежняя строка с новым путём
+  const c = await boot({ seed: seedWith([walk({ removedAt: addKey(since, 1) })]) });
+  await moveToWeekday(c.window, c.document, 1);
+  const tc = c.document.getElementById('scr-today');
+  assert.match(tc.textContent, /Пунктов пока нет — добавить можно в Настройках → Расписание\./);
+  assert.doesNotMatch(tc.textContent, /На сегодня в расписании/, 'убранное действие заведённым не считается');
+
+  // (4) живая привычка — не действие: «Сегодня» принадлежит минимуму
+  const d = await boot({ seed: seedWith([walk({ id: 'hb', area: 'habit', normPerWeek: 2 })]) });
+  await moveToWeekday(d.window, d.document, 1);
+  const td = d.document.getElementById('scr-today');
+  assert.match(td.textContent, /Пунктов пока нет — добавить можно в Настройках → Расписание\./);
+  assert.doesNotMatch(td.textContent, /На сегодня в расписании/, 'привычка действием не считается');
+});
+
+test('Р1/2.1: пути пустых состояний — «Расписание» и «Привычки»; «Пункты» не названы нигде', async () => {
+  const a = await boot({ seed: r1Store([], []) });
+  assert.match(a.document.getElementById('scr-today').textContent,
+    /Пунктов пока нет — добавить можно в Настройках → Расписание\./);
+  a.document.querySelector('#tabs button[data-tab="habits"]').click();
+  assert.match(a.document.getElementById('scr-habits').textContent,
+    /Привычек пока нет — добавить можно в Настройках → Привычки\./);
+
+  const b = await boot({ seed: dueSeed() }); // привычек нет, разбор назрел
+  openReview(b.document);
+  assert.match(b.document.getElementById('scr-review').textContent,
+    /Привычек пока нет — добавить можно в Настройках → Привычки\./);
+  // секция «Пункты» уходит: путь к ней не должен остаться ни в одной строке
+  assert.doesNotMatch(APP, /Настройках → Пункты/);
+});
+
+/* Сетка разбора: у действия знаменатель — дни плана недели */
+function r1ReviewSeed() {
+  const seed = dueSeed();
+  const prev = prevMonday();
+  const since = addKey(prev, -14);
+  seed.groups = [{ name: 'Школа', caption: '8:30', days: [{ from: since, mask: '1111100' }] }];
+  seed.items.push(
+    r1Action('hw', 'Домашка', since, 'Школа', R1_ALL),                 // как блок: 5 дней
+    r1Action('sw', 'Бассейн', since, 'Школа', '1010100'),              // своими: 3 дня
+    r1Action('call', 'Звонок', since, '', '0000001'),                  // без блока: 1 день
+    r1Action('new', 'Новое', daysAgo(0), '', R1_ALL),                  // заведено после недели: 0
+    r1Action('hb', 'Зал', since, 'Школа', '1010100', { area: 'habit', normPerWeek: 3 })
+  );
+  const mark = (k, id) => { (seed.days[k] || (seed.days[k] = {}))[id] = true; };
+  for (const i of [0, 1, 2, 5]) mark(addKey(prev, i), 'hw');         // суббота — вне плана
+  mark(prev, 'sw');
+  mark(prev, 'hb');
+  return seed;
+}
+
+const r1GridRow = (grid, name) => {
+  const n = [...grid.querySelectorAll('.g-name')].find(x => x.firstChild.textContent === name);
+  assert.ok(n, 'строка сетки ' + name);
+  return {
+    plan: n.querySelector('.g-plan'),
+    sr: n.querySelector('.sr-only').textContent,
+    on: n.nextElementSibling.querySelectorAll('i.on').length
+  };
+};
+
+test('Р1/2.2: сетка разбора — «запланировано 5 дней» и «из 5» у будничного, без подписи у ежедневного, без «из 0»', async () => {
+  const { document } = await boot({ seed: r1ReviewSeed() });
+  openReview(document);
+  const review = document.getElementById('scr-review');
+  const [minGrid, habitGrid] = review.querySelectorAll('.grid');
+
+  const hw = r1GridRow(minGrid, 'Домашка');
+  assert.ok(hw.plan, 'подпись у будничного действия есть');
+  // число и слово — через неразрывный пробел (\u00a0): подпись в узкой
+  // колонке переносится, и слово не должно отрываться от числа
+  assert.equal(hw.plan.textContent, 'запланировано 5\u00a0дней');
+  assert.equal(hw.plan.getAttribute('aria-hidden'), 'true', 'число D уже звучит в sr-only');
+  assert.equal(hw.sr, ', отмечено 3 из 5', 'субботняя отметка вне плана в числитель не идёт');
+  assert.equal(hw.on, 4, 'круги не меняются: отметка вне плана видна как отметка');
+
+  const sw = r1GridRow(minGrid, 'Бассейн');
+  assert.equal(sw.plan.textContent, 'запланировано 3\u00a0дня', 'свои дни ∧ дни блока; plural «дня»');
+  assert.equal(sw.sr, ', отмечено 1 из 3');
+  const call = r1GridRow(minGrid, 'Звонок');
+  assert.equal(call.plan.textContent, 'запланировано 1\u00a0день', 'plural «день»');
+  assert.equal(call.sr, ', отмечено 0 из 1');
+
+  const daily = r1GridRow(minGrid, 'Тестовый пункт');
+  assert.equal(daily.plan, null, 'у ежедневного подписи нет — семь дней ничего не сообщают');
+  assert.equal(daily.sr, ', отмечено 2 из 7', 'как было');
+
+  const fresh = r1GridRow(minGrid, 'Новое');
+  assert.equal(fresh.plan, null, 'D = 0 — подписи нет');
+  assert.equal(fresh.sr, ', не запланировано');
+  assert.doesNotMatch(review.textContent, /из 0(?!\d)/, '«из 0» не печатается нигде');
+  assert.doesNotMatch(review.textContent, /запланировано 0/);
+
+  // привычке знаменатель прежний: у неё своя недельная логика (норма)
+  const hb = r1GridRow(habitGrid, 'Зал');
+  assert.equal(hb.plan, null);
+  assert.equal(hb.sr, ', отмечено 1 из 7');
+
+  // «Три закрытые недели» остаются «из 7» (решение документа, п. 2.2)
+  const c = [...review.querySelectorAll('.consist .c-name')].find(x => x.textContent === 'Домашка');
+  assert.match(c.nextElementSibling.textContent, / из 7$/);
+});
+
+test('Р1/сторож: отметки на «Сегодня» по фикстуре владельца — точечно = перерисовка', async () => {
+  // вторник: в store есть действие, исключённое днями БЛОКА («Прогулка»), и
+  // действие, исключённое СВОИМИ днями («Блок 3») — updateDayline обязан
+  // исключать обоих тем же правилом, что renderToday
+  const { document, window } = await bootR1Owner(1);
+  const boxes = () => [...document.querySelectorAll('#scr-today input[data-act="mark"]')];
+  assert.equal(boxes().length, 20);
+
+  boxes()[0].click();
+  assert.match(document.querySelector('#scr-today .bar-note').textContent, /^1\s*из\s*20$/);
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'первая отметка');
+
+  for (const b of boxes().slice(1)) b.click();
+  assert.match(document.querySelector('#scr-today .bar-note').textContent, /День закрыт/);
+  await wait(T.DAY_CLOSE_MS + T.MOTION_TAIL_MS + 40); // сцена закрытия дня снимает свой след сама
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт');
+
+  boxes()[7].click(); // первое действие «Школы»
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'снятие отметки');
+});
+
+test('Р1/4.6: «Система» — блок убирается, а не удаляется, и у него есть дни', async () => {
+  const start = APP.indexOf('const SYSTEM_TEXTS = [');
+  const src = APP.slice(start, APP.indexOf('\n];', start));
+  assert.ok(start >= 0 && src.length > 500, 'литерал SYSTEM_TEXTS найден');
+  assert.doesNotMatch(src, /удаля/i, 'ни в текстах, ни в комментарии рядом');
+
+  const { document } = await boot();
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const sys = [...document.querySelectorAll('#scr-settings section.sys')].map(s => s.textContent).join('\n');
+  assert.ok(sys.length > 0, 'раздел «Система» отрисован');
+  assert.doesNotMatch(sys, /удал/i);
+  assert.match(sys, /Блок — связка пунктов\. На дневном экране они соединены линией и идут подряд\. Линия показывает принадлежность, а не очередь: порядок не принудителен\. У блока есть дни недели; действие появляется в дни своего блока, а свои дни действия могут их только сузить\./);
+  assert.match(sys, /Всё правится\. Блоки заводятся, переименовываются и убираются в Настройках → Расписание; убранный блок уводит из виду свои действия и привычки, отметки остаются\./);
+});
+
+test('Р1/CSS: подпись блока и подпись плана — существующие ступень и тон, перенос вместо обрезки', () => {
+  const css = CSS_SRC();
+  const label = ruleOf(css, '.g-label');
+  assert.match(label, /display:\s*flex/);
+  assert.match(label, /justify-content:\s*space-between/);
+  assert.match(label, /align-items:\s*baseline/);
+  assert.match(label, /gap:/);
+
+  const cap = ruleOf(css, '.g-cap');
+  assert.ok(cap, 'правило .g-cap');
+  assert.match(cap, /font-size:\s*var\(--text-xs\)/, 'кегль — существующая ступень, как у имени блока');
+  assert.match(cap, /color:\s*var\(--muted\)/, 'не тише надстрочника (З26/5.3)');
+  assert.doesNotMatch(cap, /--faint/);
+  assert.match(cap, /text-transform:\s*none/, 'подпись — слово владельца, без капители');
+  assert.match(cap, /letter-spacing:\s*normal/);
+  assert.match(cap, /font-weight:\s*400/);
+
+  const plan = ruleOf(css, '.g-plan');
+  assert.ok(plan, 'правило .g-plan');
+  assert.match(plan, /display:\s*block/);
+  assert.match(plan, /white-space:\s*normal/, 'переносится, а не режется многоточием имени');
+  assert.match(plan, /color:\s*var\(--muted\)/);
+  assert.match(plan, /font-size:\s*var\(--text-xs\)/);
+});
+
+/* ══ «Расписание 1/3», этап B: секции «Настроек» и конструктор ════════
+   Карточки блоков вместо секций «Блоки» и «Пункты», форма блока с днями и
+   пресетами, быстрое добавление действий, копия и уход блока, «Привычки»
+   отдельной секцией. Форма правки ДЕЙСТВИЯ (режимы «как блок» / «свои») —
+   этап C: здесь её открытие, строка и стрелки. */
+
+const r1Settings = document => {
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  return document.getElementById('scr-settings');
+};
+const r1Card = (document, name) => [...document.querySelectorAll('#scr-settings .bcard[data-drag="group"]')]
+  .find(c => c.dataset.dragId === name);
+const r1Btn = (document, act, name) => [...document.querySelectorAll(`#scr-settings [data-act="${act}"]`)]
+  .find(b => b.dataset.name === name);
+const r1Saved = window => JSON.parse(window.localStorage.getItem(NS));
+const r1Chips = document => [...document.querySelectorAll('#scr-settings [data-form] .days .btn.day')]
+  .map(b => (b.getAttribute('aria-pressed') === 'true' ? '1' : '0')).join('');
+
+/* Отказ формы: строка у нажатой кнопки, форма открыта, в store — ничего
+   (правило задачи 26, п. 2.4) */
+function r1Refused(document, window, act, say, before) {
+  const said = document.querySelector('#scr-settings .flash.keep');
+  assert.ok(said, 'отказ сказан: ' + say);
+  assert.match(said.textContent, say);
+  assert.ok(said.nextElementSibling.contains(document.querySelector(`#scr-settings [data-act="${act}"]`)), 'строка у нажатой кнопки');
+  assert.equal(document.querySelectorAll('#scr-settings .flash.keep').length, 1, 'повторный отказ заменяет прежний');
+  assert.equal(document.querySelector('#scr-settings .flash:not(.keep)'), null, '«Сохранено» не показано');
+  assert.equal(document.querySelectorAll('#scr-settings [data-form]').length, 1, 'форма открыта');
+  assert.equal(window.localStorage.getItem(NS), before, 'в store не записано ничего');
+}
+
+/* Малое хранилище: три блока — Утро (7:00, ежедневно), Школа (будни),
+   Выходной (выходные); действия, недельный счётчик, привычка и параметр */
+function r1SettingsSeed() {
+  const since = daysAgo(10);
+  const param = r1Action('ph', 'Отбой', since, '', R1_ALL, { type: 'param', area: 'habit', pkind: 'time', pvalue: 0, pstep: -15, history: [{ date: since, value: 0 }] });
+  delete param.schedule;
+  return r1Store(
+    [r1Block('Утро', '7:00'), r1Block('Школа', 'до 15:15', [{ from: since, mask: '1111100' }]),
+      r1Block('Выходной', '', [{ from: since, mask: '0000011' }])],
+    [r1Action('u1', 'Кровать', since, 'Утро', R1_ALL),
+      r1Action('u2', 'Развитие', since, 'Утро', R1_ALL, { note: '10 мин' }),
+      r1Action('s1', 'Экстра', since, 'Школа', '1010100', { at: '11:45' }),
+      r1Action('s2', 'Пост', since, 'Школа', R1_ALL, { value: 5, unit: 'мин', history: [{ date: since, value: 3 }, { date: daysAgo(2), value: 5 }] }),
+      Object.assign(r1Action('sw', 'Спорт', since, 'Школа', R1_ALL, { type: 'weekly', goal: 3 }), { schedule: undefined }),
+      r1Action('sh', 'Чтение', since, 'Школа', R1_ALL, { area: 'habit', normPerWeek: 5 }),
+      r1Action('w1', 'Прогулка', since, 'Выходной', R1_ALL),
+      param]
+  );
+}
+
+test('Р1/B: карточки блоков — имя, подпись, сводка дней и строки действий по фикстуре владельца', async () => {
+  const { document, window } = await bootR1Owner(1);
+  window.addGroup('Зал', '', '1010100');
+  const scr = r1Settings(document);
+  const cards = [...scr.querySelectorAll('.bcard[data-drag="group"]')];
+  assert.deepEqual(cards.map(c => c.dataset.dragId), ['Утро', 'Школа', 'Дом + Спорт', 'Учеба', 'Выходной', 'Вечер', 'Зал'],
+    'порядок — store.groups');
+  const head = c => [c.querySelector('.bhead .tname').textContent,
+    c.querySelector('.bhead .bcap') ? c.querySelector('.bhead .bcap').textContent : null,
+    c.querySelector('.bhead .meta').textContent];
+  assert.deepEqual(cards.map(head), [
+    ['Утро', '7:00', 'ежедневно'], ['Школа', '9:00–15:15 · вт, чт до 13:55', 'будни'],
+    ['Дом + Спорт', 'с 15:20', 'будни'], ['Учеба', 'до 20:30', 'ежедневно'],
+    ['Выходной', null, 'выходные'], ['Вечер', 'до 22:30', 'ежедневно'], ['Зал', null, 'пн, ср, пт']
+  ]);
+  // шапка — одна цель правки, у стрелок границы по живым блокам
+  assert.equal(cards[0].querySelector('.bhead [data-act="group-open"]').getAttribute('aria-label'), 'изменить блок «Утро»');
+  assert.equal(cards[0].querySelector('[data-act="group-up"]').disabled, true);
+  assert.equal(cards[6].querySelector('[data-act="group-down"]').disabled, true);
+  assert.equal(cards[1].querySelector('[data-act="group-up"]').disabled, false);
+  // действия — в своей карточке, в порядке строк; подпись после « · »
+  const rows = name => [...r1Card(document, name).querySelectorAll('.bbody .rowwrap[data-drag="item"]')];
+  assert.equal(rows('Утро').length, 7);
+  assert.equal(rows('Утро')[5].querySelector('.tname').textContent, 'Развитие · 10 мин');
+  // дни в строке — только когда отличаются от дней блока: «Блок 3» — свои
+  const b3 = rows('Учеба')[2];
+  assert.equal(b3.querySelector('.tname').firstChild.textContent, 'Блок 3');
+  assert.equal(b3.querySelector('.csub').textContent, ' · 50 минут / 10 перерыв · пн, ср, пт');
+  assert.equal(rows('Школа')[1].querySelector('.csub').textContent, ' · 11:45', 'как блок — дни не повторяются');
+  assert.equal(scr.querySelector('.bcard.loose'), null, 'действий без блока нет — и карточки «Без блока» нет');
+});
+
+test('Р1/B: строка действия — время, подпись, значение, цель, свои дни; пустые дни названы; история — в форме', async () => {
+  const seed = r1SettingsSeed();
+  seed.items.push(r1Action('z1', 'Ноль', daysAgo(10), 'Выходной', '1111100')); // ∧ выходные = пусто (импорт)
+  seed.items.push(r1Action('x1', 'Разметка', daysAgo(10), 'Утро', R1_ALL, { note: '<i>курсив</i>' }));
+  const { document } = await boot({ seed });
+  r1Settings(document);
+  const sub = id => {
+    const r = [...document.querySelectorAll('#scr-settings .rowwrap[data-drag="item"]')].find(x => x.dataset.dragId === id);
+    const c = r.querySelector('.csub');
+    return c ? c.textContent : null;
+  };
+  assert.equal(sub('u1'), null, 'без подписи — только имя');
+  assert.equal(sub('u2'), ' · 10 мин');
+  assert.equal(sub('s1'), ' · 11:45 · пн, ср, пт', 'время первым, свои дни — последними');
+  assert.equal(sub('s2'), ' · 5 мин');
+  assert.equal(sub('sw'), ' · цель 3 / нед.', 'у недельного счётчика дней нет');
+  assert.equal(sub('z1'), ' · ни одного дня');
+  assert.equal(sub('x1'), ' · <i>курсив</i>', 'подпись — слово владельца, печатается текстом');
+  assert.equal(document.querySelector('#scr-settings .csub i'), null, 'и разметкой не становится');
+  assert.doesNotMatch(document.getElementById('scr-settings').textContent, /Планка:/, 'истории в строке нет');
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 's2').click();
+  assert.match(document.querySelector('#scr-settings [data-form="edit"] p.muted .hist').textContent, /^Планка: 3 → 5 мин · с /);
+});
+
+test('Р1/B: свёртка карточки — шевроном, фокус на нём, переживает перерисовку и переименование', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  const fold = name => r1Btn(document, 'group-fold', name);
+  const body = name => document.getElementById(fold(name).getAttribute('aria-controls'));
+  assert.equal(fold('Утро').getAttribute('aria-expanded'), 'true', 'по умолчанию развёрнуты все');
+  assert.equal(body('Утро').hidden, false);
+  assert.ok(r1Card(document, 'Утро').contains(body('Утро')), 'aria-controls указывает на тело своей карточки');
+
+  fold('Утро').click();
+  assert.equal(document.activeElement, fold('Утро'), 'фокус — на том же шевроне');
+  assert.equal(fold('Утро').getAttribute('aria-expanded'), 'false');
+  assert.equal(fold('Утро').getAttribute('aria-label'), 'развернуть «Утро»');
+  assert.equal(body('Утро').hidden, true);
+  assert.equal(document.getElementById('g-name'), null, 'свёртка — не форма');
+
+  // перерисовка по чужому поводу свёртку не теряет
+  r1Btn(document, 'group-down', 'Школа').click();
+  assert.equal(body('Утро').hidden, true);
+  // переименование уносит свёртку с собой
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-name').value = 'Рассвет';
+  r1Btn(document, 'group-save', 'Утро').click();
+  assert.equal(r1Saved(window).groups[0].name, 'Рассвет');
+  assert.equal(body('Рассвет').hidden, true, 'ключ свёртки перенесён на новое имя');
+  fold('Рассвет').click();
+  assert.equal(body('Рассвет').hidden, false);
+  assert.equal(fold('Рассвет').getAttribute('aria-label'), 'свернуть «Рассвет»');
+
+  // возврат действия из «Убранных» кладёт строку и подтверждение в свёрнутую
+  // карточку — она разворачивается (п. 4.2)
+  removeItemThroughUi(document, 'u2');
+  fold('Рассвет').click();
+  assert.equal(body('Рассвет').hidden, true);
+  r1Settings(document); // короткий путь снят — остаётся длинный
+  [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="item-restore"]')].find(b => b.dataset.id === 'u2').click();
+  assert.equal(body('Рассвет').hidden, false, 'карточка развернулась');
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.ok(body('Рассвет').contains(flash), 'подтверждение — у вернувшейся строки, и оно видно');
+});
+
+test('Р1/B: якорь в свёрнутой карточке — она разворачивается, подтверждение видно, скролл не прыгает', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'group-fold', 'Утро').click();
+  // геометрия: скрытое — нулевой прямоугольник (как в браузере), видимое — на 400
+  window.HTMLElement.prototype.getBoundingClientRect = function () {
+    const top = this.closest('[hidden]') ? 0 : 400;
+    return { top, bottom: top + 44, height: top ? 44 : 0, left: 0, right: 375, width: 375, x: 0, y: top };
+  };
+  const jumps = [];
+  window.scrollTo = (x, y) => jumps.push(y);
+
+  // перенос действия в свёрнутый блок: подтверждение ляжет в его тело
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'w1').click();
+  const sel = document.getElementById('e-group');
+  sel.value = 'Утро';
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.ok(flash, 'подтверждение есть');
+  assert.ok(r1Card(document, 'Утро').contains(flash), 'у строки в целевой карточке');
+  assert.equal(flash.closest('[hidden]'), null, 'и видно: карточка развёрнута до перерисовки');
+  assert.deepEqual(jumps, [], 'узел встал туда, где стояла кнопка, — скролл не тронут');
+
+  // сторож выборки: узел в скрытом теле карточки якорем не считается
+  const hiddenBody = document.createElement('div');
+  hiddenBody.hidden = true;
+  hiddenBody.innerHTML = '<p class="flash">скрытый</p><p class="gone-note">скрытый</p>';
+  document.querySelector('#scr-settings .blocks').prepend(hiddenBody);
+  const btn = document.querySelector('#scr-settings [data-act="group-add-open"]');
+  assert.equal(window.eval('visibleFlash')(), flash, 'подтверждение — видимое, а не первое в DOM');
+  window.keepInPlace(btn, () => {});
+  const shownNote = document.createElement('p');
+  shownNote.className = 'gone-note';
+  document.querySelector('#scr-settings .blocks').append(shownNote);
+  assert.equal(window.eval('goneNoteEl')(), shownNote, 'короткий путь назад — тем же правилом');
+  window.keepInPlace(btn, () => {}, window.eval('goneNoteEl'));
+  assert.deepEqual(jumps, [], 'первый в DOM, но скрытый узел не уводит скролл на высоту кнопки');
+});
+
+test('Р1/B: форма блока — чипы и пресеты, «Будни» пишется отрезком с сегодня и даёт сводку «будни»', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Утро').click();
+  const form = () => document.querySelector('#scr-settings [data-form="group-edit"]');
+  assert.equal(form().dataset.id, 'Утро');
+  assert.ok(r1Card(document, 'Утро').contains(form()), 'форма — в карточке своего блока');
+  assert.equal(document.getElementById('g-cap').value, '7:00');
+  assert.equal(document.getElementById('g-cap').getAttribute('placeholder'), 'например: 7:00');
+  assert.equal(r1Chips(document), '1111111', 'чипы — дни блока');
+  assert.deepEqual([...form().querySelectorAll('.presets [data-act="days-preset"]')].map(b => [b.textContent, b.dataset.mask]),
+    [['Ежедневно', '1111111'], ['Будни', '1111100'], ['Выходные', '0000011']]);
+  assert.ok(form().querySelector('.days').compareDocumentPosition(form().querySelector('.presets')) & 4, 'пресеты — под чипами');
+
+  const preset = mask => form().querySelector(`[data-act="days-preset"][data-mask="${mask}"]`);
+  preset('1111100').click();
+  assert.equal(r1Chips(document), '1111100');
+  assert.equal(document.activeElement, preset('1111100'), 'фокус — тот же пресет');
+  assert.deepEqual(r1Saved(window).groups[0].days, [], 'пресет правит черновик, не данные');
+  // чип правит тот же черновик — дни БЛОКА, а не пункта
+  form().querySelector('[data-act="day-toggle"][data-day="5"]').click();
+  assert.equal(r1Chips(document), '1111110');
+  assert.equal(document.activeElement.dataset.day, '5', 'фокус — тот же чип');
+  preset('1111100').click();
+
+  r1Btn(document, 'group-save', 'Утро').click();
+  assert.deepEqual(r1Saved(window).groups[0].days, [{ from: daysAgo(0), mask: '1111100' }], 'отрезок с сегодняшнего дня');
+  assert.deepEqual(r1Saved(window).items.find(i => i.id === 'u1').schedule, [{ from: daysAgo(10), mask: R1_ALL }], 'маски действий не тронуты');
+  assert.equal(r1Card(document, 'Утро').querySelector('.bhead .meta').textContent, 'будни');
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'форма закрылась');
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.equal(flash.textContent, 'Сохранено');
+  assert.ok(r1Card(document, 'Утро').contains(flash) && !flash.closest('.bbody'), 'у шапки блока');
+
+  // повторная смена в тот же день заменяет отрезок, возврат к прежним дням его снимает
+  r1Btn(document, 'group-open', 'Утро').click();
+  preset('1111111').click();
+  r1Btn(document, 'group-save', 'Утро').click();
+  assert.deepEqual(r1Saved(window).groups[0].days, [], 'схлопнулось: прошлое о днях не знает');
+  assert.equal(r1Card(document, 'Утро').querySelector('.bhead .meta').textContent, 'ежедневно');
+  // подпись пишется trim'ом и пустой бывает
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-cap').value = '  ';
+  r1Btn(document, 'group-save', 'Утро').click();
+  assert.equal(r1Saved(window).groups[0].caption, '');
+  assert.equal(r1Card(document, 'Утро').querySelector('.bcap'), null, 'пустая подпись не печатается');
+});
+
+test('Р1/B: отказы формы блока — пусто, занято, убран, нет дней, «не останется ни одного дня», хранилище', async () => {
+  const seed = r1SettingsSeed();
+  seed.groups.push(Object.assign(r1Block('Ушедший'), { removedAt: daysAgo(3) }));
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  const before = window.localStorage.getItem(NS);
+  const attempt = (block, setup, say) => {
+    if (!document.querySelector(`#scr-settings [data-form="group-edit"][data-id="${block}"]`)) r1Btn(document, 'group-open', block).click();
+    setup();
+    const typed = document.getElementById('g-name').value;
+    r1Btn(document, 'group-save', block).click();
+    r1Refused(document, window, 'group-save', say, before);
+    assert.equal(document.getElementById('g-name').value, typed, 'имя в поле цело');
+  };
+  attempt('Утро', () => { document.getElementById('g-name').value = '  '; }, /^Название не заполнено$/);
+  attempt('Утро', () => { document.getElementById('g-name').value = 'Школа'; }, /^Это имя уже занято$/);
+  attempt('Утро', () => { document.getElementById('g-name').value = 'Ушедший'; }, /^Блок «Ушедший» убран — вернуть можно в «Убранных»$/);
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+
+  // нет дней: все чипы сняты
+  attempt('Утро', () => {
+    for (let i = 0; i < 7; i++) document.querySelector(`#scr-settings [data-act="day-toggle"][data-day="${i}"]`).click();
+  }, /^Нужен хотя бы один день недели$/);
+  assert.equal(r1Chips(document), '0000000', 'снятые дни в форме целы');
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+
+  // «Экстра» — свои дни пн, ср, пт: в выходные у неё не останется ни одного
+  attempt('Школа', () => {
+    document.querySelector('#scr-settings [data-act="days-preset"][data-mask="0000011"]').click();
+  }, /^Не останется ни одного дня: Экстра$/);
+  assert.equal(r1Chips(document), '0000011', 'выбранный пресет в форме цел');
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+
+  // хранилище отказало: откат целиком, форма и ввод на месте
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-name').value = 'Рассвет';
+  document.getElementById('g-cap').value = '6:30';
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="1111100"]').click();
+  withBrokenStorage(window, () => r1Btn(document, 'group-save', 'Утро').click());
+  r1Refused(document, window, 'group-save', /^Не сохранено: хранилище недоступно$/, before);
+  assert.equal(document.getElementById('g-name').value, 'Рассвет');
+  assert.equal(document.getElementById('g-cap').value, '6:30');
+  assert.equal(r1Chips(document), '1111100');
+  // и в памяти ничего не осталось: следующая удачная запись — прежнее состояние + своё
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+  r1Btn(document, 'group-down', 'Утро').click();
+  assert.deepEqual(r1Saved(window).groups.slice(0, 2).map(g => [g.name, g.caption, g.days]),
+    [['Школа', 'до 15:15', [{ from: daysAgo(10), mask: '1111100' }]], ['Утро', '7:00', []]], 'откат был полным');
+});
+
+test('Р1/B: «Добавить блок» — подпись и дни, в конец, подтверждение у новой карточки; отказы', async () => {
+  const seed = r1SettingsSeed();
+  seed.groups.push(Object.assign(r1Block('Ушедший'), { removedAt: daysAgo(3) }));
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  const before = window.localStorage.getItem(NS);
+  const open = () => { if (!document.getElementById('g-add')) document.querySelector('#scr-settings [data-act="group-add-open"]').click(); };
+  const save = () => document.querySelector('#scr-settings [data-act="group-add-save"]').click();
+
+  open();
+  assert.equal(r1Chips(document), '1111111', 'новый блок — по умолчанию ежедневно');
+  assert.ok(document.querySelector('#scr-settings [data-form="group-add"] [data-act="days-preset"]'), 'пресеты есть');
+  for (const [name, say] of [['', /^Название не заполнено$/], ['Утро', /^Это имя уже занято$/],
+    ['Ушедший', /^Блок «Ушедший» убран — вернуть можно в «Убранных»$/]]) {
+    document.getElementById('g-add').value = name;
+    save();
+    r1Refused(document, window, 'group-add-save', say, before);
+    assert.equal(document.getElementById('g-add').value, name);
+  }
+  for (let i = 0; i < 7; i++) document.querySelector(`#scr-settings [data-act="day-toggle"][data-day="${i}"]`).click();
+  document.getElementById('g-add').value = 'Зал';
+  save();
+  r1Refused(document, window, 'group-add-save', /^Нужен хотя бы один день недели$/, before);
+
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="0000011"]').click();
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="2"]').click();
+  document.getElementById('g-add').value = '  Зал  ';
+  document.getElementById('g-add-cap').value = ' 18:00 ';
+  save();
+  const s = r1Saved(window);
+  assert.deepEqual(s.groups[s.groups.length - 1], { name: 'Зал', caption: '18:00', days: [{ from: daysAgo(0), mask: '0010011' }], removedAt: null });
+  assert.equal(document.getElementById('g-add'), null, 'форма закрылась');
+  const card = r1Card(document, 'Зал');
+  assert.equal(card.querySelector('.bhead .meta').textContent, 'ср, сб, вс');
+  assert.equal(card.querySelector('.bhead .bcap').textContent, '18:00');
+  assert.equal(document.querySelector('#scr-settings .flash').textContent, 'Сохранено');
+  assert.ok(card.contains(document.querySelector('#scr-settings .flash')), 'у новой карточки');
+  // «Отмена» черновик дней снимает: следующее открытие — снова «ежедневно»
+  open();
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="1111100"]').click();
+  document.querySelector('#scr-settings [data-act="group-add-cancel"]').click();
+  open();
+  assert.equal(r1Chips(document), '1111111');
+});
+
+test('Р1/B: «Добавить действия» — строки фикстуры «Утро» становятся действиями блока по порядку', async () => {
+  const { document, window } = await boot({ seed: r1Store([r1Block('Утро', '7:00'), r1Block('Вечер')], []) });
+  r1Settings(document);
+  const card = () => r1Card(document, 'Утро');
+  const lines = R1_OWNER[0].lines;
+  r1Btn(document, 'quick-open', 'Утро').click();
+  const form = card().querySelector('.bbody [data-form="quick"]');
+  assert.ok(form, 'форма — в теле карточки своего блока');
+  assert.ok(form.classList.contains('card') && form.classList.contains('form'), 'карточка формы: исключение перетаскивания');
+  assert.equal(r1Btn(document, 'quick-open', 'Утро'), undefined, 'кнопки на время формы нет — форма на её месте');
+  const ta = document.getElementById('q-lines');
+  assert.equal(ta.tagName, 'TEXTAREA');
+  assert.equal(ta.getAttribute('placeholder'), 'Кровать\nРазвитие · 10 мин');
+  assert.match(form.textContent, /Действия — по одному в строке/);
+  assert.match(form.textContent, /После « · » — подпись\./);
+
+  const before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="quick-save"]').click();
+  r1Refused(document, window, 'quick-save', /^Ни одной строки$/, before);
+
+  const typed = '\n' + lines.join('\n\n') + '\n   \n';
+  ta.value = typed;
+  withBrokenStorage(window, () => document.querySelector('#scr-settings [data-act="quick-save"]').click());
+  r1Refused(document, window, 'quick-save', /^Не добавлено: хранилище недоступно$/, before);
+  assert.equal(document.getElementById('q-lines').value, typed, 'текст в поле цел');
+
+  document.querySelector('#scr-settings [data-act="quick-save"]').click();
+  const items = r1Saved(window).items;
+  assert.equal(items.length, lines.length, 'пустые строки не стали действиями');
+  assert.deepEqual(items.map(i => [i.name, i.note, i.group, i.type, i.area]), [
+    ['Кровать', '', 'Утро', 'daily', 'min'], ['Шторы', '', 'Утро', 'daily', 'min'],
+    ['Стакан воды', '', 'Утро', 'daily', 'min'], ['Телефон (музыка)', '', 'Утро', 'daily', 'min'],
+    ['Умывание + глаза', '', 'Утро', 'daily', 'min'], ['Развитие', '10 мин', 'Утро', 'daily', 'min'],
+    ['Завтрак + еда на обед', '', 'Утро', 'daily', 'min']
+  ]);
+  assert.deepEqual(items[0].schedule, [{ from: daysAgo(0), mask: R1_ALL }], '«как блок» с сегодняшнего дня');
+  assert.equal(document.getElementById('q-lines'), null, 'форма закрылась');
+  const flash = card().querySelector('.flash');
+  assert.equal(flash.textContent, `Добавлено: ${lines.length}`);
+  assert.ok(flash.previousElementSibling.classList.contains('list'), 'сразу за списком карточки');
+  assert.equal(flash.nextElementSibling.dataset.act, 'quick-open', 'на месте кнопки «Добавить действия»');
+  assert.deepEqual([...card().querySelectorAll('.bbody .rowwrap [data-act="edit-open"]')].map(b => b.dataset.id), items.map(i => i.id),
+    'строки карточки — в порядке набора');
+  assert.equal(r1Card(document, 'Вечер').querySelectorAll('.rowwrap').length, 0, 'чужой блок пуст');
+  // повторное открытие — пустое поле: сохранённое черновиком не возвращается
+  r1Btn(document, 'quick-open', 'Утро').click();
+  assert.equal(document.getElementById('q-lines').value, '');
+  // и на «Сегодня» они на месте
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.match(document.querySelector('#scr-today .bar-note').textContent, new RegExp(`0\\s*из\\s*${lines.length}`));
+});
+
+test('Р1/B: «Без блока» — карточка без дней и формы блока, быстрое добавление, короткий путь последнего', async () => {
+  // блоков нет вовсе: карточка «Без блока» — единственное место, где родиться действию
+  const a = await boot({ seed: r1Store([], []) });
+  r1Settings(a.document);
+  const loose = () => a.document.querySelector('#scr-settings .bcard.loose');
+  assert.ok(loose());
+  assert.equal(loose().dataset.drag, undefined, 'не перетаскивается');
+  assert.equal(loose().querySelector('[data-act="group-open"], [data-act="group-fold"], .meta'), null, 'ни формы блока, ни дней');
+  assert.equal(loose().querySelector('.g-label').textContent, 'Без блока');
+  r1Btn(a.document, 'quick-open', '').click();
+  assert.equal(loose().querySelector('[data-form="quick"]').dataset.id, '');
+  a.document.getElementById('q-lines').value = 'Одно · подпись\nДругое';
+  a.document.querySelector('#scr-settings [data-act="quick-save"]').click();
+  assert.deepEqual(r1Saved(a.window).items.map(i => [i.name, i.note, i.group]), [['Одно', 'подпись', ''], ['Другое', '', '']]);
+  assert.equal(loose().querySelector('.flash').textContent, 'Добавлено: 2', 'подтверждение — в карточке «Без блока»');
+
+  // блоки есть, действий без блока нет — карточки нет
+  const b = await boot({ seed: r1SettingsSeed() });
+  r1Settings(b.document);
+  assert.equal(b.document.querySelector('#scr-settings .bcard.loose'), null);
+
+  // последнее действие без блока убрано — карточка остаётся ради «Вернуть» (п. 4.4)
+  const seed = r1SettingsSeed();
+  seed.items = seed.items.filter(i => i.id !== 'ph');
+  seed.items.push(r1Action('l1', 'Одинокое', daysAgo(10), '', R1_ALL));
+  seed.items.push(r1Action('lh', 'Привычка сама по себе', daysAgo(10), '', R1_ALL, { area: 'habit', normPerWeek: 7 }));
+  const c = await boot({ seed });
+  removeItemThroughUi(c.document, 'l1');
+  const cl = c.document.querySelector('#scr-settings .bcard.loose');
+  assert.ok(cl, 'карточка «Без блока» на месте');
+  assert.ok(cl.querySelector('.gone-note [data-act="item-restore"]'), 'в ней — короткий путь назад');
+  assert.equal(c.document.activeElement.dataset.act, 'item-restore', 'фокус на «Вернуть»');
+  // то же у привычки без блока в секции «Привычки»
+  removeItemThroughUi(c.document, 'lh');
+  const habits = [...c.document.querySelectorAll('#scr-settings details.sect')].find(d => /^Привычки/.test(d.querySelector('summary').textContent));
+  assert.ok(habits.querySelector('.gone-note [data-act="item-restore"]'), 'раздел без блока в «Привычках» держит «Вернуть»');
+});
+
+test('Р1/B: «Дублировать блок» — копия с действиями и днями за источником; подтверждение у источника; отказ', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Школа').click();
+  const dup = () => r1Btn(document, 'group-dup', 'Школа');
+  assert.equal(dup().textContent, 'Дублировать блок');
+  assert.equal(dup().parentElement.children.length, 1, 'в своём ряду');
+  const before = window.localStorage.getItem(NS);
+  withBrokenStorage(window, () => dup().click());
+  r1Refused(document, window, 'group-dup', /^Не скопировано: хранилище недоступно$/, before);
+
+  dup().click();
+  const s = r1Saved(window);
+  assert.deepEqual(s.groups.map(g => g.name), ['Утро', 'Школа', 'Школа (копия)', 'Выходной'], 'копия — сразу за источником');
+  assert.deepEqual(s.groups[2], { name: 'Школа (копия)', caption: 'до 15:15', days: [{ from: daysAgo(0), mask: '1111100' }], removedAt: null });
+  const copies = s.items.filter(i => i.group === 'Школа (копия)');
+  assert.deepEqual(copies.map(i => [i.name, i.type, i.addedAt]), [['Экстра', 'daily', daysAgo(0)], ['Пост', 'daily', daysAgo(0)], ['Спорт', 'weekly', daysAgo(0)]],
+    'действия — daily и weekly, привычка не копируется');
+  assert.deepEqual(copies[0].schedule, [{ from: daysAgo(0), mask: '1010100' }], 'свои дни у копии те же');
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'формы закрыты');
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.equal(flash.textContent, 'Копия создана: «Школа (копия)»');
+  assert.ok(r1Card(document, 'Школа').contains(flash) && !flash.closest('.bbody'), 'у шапки источника, где стояла форма');
+  assert.equal(r1Card(document, 'Школа').nextElementSibling, r1Card(document, 'Школа (копия)'), 'карточка копии — следом');
+  assert.equal(r1Card(document, 'Школа (копия)').querySelectorAll('.bbody .rowwrap').length, 3);
+
+  r1Btn(document, 'group-open', 'Школа').click();
+  dup().click();
+  assert.equal(r1Saved(window).groups[2].name, 'Школа (копия 2)', 'занятое имя копии — следующий номер');
+});
+
+test('Р1/B: «Убрать блок» — вторым тапом; действия и привычки уходят; «Вернуть» коротко и из «Убранных»', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  const marked = [...document.querySelectorAll('#scr-today input[data-act="mark"]')][0];
+  const markedId = marked.dataset.id;
+  marked.click();
+  r1Settings(document);
+  r1Btn(document, 'group-fold', 'Школа').click(); // свёрнутая — возврат обязан её развернуть
+  r1Btn(document, 'group-open', 'Школа').click();
+  const rm = () => r1Btn(document, 'group-remove', 'Школа');
+  const form = () => document.querySelector('#scr-settings [data-form="group-edit"]');
+  const lead = () => [...form().children].slice(0, [...form().children].indexOf(rm().parentElement)).map(n => n.outerHTML).join('');
+  const was = lead();
+  assert.equal(rm().textContent, 'Убрать блок');
+  assert.equal(rm().parentElement.children.length, 1, '«Убрать блок» — в своём ряду');
+  rm().click();
+  assert.equal(rm().textContent, 'Подтвердить: убрать блок');
+  assert.equal(lead(), was, 'над кнопкой ничего не выросло — она не сдвинулась');
+  const consequence = rm().parentElement.nextElementSibling;
+  assert.equal(consequence.textContent, 'Блок уйдёт из списков вместе с действиями и привычками. Отметки и прошлые дни останутся как есть.',
+    'последствие — под кнопкой');
+  assert.equal(r1Saved(window).groups[1].removedAt, null, 'первый тап не убирает');
+
+  const daysBefore = JSON.stringify(r1Saved(window).days);
+  rm().click();
+  let s = r1Saved(window);
+  assert.equal(s.groups[1].removedAt, daysAgo(0));
+  assert.deepEqual(s.items.filter(i => i.group === 'Школа').map(i => [i.id, i.removedAt]),
+    [['s1', daysAgo(0)], ['s2', daysAgo(0)], ['sw', daysAgo(0)], ['sh', daysAgo(0)]], 'действия, счётчик и привычка ушли вместе с блоком');
+  assert.equal(JSON.stringify(s.days), daysBefore, 'отметки не тронуты');
+  assert.equal(r1Card(document, 'Школа'), undefined, 'карточки нет');
+  const note = document.querySelector('#scr-settings .blocks > .gone-note');
+  assert.equal(note.textContent, 'Школа · убранВернуть');
+  assert.equal(note.previousElementSibling, r1Card(document, 'Утро'), 'на месте карточки');
+  assert.equal(document.activeElement, note.querySelector('[data-act="group-restore"]'), 'фокус на «Вернуть»');
+  const goneRows = () => [...document.querySelectorAll('#scr-settings .rowwrap.gone')];
+  assert.equal(goneRows().some(r => /Школа/.test(r.textContent)), false, 'в «Убранных» блок не дублируется');
+  assert.equal(goneRows().some(r => /Экстра|Пост|Чтение/.test(r.textContent)), false, 'ушедшее с блоком — не отдельными строками');
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  assert.doesNotMatch(document.getElementById('scr-habits').textContent, /Чтение/, 'привычка блока ушла и с «Привычек»');
+
+  // короткий путь не пережил уход с экрана — длинный на месте
+  r1Settings(document);
+  assert.equal(document.querySelector('#scr-settings .blocks > .gone-note'), null);
+  const row = goneRows().find(r => r.querySelector('[data-act="group-restore"]'));
+  assert.equal(row.querySelector('.tname').textContent, 'Школа');
+  assert.match(row.querySelector('.meta').textContent, /^убран /);
+  row.querySelector('[data-act="group-restore"]').click();
+  s = r1Saved(window);
+  assert.equal(s.groups[1].removedAt, null, 'блок вернулся');
+  assert.deepEqual(s.items.filter(i => i.group === 'Школа').map(i => [i.id, i.removedAt]),
+    [['s1', null], ['s2', null], ['sw', null], ['sh', null]], 'в тот же день — те же записи');
+  assert.ok(r1Card(document, 'Школа'), 'карточка на месте');
+  assert.equal(r1Card(document, 'Школа').querySelectorAll('.bbody .rowwrap').length, 3, 'с действиями');
+  assert.equal(r1Card(document, 'Школа').querySelector('.bbody').hidden, false, 'и развёрнута: возврат ложится в неё (п. 4.2)');
+  assert.equal(document.querySelector('#scr-settings .flash').textContent, 'Сохранено');
+  assert.ok(r1Card(document, 'Школа').contains(document.querySelector('#scr-settings .flash')));
+  assert.equal(r1Saved(window).days[daysAgo(0)][markedId], true);
+
+  // отказ записи у короткого пути — строкой, блок остаётся убранным
+  r1Btn(document, 'group-open', 'Выходной').click();
+  r1Btn(document, 'group-remove', 'Выходной').click();
+  r1Btn(document, 'group-remove', 'Выходной').click();
+  const back = document.querySelector('#scr-settings .blocks > .gone-note [data-act="group-restore"]');
+  withBrokenStorage(window, () => back.click());
+  assert.match(document.querySelector('#scr-settings .flash.keep').textContent, /^Не возвращено: хранилище недоступно$/);
+  assert.equal(r1Saved(window).groups[2].removedAt, daysAgo(0));
+  // и у ухода — тоже: форма цела, блок жив
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Утро').click();
+  r1Btn(document, 'group-remove', 'Утро').click();
+  const before = window.localStorage.getItem(NS);
+  withBrokenStorage(window, () => r1Btn(document, 'group-remove', 'Утро').click());
+  r1Refused(document, window, 'group-remove', /^Не убрано: хранилище недоступно$/, before);
+});
+
+test('Р1/B: стрелки и перетаскивание блоков — среди живых, убранный перепрыгивается; тело карточки не захватывает', async () => {
+  const seed = r1Store([r1Block('A'), Object.assign(r1Block('B'), { removedAt: daysAgo(2) }), r1Block('C')],
+    [r1Action('a1', 'Первое', daysAgo(10), 'A', R1_ALL), r1Action('a2', 'Второе', daysAgo(10), 'A', R1_ALL)]);
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  assert.equal(r1Btn(document, 'group-down', 'A').disabled, false, 'ниже A — живой C, убранный соседом не считается');
+  assert.equal(r1Btn(document, 'group-down', 'C').disabled, true);
+  r1Btn(document, 'group-down', 'A').click();
+  assert.deepEqual(r1Saved(window).groups.map(g => g.name), ['C', 'B', 'A'], 'убранный держит своё место');
+  assert.equal(document.activeElement.dataset.act, 'group-up', 'на краю фокус — парной стрелке');
+  assert.equal(document.activeElement.dataset.name, 'A');
+  r1Btn(document, 'group-up', 'A').click();
+  assert.deepEqual(r1Saved(window).groups.map(g => g.name), ['A', 'B', 'C']);
+
+  const cards = () => [...document.querySelectorAll('#scr-settings [data-drag="group"]')];
+  assert.deepEqual(cards().map(c => c.dataset.dragId), ['A', 'C']);
+  // долгое нажатие на «Добавить действия», на тело карточки и на подтверждение — не захват
+  const bodyTargets = () => [r1Btn(document, 'quick-open', 'A'), r1Card(document, 'A').querySelector('.bbody'),
+    r1Card(document, 'A').querySelector('.bbody .list')];
+  for (const target of bodyTargets()) {
+    stubRows(cards());
+    target.dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+    await hold();
+    assert.equal(document.querySelector('.drag-live'), null, 'захвата нет: ' + (target.dataset.act || target.className));
+    document.dispatchEvent(pointer(window, 'pointerup', 100, 230));
+  }
+  // подтверждение в строке действия — не рукоять: долгое нажатие на
+  // «Сохранено» не поднимает строку (п. 4.3)
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'a1').click();
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  const saved = r1Card(document, 'A').querySelector('[data-drag="item"] .flash');
+  assert.ok(saved, 'подтверждение стоит внутри строки');
+  stubRows([...r1Card(document, 'A').querySelectorAll('[data-drag="item"]')]);
+  saved.dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  await hold();
+  assert.equal(document.querySelector('.drag-live'), null, 'за подтверждение строку не берут');
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 230));
+
+  // строка действия в карточке — своя цель: поднимается строка, а не блок
+  const rowsA = () => [...r1Card(document, 'A').querySelectorAll('[data-drag="item"]')];
+  stubRows(rowsA());
+  rowsA()[0].querySelector('.tname').dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  await hold();
+  assert.equal(rowsA()[0].classList.contains('drag-live'), true, 'захвачена строка');
+  assert.equal(r1Card(document, 'A').classList.contains('drag-live'), false, 'а не карточка');
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 230));
+  await hold(); // клик, заглушённый после перетаскивания, отпускается
+
+  // шапка — захват: C встаёт над A
+  stubRows(cards());
+  r1Card(document, 'C').querySelector('.bhead').dispatchEvent(pointer(window, 'pointerdown', 100, 290));
+  await hold();
+  assert.equal(r1Card(document, 'C').classList.contains('drag-live'), true, 'за шапку — захват');
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 215));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 215));
+  assert.deepEqual(r1Saved(window).groups.map(g => g.name), ['C', 'B', 'A'], 'позиция среди живых; B на своём месте');
+});
+
+test('Р1/B: секция «Привычки» — по живым блокам, заголовок без подписи и дней, затем без блока', async () => {
+  const seed = r1SettingsSeed();
+  seed.items.push(r1Action('uh', 'Медитация', daysAgo(10), 'Утро', R1_ALL, { area: 'habit', normPerWeek: 7 }));
+  seed.items.push(r1Action('gh', 'Вне', daysAgo(10), 'Ушедший', R1_ALL, { area: 'habit', normPerWeek: 7, removedAt: daysAgo(3) }));
+  seed.items.push(r1Action('rh', 'Бывшая', daysAgo(10), 'Школа', R1_ALL, { area: 'habit', normPerWeek: 7, removedAt: daysAgo(4) }));
+  seed.groups.push(Object.assign(r1Block('Ушедший'), { removedAt: daysAgo(3) }));
+  const { document } = await boot({ seed });
+  r1Settings(document);
+  const sect = [...document.querySelectorAll('#scr-settings details.sect')].find(d => /^Привычки/.test(d.querySelector('summary').textContent));
+  assert.ok(sect, 'секция «Привычки» найдена');
+  const b = sect.querySelector('.sect-b');
+  const labels = [...b.querySelectorAll(':scope > .g-label')];
+  assert.deepEqual(labels.map(l => l.textContent), ['Утро', 'Школа', 'Без блока'], 'только блоки с привычками, в порядке store.groups');
+  assert.equal(b.querySelector('.g-cap, .bcap, .bhead, .bcard'), null, 'ни подписи, ни дней: дни блока привычку не ограничивают');
+  const rowsAfter = l => [...l.nextElementSibling.querySelectorAll('[data-act="edit-open"]')].map(x => x.dataset.id);
+  assert.deepEqual(labels.map(rowsAfter), [['uh'], ['sh'], ['ph']]);
+  assert.doesNotMatch(labels[1].nextElementSibling.textContent, /Школа/, 'имени блока в мете строки нет');
+  assert.equal(b.querySelector('[data-act="add-open"]').dataset.area, 'habit');
+  const gone = [...b.querySelectorAll('.rowwrap.gone')].map(r => r.querySelector('.tname').textContent);
+  assert.deepEqual(gone, ['Бывшая'], 'в «Убранных» — привычка живого блока; ушедшая с блоком вернётся с ним');
+  // и «Расписание» привычек не показывает
+  const sched = [...document.querySelectorAll('#scr-settings details.sect')].find(d => /^Расписание/.test(d.querySelector('summary').textContent));
+  assert.equal(sched.querySelector('[data-act="edit-open"][data-id="uh"], [data-act="edit-open"][data-id="sh"]'), null);
+
+  // без блоков — строки без заголовка: подписывать «Без блока» нечего
+  const bare = r1SettingsSeed();
+  bare.groups = [];
+  bare.items.forEach(i => { i.group = ''; });
+  const c = await boot({ seed: bare });
+  r1Settings(c.document);
+  const hs = [...c.document.querySelectorAll('#scr-settings details.sect')].find(d => /^Привычки/.test(d.querySelector('summary').textContent));
+  assert.equal(hs.querySelector('.sect-b > .g-label'), null);
+  assert.equal(hs.querySelectorAll('[data-act="edit-open"]').length, 2);
+});
+
+test('Р1/B: поле «Блок» — только живые блоки; войти в убранный через «+ Новый блок…» нельзя', async () => {
+  const seed = r1SettingsSeed();
+  seed.groups.push(Object.assign(r1Block('Ушедший'), { removedAt: daysAgo(3) }));
+  seed.items.push(r1Action('o1', 'Сирота', daysAgo(10), 'Чужой', R1_ALL)); // имя блока из файла, блока нет
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  // сохранение без правки поля «(нет в списке)» блока не заводит: осиротевшее
+  // имя остаётся именем, а не молча превращается в карточку
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'o1').click();
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.deepEqual(r1Saved(window).groups.map(g => g.name), ['Утро', 'Школа', 'Выходной', 'Ушедший']);
+  assert.equal(r1Saved(window).items.find(i => i.id === 'o1').group, 'Чужой');
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'u1').click();
+  const sel = () => document.getElementById('e-group');
+  assert.deepEqual([...sel().options].map(o => o.textContent), ['— без блока', 'Утро', 'Школа', 'Выходной', '+ Новый блок…']);
+  const before = window.localStorage.getItem(NS);
+  sel().selectedIndex = sel().options.length - 1;
+  sel().dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.getElementById('e-gnew').value = 'Ушедший';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  r1Refused(document, window, 'edit-save', /^Блок «Ушедший» убран — вернуть можно в «Убранных»$/, before);
+  assert.equal(document.getElementById('e-gnew').value, 'Ушедший', 'введённое цело');
+  // живое имя через «+ Новый блок…» — просто вход в блок, без двойника
+  document.getElementById('e-gnew').value = 'Школа';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  let s = r1Saved(window);
+  assert.equal(s.items.find(i => i.id === 'u1').group, 'Школа');
+  assert.equal(s.groups.filter(g => g.name === 'Школа').length, 1);
+
+  // форма добавления привычки — тот же отказ
+  document.querySelector('#scr-settings [data-act="add-open"][data-area="habit"]').click();
+  document.getElementById('f-name').value = 'Новая';
+  const fsel = document.getElementById('f-group');
+  fsel.selectedIndex = fsel.options.length - 1;
+  fsel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.getElementById('f-gnew').value = 'Ушедший';
+  const before2 = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="add-save"]').click();
+  r1Refused(document, window, 'add-save', /^Блок «Ушедший» убран — вернуть можно в «Убранных»$/, before2);
+  assert.equal(document.getElementById('f-name').value, 'Новая');
+  document.getElementById('f-gnew').value = 'Зал';
+  document.querySelector('#scr-settings [data-act="add-save"]').click();
+  s = r1Saved(window);
+  assert.equal(s.items[s.items.length - 1].group, 'Зал');
+  assert.deepEqual(s.groups[s.groups.length - 1], { name: 'Зал', caption: '', days: [], removedAt: null }, 'новый блок заведён в каноне');
+});
+
+test('Р1/B (4.5): черновик формы блока держит выбранные дни при переходе в соседнюю форму; сохранённое черновиком не возвращается', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-cap').value = '6:45';
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="1111100"]').click();
+  // соседняя форма — правка действия с тапом по дню (свой черновик маски).
+  // Действие «Утра» — «как блок» (этап C, п. 2.5): чипов нет, пока не нажаты
+  // «Свои дни», и сам нажатый режим — тоже черновик своей формы (FORM_UI)
+  const asBlock = () => document.querySelector('#scr-settings [data-form="edit"] .dnow');
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'u2').click();
+  assert.equal(r1Chips(document), '', 'у действия — «как блок», чипов блока в форме пункта нет');
+  assert.match(asBlock().textContent, /^как блок · ежедневно/, 'дни блока в форму пункта не переехали: «Утро» — ежедневно');
+  document.querySelector('#scr-settings [data-act="days-own"]').click();
+  assert.equal(r1Chips(document), '1111111', '«Свои дни» предзаполнены днями «Утра», а не черновиком формы блока');
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="0"]').click();
+  // обратно к блоку: пресет и подпись на месте
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(r1Chips(document), '1111100', 'выбранный пресет вернулся');
+  assert.equal(document.getElementById('g-cap').value, '6:45');
+  // и к пункту: его режим «свои» и снятый понедельник — тоже
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'u2').click();
+  assert.equal(asBlock(), null, 'режим «Свои дни» вернулся с черновиком');
+  assert.equal(r1Chips(document), '0111111', 'черновик маски пункта — свой');
+  document.querySelector('#scr-settings [data-act="edit-cancel"]').click();
+  // соседний пункт ни режима, ни снятого понедельника не унаследовал — ни после
+  // «Отмены», ни при прямом переходе из формы в форму (settingsFormsClosed
+  // гасит маску и режим)
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'u1').click();
+  assert.ok(asBlock(), 'режим «Свои дни» одной формы в форму соседнего пункта не переезжает');
+  document.querySelector('#scr-settings [data-act="days-own"]').click();
+  assert.equal(r1Chips(document), '1111111', 'маска одной формы в форму соседнего пункта не переезжает');
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="3"]').click();
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'u2').click();
+  assert.ok(asBlock(), 'прямой переход: у u2 свой черновик снят «Отменой», чужой не пришёл — снова «как блок»');
+  assert.equal(r1Chips(document), '');
+  [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'u1').click();
+  assert.equal(r1Chips(document), '1110111', 'а свой черновик u1 вернулся — вместе с режимом');
+  document.querySelector('#scr-settings [data-act="edit-cancel"]').click();
+
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-cap').value = '6:30'; // набрано ПОСЛЕ последней перерисовки
+  r1Btn(document, 'group-save', 'Утро').click();
+  assert.equal(r1Saved(window).groups[0].caption, '6:30');
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(document.getElementById('g-cap').value, '6:30', 'после сохранения — сохранённое, а не прежний черновик');
+  assert.equal(r1Chips(document), '1111100');
+});
+
+test('Р1/B (C.6.7): импорт, чистка и возврат гасят быструю форму и форму блока вместе с черновиками и свёрткой', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  // форма блока с черновиком дней и свёрнутая соседняя карточка
+  r1Btn(document, 'group-fold', 'Выходной').click();
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="0000011"]').click();
+  r1Settings(document); // перерисовка снимает черновик в слот
+  assert.equal(r1Chips(document), '0000011');
+
+  await importThroughUi(document, window, r1SettingsSeed());
+  r1Settings(document);
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'форма блока закрыта импортом');
+  assert.equal(r1Btn(document, 'group-fold', 'Выходной').getAttribute('aria-expanded'), 'true', 'свёртка прежних данных снята');
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(r1Chips(document), '1111111', 'черновик дней прежних данных не перенесён');
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+
+  // быстрое добавление с текстом в блоке, который есть и в файле, — импорт его закрывает
+  r1Btn(document, 'quick-open', 'Утро').click();
+  document.getElementById('q-lines').value = 'НАБРАНО ДО ИМПОРТА';
+  r1Settings(document);
+  assert.equal(document.getElementById('q-lines').value, 'НАБРАНО ДО ИМПОРТА', 'черновик в слоте');
+  await importThroughUi(document, window, r1SettingsSeed());
+  r1Settings(document);
+  assert.equal(document.getElementById('q-lines'), null, 'импорт закрыл быструю форму');
+  r1Btn(document, 'quick-open', 'Утро').click();
+  assert.equal(document.getElementById('q-lines').value, '', 'черновик прежних данных не всплыл');
+  document.querySelector('#scr-settings [data-act="quick-cancel"]').click();
+
+  // Форма добавления блока рисуется при любых данных — на ней видно, гасит
+  // ли её сама замещающая операция, а не исчезнувший блок. Чистка:
+  document.querySelector('#scr-settings [data-act="group-add-open"]').click();
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="0000011"]').click();
+  wipeThroughUi(document);
+  openData(document); // «Настройки» перерисованы уже на пустом store
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'чистка закрыла форму добавления блока');
+  // возврат: форма в пустом store с черновиком дней — гаснет и она
+  document.querySelector('#scr-settings [data-act="group-add-open"]').click();
+  assert.equal(r1Chips(document), '1111111', 'черновик дней до чистки не всплыл');
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="0000011"]').click();
+  document.querySelector('#scr-settings [data-act="wipe-undo"]').click();
+  assert.equal(document.getElementById('scr-settings').hidden, false, 'возврат остаётся на «Настройках»');
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'возврат закрыл форму добавления блока');
+  document.querySelector('#scr-settings [data-act="group-add-open"]').click();
+  assert.equal(r1Chips(document), '1111111', 'и черновик дней — тоже');
+});
+
+/* Успешное сохранение снимает черновик своей формы (п. 4.5): иначе в слоте
+   оставалось состояние ПОСЛЕДНЕЙ перерисовки, и повторное открытие
+   накатывало его поверх сохранённого. Сценарий у всех форм один: открыть,
+   набрать, перерисовать (черновик снят в слот), набрать другое, сохранить,
+   открыть снова. */
+test('Р1/B (4.5): после сохранения повторное открытие формы показывает сохранённое, а не прежний черновик', async () => {
+  const FORMS = [
+    { name: 'правка пункта', open: d => [...d.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(b => b.dataset.id === 'u1').click(),
+      field: 'e-name', first: 'ЧЕРНОВИК', last: 'Кровать заправлена', save: 'edit-save', after: 'Кровать заправлена' },
+    { name: 'добавление привычки', open: d => d.querySelector('#scr-settings [data-act="add-open"][data-area="habit"]').click(),
+      field: 'f-name', first: 'ЧЕРНОВИК', last: 'Новая', save: 'add-save', after: '' },
+    { name: 'быстрое добавление', open: d => r1Btn(d, 'quick-open', 'Утро').click(),
+      field: 'q-lines', first: 'ЧЕРНОВИК', last: 'Шторы', save: 'quick-save', after: '' },
+    { name: 'правка упражнения', open: d => d.querySelector('#scr-settings [data-act="ex-open"]').click(),
+      field: 'x-name', first: 'ЧЕРНОВИК', last: 'Жим стоя', save: 'ex-save', after: 'Жим стоя' },
+    { name: 'добавление упражнения', open: d => d.querySelector('#scr-settings [data-act="ex-add-open"]').click(),
+      field: 'x-add-name', first: 'ЧЕРНОВИК', last: 'Присед', save: 'ex-add-save', after: '' }
+  ];
+  for (const f of FORMS) {
+    const seed = r1SettingsSeed();
+    seed.exercises = [{ id: 'x1', name: 'Жим', unit: 'кг', value: 60, history: [], removedAt: null, addedAt: daysAgo(10) }];
+    const { document } = await boot({ seed });
+    r1Settings(document);
+    f.open(document);
+    document.getElementById(f.field).value = f.first;
+    r1Settings(document); // перерисовка с открытой формой — черновик в слоте
+    assert.equal(document.getElementById(f.field).value, f.first, `${f.name}: черновик пережил перерисовку`);
+    document.getElementById(f.field).value = f.last;
+    document.querySelector(`#scr-settings [data-act="${f.save}"]`).click();
+    assert.equal(document.getElementById(f.field), null, `${f.name}: форма закрылась`);
+    f.open(document);
+    assert.equal(document.getElementById(f.field).value, f.after, `${f.name}: прежний черновик не вернулся`);
+  }
+});
+
+/* Все тела правил, в чьём списке селекторов есть ТОЧНО этот селектор: поле,
+   заведённое отдельным правилом (`.bbody { padding: 0 8px }`), ruleOf не
+   нашёл бы — он берёт первое правило с таким началом */
+const rulesFor = (css, sel) => [...css.matchAll(/(?:^|[\n}])\s*([^{}@]+)\{([^{}]*)\}/g)]
+  .filter(m => m[1].split(',').map(x => x.trim()).includes(sel)).map(m => m[2]);
+/* Горизонтальные поля объявления: сокращённая запись padding — вторая и
+   четвёртая величины, длинная — своя; что угодно, кроме нуля, — поле */
+function sidePadding(body) {
+  const out = [];
+  for (const m of body.matchAll(/padding(-left|-right|-inline(?:-start|-end)?)?\s*:\s*([^;]+)/g)) {
+    const v = m[2].trim().split(/\s+/);
+    out.push(...(m[1] ? [v[0]] : v.length === 1 ? [v[0]] : v.length === 4 ? [v[1], v[3]] : [v[1]]));
+  }
+  return out.filter(x => !/^0(px)?$/.test(x));
+}
+
+test('Р1/B CSS: карточка блока без боковых полей — чип дня во вложенной форме не уже 44 px на 375', async () => {
+  const css = CSS_SRC();
+  const card = ruleOf(css, '.bcard');
+  assert.ok(card, 'правило .bcard');
+  assert.match(card, /border-top:\s*1px solid var\(--line\)/, 'блоки разделяет верхняя линия');
+  assert.doesNotMatch(card, /padding|border-left|border-right|border:/, 'ни полей, ни боковых рамок');
+  assert.match(card, /margin-top:\s*var\(--gap-block\)/, 'ритм — существующий токен');
+  // арифметика как у .pcard: экран − поля экрана − поля и рамка формы + вынос ряда
+  const screenPad = px(ruleOf(css, '.screen'), 'padding-left') || 20;
+  const formPad = px(ruleOf(css, '.card'), 'padding');
+  const days = ruleOf(css, '.days');
+  const out = Math.abs(parseFloat((/margin:\s*0\s+(-?[\d.]+)px/.exec(days) || [])[1]));
+  const gap = px(days, 'gap');
+  assert.ok(formPad > 0 && out > 0 && gap >= 0, 'величины прочитаны из CSS');
+  const row = 375 - 2 * screenPad - 2 * formPad - 2 + 2 * out;
+  const cell = (row - 6 * gap) / 7;
+  assert.ok(cell >= 44, `ячейка чипа ${cell.toFixed(1)} px`);
+  assert.ok(px(ruleOf(css, '.days .btn.day'), 'min-height') >= 44);
+  // Р1/рецензия: арифметика выше верна, только пока между экраном и формой
+  // действия никто не заводит боковых полей. Промежуточные контейнеры —
+  // .blocks → .bcard → .bbody → .list → .rowwrap — проверяются все, каждым
+  // своим правилом: поле на любом из них молча уводило чип ниже 44 px
+  for (const sel of ['.blocks', '.bcard', '.bbody', '.list', '.rowwrap']) {
+    for (const body of rulesFor(css, sel)) {
+      assert.deepEqual(sidePadding(body), [], `у ${sel} нет горизонтальных полей: ${body.trim()}`);
+      assert.doesNotMatch(body, /border(-left|-right|-inline(-start|-end)?)?\s*:/, `у ${sel} нет боковых рамок`);
+    }
+  }
+  // сторож сам себя: правила контейнеров находятся, а заведённое отдельным
+  // правилом поле он видит
+  assert.ok(rulesFor(css, '.rowwrap').length >= 1 && rulesFor(css, '.bcard').length >= 1, 'правила контейнеров найдены');
+  assert.deepEqual(sidePadding(rulesFor('.bbody { padding: 0 8px; }', '.bbody')[0]), ['8px']);
+  assert.deepEqual(sidePadding('padding: 9px 0;'), []);
+  // Р1/рецензия: шапка карточки — текстовая колонка при кнопках .ictl не уже
+  // 137 px (замер 13.08.2026: нижняя граница, ниже которой длинные названия
+  // переносятся). Число кнопок — из отрисованной карточки, ширина — из CSS
+  const { document } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  const n = r1Card(document, 'Утро').querySelectorAll('.bhead .ictl .btn.icon').length;
+  assert.equal(n, 3, 'выше, ниже, свернуть');
+  assert.deepEqual(sidePadding(ruleOf(css, '.row')), [], 'у строки нет боковых полей');
+  assert.deepEqual(sidePadding(ruleOf(css, '.itxt')), [], 'у текстовой кнопки нет боковых полей');
+  const col = 375 - 2 * screenPad - px(ruleOf(css, '.row'), 'gap') - n * px(ruleOf(css, '.ictl .btn.icon'), 'width');
+  assert.ok(col >= 137, `текстовая колонка шапки ${col} px`);
+  // пресеты — три равные колонки, кегль — ступень чипов
+  assert.match(ruleOf(css, '.presets'), /grid-template-columns:\s*repeat\(3, 1fr\)/);
+  assert.match(ruleOf(css, '.presets .btn'), /font-size:\s*var\(--text-xs\)/);
+  assert.match(css, /\.bbody\[hidden\]\s*\{\s*display:\s*none;?\s*\}/, 'глобального [hidden] в файле нет — скрытие явное');
+  const sub = ruleOf(css, '.csub');
+  assert.match(sub, /color:\s*var\(--muted\)/);
+  assert.match(sub, /font-size:\s*var\(--text-sm\)/);
+  assert.match(sub, /font-weight:\s*400/);
+});
+
+/* Возврат блока, в котором действие вернулось бы без единого дня (своя маска
+   вне дней блока — такое приносит только файл): restoreItemCore возвращает
+   его «как блок», и это решение за владельца называется строкой — как у
+   возврата одного пункта (Р1/рецензия выше). */
+test('Р1/B: «Вернуть» блок с действием без единого дня — «как блок», и это названо', async () => {
+  const seed = r1SettingsSeed();
+  const gone = daysAgo(1);
+  seed.groups[1].removedAt = gone;
+  for (const it of seed.items) if (it.group === 'Школа') it.removedAt = gone;
+  seed.items.find(i => i.id === 's1').schedule = [{ from: daysAgo(10), mask: '0000011' }];
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="group-restore"]')].find(b => b.dataset.name === 'Школа').click();
+  const s = r1Saved(window);
+  assert.equal(s.groups[1].removedAt, null);
+  const copy = s.items[s.items.findIndex(i => i.id === 's1') + 1];
+  assert.equal(copy.name, 'Экстра');
+  assert.deepEqual(copy.schedule, [{ from: daysAgo(0), mask: R1_ALL }], 'вернулось «как блок»');
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.equal(flash.textContent, 'Вернулось с днями блока: Экстра — свои дни в них не попадали');
+  assert.ok(r1Card(document, 'Школа').contains(flash), 'у карточки вернувшегося блока');
+});
+
+/* ══ «Расписание 1/3», этап C: форма правки ДЕЙСТВИЯ ══════════════════
+   «Блок» над «Днями»; дни в живом блоке — «как блок» строкой или «свои»
+   чипами в пределах дней блока; своя маска хранится как есть и пишется
+   только при касании; отказы по итоговому блоку; «Тип» в день заведения. */
+
+const r1Form = document => document.querySelector('#scr-settings [data-form="edit"]');
+function r1Edit(document, id) {
+  const b = [...document.querySelectorAll('#scr-settings [data-act="edit-open"]')].find(x => x.dataset.id === id);
+  assert.ok(b, 'строка пункта ' + id);
+  b.click();
+  const f = r1Form(document);
+  assert.ok(f && f.dataset.id === id, 'форма правки открыта: ' + id);
+  return f;
+}
+const r1Row = (document, id) => [...document.querySelectorAll('#scr-settings .rowwrap[data-drag="item"]')]
+  .find(r => r.dataset.dragId === id);
+function r1Pick(document, window, value) {
+  const sel = document.getElementById('e-group');
+  sel.value = value;
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+}
+function r1Type(document, window, value) {
+  const sel = document.getElementById('e-type');
+  assert.ok(sel, 'селект «Тип» на месте');
+  sel.value = value;
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+}
+const r1Muted = (document, text) => [...r1Form(document).querySelectorAll('p.muted')].find(p => p.textContent === text);
+
+test('Р1/C: «Дни: как блок · будни» строкой; «Свои дни» предзаполнены днями блока, чипы вне блока недоступны и названы', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  const before = window.localStorage.getItem(NS);
+  const f = r1Edit(document, 's2'); // «Пост» — будничная «Школа», своя маска «все семь»
+  const now = f.querySelector('.dnow');
+  assert.ok(now, 'режим «как блок»');
+  assert.equal(now.firstChild.textContent, 'как блок · будни');
+  assert.equal(now.querySelector('[data-act="days-own"]').textContent, 'Свои дни');
+  assert.equal(now.closest('.field').querySelector(':scope > span').textContent, 'Дни');
+  assert.equal(r1Chips(document), '', 'чипов нет');
+  // «Блок» — над «Днями»: дни зависят от блока
+  assert.ok(document.getElementById('e-group').compareDocumentPosition(now) & window.Node.DOCUMENT_POSITION_FOLLOWING,
+    '«Блок» стоит перед «Днями»');
+  // заведён не сегодня — тип тихой строкой, селекта нет; история планки — в форме
+  assert.equal(document.getElementById('e-type'), null);
+  assert.ok(r1Muted(document, 'Тип: ежедневный'));
+  assert.match(f.querySelector('p.muted .hist').textContent, /^Планка: 3 → 5 мин/);
+
+  now.querySelector('[data-act="days-own"]').click();
+  let form = r1Form(document);
+  assert.equal(form.querySelector('.dnow'), null, 'режим «свои»');
+  assert.equal(r1Chips(document), '1111100', 'предзаполнены днями блока');
+  const chips = [...form.querySelectorAll('.days .btn.day')];
+  assert.deepEqual(chips.map(c => c.disabled), [false, false, false, false, false, true, true], 'выходные недоступны');
+  assert.equal(chips[5].getAttribute('aria-label'), 'суббота — не в днях блока');
+  assert.equal(chips[6].getAttribute('aria-label'), 'воскресенье — не в днях блока');
+  assert.equal(chips[5].classList.contains('on'), false);
+  assert.equal(chips[2].getAttribute('aria-label'), 'убрать среду');
+  assert.equal(document.activeElement, chips[0], 'фокус — на первом доступном чипе');
+  assert.ok(r1Muted(document, 'Дни блока: будни'), 'дни блока названы над чипами');
+  assert.ok(chips[0].closest('.field').contains(r1Muted(document, 'Дни блока: будни')));
+  assert.equal(form.querySelector('[data-act="days-inherit"]').textContent, 'Как блок');
+
+  // чип вне дней блока не правит выбор и тогда, когда тап до обработчика дошёл.
+  // Вне дней блока выбор не виден, поэтому проверка — через «— без блока»:
+  // там чипы показывают черновик целиком, и субботы в нём быть не должно
+  chips[5].disabled = false;
+  chips[5].click();
+  r1Pick(document, window, '');
+  assert.equal(r1Form(document).querySelector('.days .btn.day:disabled'), null, 'без блока недоступных дней нет');
+  assert.equal(r1Chips(document), '1111100', 'обработчик отказал сам, не одна разметка');
+  r1Pick(document, window, 'Школа');
+
+  r1Form(document).querySelector('[data-act="days-inherit"]').click();
+  form = r1Form(document);
+  assert.ok(form.querySelector('.dnow'), '«Как блок» — снова строкой');
+  assert.equal(document.activeElement, form.querySelector('[data-act="days-own"]'), 'фокус — на «Свои дни»');
+  document.querySelector('#scr-settings [data-act="edit-cancel"]').click();
+  assert.equal(window.localStorage.getItem(NS), before, 'режимы — черновик: без «Сохранить» не записано ничего');
+});
+
+test('Р1/C: снять среду в «Своих днях» — строка «пн, вт, чт, пт», выходные своей маски целы; «Как блок» — «все семь»', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  const t = window.todayKey();
+  const saved = id => r1Saved(window).items.find(i => i.id === id);
+  r1Edit(document, 's2');
+  document.querySelector('#scr-settings [data-act="days-own"]').click();
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="2"]').click();
+  assert.equal(r1Chips(document), '1101100');
+  assert.equal(document.activeElement, document.querySelector('#scr-settings [data-act="day-toggle"][data-day="2"]'), 'фокус — на том же чипе');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.deepEqual(saved('s2').schedule, [{ from: daysAgo(10), mask: R1_ALL }, { from: t, mask: '1101111' }],
+    'своя маска — как есть: выходные, которых в форме не было, не потеряны; прежний отрезок цел');
+  assert.equal(window.effectiveMaskOn(saved('s2'), t), '1101100', 'эффективные дни — выбор в пределах блока');
+  assert.equal(r1Row(document, 's2').querySelector('.csub').textContent, ' · 5 мин · пн, вт, чт, пт');
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.equal(flash.textContent, 'Сохранено');
+  assert.ok(r1Row(document, 's2').contains(flash), 'подтверждение у строки');
+
+  // открыта снова — режим «свои» выведен из данных
+  r1Edit(document, 's2');
+  assert.equal(r1Form(document).querySelector('.dnow'), null);
+  assert.equal(r1Chips(document), '1101100');
+  // «Как блок» — своя маска «все семь»; в тот же день отрезок схлопывается (инвариант 5)
+  document.querySelector('#scr-settings [data-act="days-inherit"]').click();
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.deepEqual(saved('s2').schedule, [{ from: daysAgo(10), mask: R1_ALL }], 'возврат к «все семь» за тот же день — отрезка нет');
+  assert.equal(window.scheduleOn(saved('s2'), t), R1_ALL);
+  assert.equal(r1Row(document, 's2').querySelector('.csub').textContent, ' · 5 мин', 'как блок — дни в строке не повторяются');
+
+  // у действия со своими днями с прошлого «Как блок» пишет отрезок «все семь» с сегодня
+  r1Edit(document, 's1');
+  assert.equal(r1Chips(document), '1010100', 'свои дни «Экстры» — пн, ср, пт');
+  document.querySelector('#scr-settings [data-act="days-inherit"]').click();
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.deepEqual(saved('s1').schedule, [{ from: daysAgo(10), mask: '1010100' }, { from: t, mask: R1_ALL }],
+    '«Как блок» — WEEK_ALL с сегодня, прошлое не тронуто');
+  assert.equal(r1Row(document, 's1').querySelector('.csub').textContent, ' · 11:45');
+});
+
+test('Р1/C: форма без касания дней отрезка не пишет; нуль из импорта назван тихо и отказом не становится', async () => {
+  const seed = r1SettingsSeed();
+  seed.items.push(r1Action('z1', 'Ноль', daysAgo(10), 'Выходной', '1111100')); // ∧ выходные = пусто (импорт)
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  const t = window.todayKey();
+  const sched = id => r1Saved(window).items.find(i => i.id === id).schedule;
+  const was = { s1: sched('s1'), s2: sched('s2'), z1: sched('z1') };
+  const zeroLine = () => r1Muted(document, 'Сейчас не попадает ни в один день блока');
+
+  // «свои» из данных, правка имени — отрезка нет
+  r1Edit(document, 's1');
+  assert.equal(zeroLine(), undefined, 'у действия с днями строки нуля нет');
+  document.getElementById('e-name').value = 'Экстра+';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(r1Saved(window).items.find(i => i.id === 's1').name, 'Экстра+');
+  assert.deepEqual(sched('s1'), was.s1, '«свои» без касания — маска как есть');
+  // «как блок» без касания
+  r1Edit(document, 's2');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.deepEqual(sched('s2'), was.s2);
+  // «Свои дни» нажаты, выбор не менялся — итог прежний, отрезка нет
+  r1Edit(document, 's2');
+  document.querySelector('#scr-settings [data-act="days-own"]').click();
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.deepEqual(sched('s2'), was.s2, 'касание, вернувшее прежнюю маску, не пишет');
+
+  // нуль из импорта: чипы пусты, сказано тихо, сохранение без касания проходит
+  r1Edit(document, 'z1');
+  assert.equal(r1Chips(document), '0000000');
+  assert.ok(zeroLine(), 'нуль назван');
+  document.getElementById('e-note').value = 'из файла';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(document.querySelector('#scr-settings .flash.keep'), null, 'отказа нет: владелец правил не дни');
+  assert.equal(document.querySelector('#scr-settings .flash').textContent, 'Сохранено');
+  assert.equal(r1Saved(window).items.find(i => i.id === 'z1').note, 'из файла');
+  assert.deepEqual(sched('z1'), was.z1);
+  // выбран день блока — строка ушла, маска слита: будни своей маски целы
+  r1Edit(document, 'z1');
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="5"]').click();
+  assert.equal(zeroLine(), undefined, 'дни тронуты — строки нет');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.deepEqual(sched('z1'), [{ from: daysAgo(10), mask: '1111100' }, { from: t, mask: '1111110' }]);
+  assert.equal(r1Row(document, 'z1').querySelector('.csub').textContent, ' · из файла · сб');
+});
+
+test('Р1/C: перенос действия через «Блок» — строка в карточке другого блока, журнал записан, прошлое не сдвинулось', async () => {
+  const since = daysAgo(20);
+  const items = [r1Action('a1', 'Переезд', since, 'Утро', R1_ALL), r1Action('a2', 'Сосед', since, 'Утро', R1_ALL)];
+  const days = {};
+  for (let k = 1; k <= 20; k++) days[daysAgo(k)] = { a2: true }; // «Сосед» отмечен каждый прошлый день, «Переезд» — ни разу
+  const seed = r1Store([r1Block('Утро', '7:00'), r1Block('Школа', '', [{ from: since, mask: '1111100' }])], items, days);
+  seed.settings.calendarSince = mondayOf(since);
+  const { document, window } = await boot({ seed });
+  await moveToWeekday(window, document, 1); // вторник: будний блок принимает и сегодняшний день
+  const t = window.todayKey();
+  const past = [];
+  for (let k = 1; k <= 14; k++) past.push(window.addDays(t, -k));
+  assert.ok(past.some(k => window.weekdayOf(k) >= 5), 'в окне есть выходные — на них перенос в будни и был бы виден');
+  const counts = () => JSON.stringify(past.map(k => window.minDayMarks(k)));
+  const countsBefore = counts();
+  // «Прогресс» сравнивается целиком, кроме ПОРЯДКА строк «Отметок»: он идёт
+  // по блокам, и переехавшее действие законно встаёт за «Школой»
+  const progressView = () => {
+    const html = document.getElementById('scr-progress').innerHTML;
+    const at = html.indexOf('<h2>Отметки</h2>');
+    assert.ok(at > 0, 'блок «Отметки» на месте');
+    const rows = [...document.querySelectorAll('#scr-progress .pcard p.line')].map(p => p.textContent).sort();
+    return html.slice(0, at) + JSON.stringify(rows);
+  };
+  openProgress(document);
+  const progress = progressView();
+
+  r1Settings(document);
+  r1Btn(document, 'group-fold', 'Школа').click(); // цель свёрнута — сохранение обязано её развернуть
+  r1Edit(document, 'a1');
+  r1Pick(document, window, 'Школа');
+  assert.match(r1Form(document).querySelector('.dnow').textContent, /^как блок · будни/, 'дни в форме — уже дни выбранного блока');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+
+  const a1 = r1Saved(window).items.find(i => i.id === 'a1');
+  assert.equal(a1.group, 'Школа');
+  assert.deepEqual(a1.groupLog, [{ from: since, group: 'Утро' }, { from: t, group: 'Школа' }], 'журнал принадлежности записан');
+  assert.ok(r1Card(document, 'Школа').contains(r1Row(document, 'a1')), 'строка — в карточке «Школы»');
+  assert.equal(r1Card(document, 'Утро').contains(r1Row(document, 'a1')), false, 'и ушла из «Утра»');
+  const body = document.getElementById(r1Btn(document, 'group-fold', 'Школа').getAttribute('aria-controls'));
+  assert.equal(body.hidden, false, 'целевой блок развёрнут');
+  const flash = document.querySelector('#scr-settings .flash');
+  assert.ok(flash && r1Row(document, 'a1').contains(flash), 'подтверждение у переехавшей строки');
+  assert.equal(flash.closest('[hidden]'), null, 'и оно видно');
+
+  // прошлое: «N из M» дней и «Прогресс» прежние
+  assert.equal(counts(), countsBefore, 'minDayMarks прошлых дней прежние — и в выходные «Переезд» в знаменателе');
+  openProgress(document);
+  assert.equal(progressView(), progress, '«Прогресс» после переноса — тот же: серия, цепь, «в системе», числа «Отметок»');
+});
+
+test('Р1/C: отказы — «Не останется ни одного дня» по итоговому блоку, «Нужен хотя бы один день недели», убранный блок', async () => {
+  const seed = r1SettingsSeed();
+  seed.items.push(r1Action('o2', 'Суббота-дело', daysAgo(10), 'Утро', '0000011')); // свои дни — выходные
+  seed.groups.push(Object.assign(r1Block('Ушедший'), { removedAt: daysAgo(3) }));
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  const saved = id => r1Saved(window).items.find(i => i.id === id);
+
+  // перенос в будни без касания дней: у действия с выходными дней не останется
+  r1Edit(document, 'o2');
+  r1Pick(document, window, 'Школа');
+  let before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  r1Refused(document, window, 'edit-save', /^Не останется ни одного дня: Суббота-дело$/, before);
+  assert.equal(document.getElementById('e-group').value, 'Школа', 'выбор блока цел');
+  // «Как блок» в новом блоке — дни есть, перенос проходит
+  document.querySelector('#scr-settings [data-act="days-inherit"]').click();
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(saved('o2').group, 'Школа');
+  assert.deepEqual(saved('o2').schedule, [{ from: daysAgo(10), mask: '0000011' }, { from: window.todayKey(), mask: R1_ALL }]);
+
+  // пустой выбор в «Своих днях» — фраза про выбор, а не про блок
+  r1Edit(document, 's2');
+  document.querySelector('#scr-settings [data-act="days-own"]').click();
+  for (let i = 0; i < 5; i++) document.querySelector(`#scr-settings [data-act="day-toggle"][data-day="${i}"]`).click();
+  assert.equal(r1Chips(document), '0000000');
+  before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  r1Refused(document, window, 'edit-save', /^Нужен хотя бы один день недели$/, before);
+  assert.equal(r1Chips(document), '0000000', 'снятые дни в форме целы');
+
+  // «+ Новый блок…» с именем убранного блока — своя фраза, форма цела
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="0"]').click();
+  const sel = document.getElementById('e-group');
+  sel.selectedIndex = sel.options.length - 1;
+  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.getElementById('e-gnew').value = 'Ушедший';
+  before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  r1Refused(document, window, 'edit-save', /^Блок «Ушедший» убран — вернуть можно в «Убранных»$/, before);
+  assert.equal(document.getElementById('e-gnew').value, 'Ушедший', 'введённое цело');
+  document.querySelector('#scr-settings [data-act="edit-cancel"]').click();
+
+  // привычка: форма прежняя, но в убранный блок не входит и она; перенос — без журнала
+  r1Edit(document, 'sh');
+  assert.equal(r1Form(document).querySelector('.dnow, [data-act="days-own"], [data-act="days-inherit"]'), null,
+    'у привычки режимов нет: дни блока её не ограничивают');
+  assert.equal(r1Chips(document), '1111111', 'свои дни привычки — все доступны');
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="6"]').click();
+  assert.equal(r1Chips(document), '1111110', 'воскресенье привычки в будничном блоке снимается — блок её дни не режет');
+  const hsel = document.getElementById('e-group');
+  hsel.selectedIndex = hsel.options.length - 1;
+  hsel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.getElementById('e-gnew').value = 'Ушедший';
+  before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  r1Refused(document, window, 'edit-save', /^Блок «Ушедший» убран — вернуть можно в «Убранных»$/, before);
+  r1Pick(document, window, 'Утро');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(saved('sh').group, 'Утро');
+  assert.equal('groupLog' in saved('sh'), false, 'журнал — только у действия');
+  assert.deepEqual(saved('sh').schedule.map(x => x.mask), [R1_ALL, '1111110'], 'свои дни привычки записаны как выбраны');
+});
+
+test('Р1/C: «Тип» в день заведения — счётчик с целью; отказы по отметке и по записи счётчика; назавтра — тихая строка', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'quick-open', 'Утро').click();
+  document.getElementById('q-lines').value = 'Зал · вечером\nСоседнее';
+  r1Btn(document, 'quick-save', 'Утро').click();
+  const id = r1Saved(window).items.find(i => i.name === 'Зал').id;
+  const nextId = r1Saved(window).items.find(i => i.name === 'Соседнее').id;
+  const saved = () => r1Saved(window).items.find(i => i.id === id);
+
+  r1Edit(document, id);
+  const typeSel = document.getElementById('e-type');
+  assert.ok(typeSel, 'в день заведения — «Тип»');
+  assert.equal(typeSel.value, 'daily');
+  assert.deepEqual([...typeSel.options].map(o => o.textContent), ['ежедневный чекбокс', 'недельный счётчик с целью']);
+  assert.ok(typeSel.compareDocumentPosition(document.getElementById('e-group')) & window.Node.DOCUMENT_POSITION_FOLLOWING, '«Тип» — над «Блоком»');
+  assert.equal(r1Muted(document, 'Тип: ежедневный'), undefined, 'тихой строки в день заведения нет');
+  assert.equal(document.getElementById('e-goal'), null);
+
+  // отмечен сегодня — тип не меняется
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector(`#scr-today [data-act="mark"][data-id="${id}"]`).click();
+  r1Settings(document);
+  assert.ok(r1Form(document), 'форма пережила уход на «Сегодня»');
+  r1Type(document, window, 'weekly');
+  assert.equal(r1Form(document).querySelector('.dnow, .days'), null, 'у счётчика дней нет');
+  document.getElementById('e-goal').value = '3';
+  let before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  r1Refused(document, window, 'edit-save', /^Тип не меняется: пункт сегодня отмечен$/, before);
+  assert.equal(document.getElementById('e-goal').value, '3', 'цель цела');
+
+  // черновик типа и цели переживает соседнюю форму (п. 4.5) — и в соседнее
+  // действие того же дня не переезжает: тип принадлежит своей форме
+  r1Btn(document, 'group-open', 'Утро').click();
+  r1Edit(document, nextId);
+  assert.equal(document.getElementById('e-type').value, 'daily', 'тип одной формы в соседнюю не переехал');
+  assert.equal(document.getElementById('e-goal'), null);
+  r1Edit(document, id);
+  assert.equal(document.getElementById('e-type').value, 'weekly', 'тип вернулся с черновиком');
+  assert.equal(document.getElementById('e-goal').value, '3', 'и цель');
+
+  // отметка снята — счётчик с целью
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector(`#scr-today [data-act="mark"][data-id="${id}"]`).click();
+  r1Settings(document);
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  let it = saved();
+  assert.equal(it.type, 'weekly');
+  assert.equal(it.goal, 3);
+  assert.equal('schedule' in it, false, 'расписания у счётчика нет');
+  assert.equal('groupLog' in it, false, 'журнала блока — тоже');
+  assert.equal(r1Row(document, id).querySelector('.csub').textContent, ' · вечером · цель 3 / нед.');
+
+  // запись счётчика — обратно в ежедневный нельзя
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector(`#scr-today [data-act="train-inc"][data-id="${id}"]`).click();
+  document.querySelector('#scr-train [data-act="train-save"]').click();
+  assert.equal(r1Saved(window).weekLog.filter(e => e.itemId === id).length, 1);
+  r1Settings(document);
+  r1Edit(document, id);
+  assert.equal(document.getElementById('e-type').value, 'weekly');
+  r1Type(document, window, 'daily');
+  assert.ok(r1Form(document).querySelector('.dnow'), 'ежедневный в «Утре» — «как блок»');
+  assert.equal(document.getElementById('e-goal'), null);
+  before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  r1Refused(document, window, 'edit-save', /^Тип не меняется: по счётчику уже есть записи$/, before);
+  document.querySelector('#scr-settings [data-act="edit-cancel"]').click();
+
+  // назавтра — тихая строка, селекта нет
+  shiftWindowDays(window, 1);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  r1Settings(document);
+  r1Edit(document, id);
+  assert.equal(document.getElementById('e-type'), null);
+  assert.ok(r1Muted(document, 'Тип: недельный счётчик'));
+  it = saved();
+  assert.equal(it.type, 'weekly');
+});
+
+test('Р1/C: день сменился при открытой форме — черновик типа игнорируется и снимается', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'quick-open', 'Утро').click();
+  document.getElementById('q-lines').value = 'Поздно';
+  r1Btn(document, 'quick-save', 'Утро').click();
+  const id = r1Saved(window).items.find(i => i.name === 'Поздно').id;
+  const born = window.todayKey();
+  r1Edit(document, id);
+  r1Type(document, window, 'weekly');
+  document.getElementById('e-goal').value = '2';
+  shiftWindowDays(window, 1); // полночь прошла при открытой форме
+  const before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="edit-save"]').click(); // stale-guard: экран перерисован, действие не применено
+  assert.equal(window.localStorage.getItem(NS), before);
+  assert.ok(r1Form(document), 'форма на месте');
+  assert.equal(document.getElementById('e-type'), null, 'назавтра селекта нет — форма по типу пункта');
+  assert.equal(document.getElementById('e-goal'), null, 'и поля цели нет');
+  // пустое имя: отказ — но черновик типа снят раньше всех проверок
+  document.getElementById('e-name').value = ' ';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.match(document.querySelector('#scr-settings .flash.keep').textContent, /Название не заполнено/);
+  assert.equal(window.eval('ui').editType, null, 'черновик типа снят перепроверкой');
+  document.getElementById('e-name').value = 'Поздно';
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  const it = r1Saved(window).items.find(i => i.id === id);
+  assert.equal(it.type, 'daily', 'тип не сменился');
+  assert.deepEqual(it.schedule, [{ from: born, mask: R1_ALL }], 'расписание — прежнее');
+});
+
+test('Р1/C CSS: «как блок» — строка на ступени поля, без нового тона; недоступный чип — общим .btn:disabled', () => {
+  const css = CSS_SRC();
+  const dnow = ruleOf(css, '.dnow');
+  assert.ok(dnow, 'правило .dnow');
+  assert.match(dnow, /display:\s*flex/);
+  assert.match(dnow, /justify-content:\s*space-between/);
+  assert.match(dnow, /font-size:\s*16px/, 'ступень полей ввода — строка стоит на месте поля');
+  assert.match(dnow, /color:\s*var\(--fg\)/);
+  assert.doesNotMatch(dnow, /transition|animation/, 'перерисовка создаёт строку в конечном состоянии — играть нечему');
+  assert.match(ruleOf(css, '.field > p.muted'), /margin:\s*0/, '«Дни блока» — в ритме поля');
+  assert.match(ruleOf(css, '.btn:disabled'), /opacity/, 'недоступность чипа — общим правилом кнопки');
+  assert.doesNotMatch(css, /\.day[\w.-]*(\[disabled\]|:disabled)/, 'своего тона у недоступного чипа не заведено');
+});
+
+test('Р1/C: смена блока в форме перестраивает чипы по его дням; недоступный день не бывает выбранным', async () => {
+  const seed = r1SettingsSeed();
+  seed.items.push(r1Action('n1', 'Вольное', daysAgo(10), '', '1010101')); // без блока, свои дни
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  r1Edit(document, 'n1');
+  // без блока — прежние чипы своей маски (29/B): все доступны, режимов нет
+  assert.equal(r1Form(document).querySelector('.dnow, [data-act="days-own"], [data-act="days-inherit"]'), null);
+  assert.equal(r1Chips(document), '1010101');
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="0"]').click(); // черновик 0010101
+  // в будничную «Школу»: чипы в пределах будней; воскресенье черновика недоступно и не выбрано
+  r1Pick(document, window, 'Школа');
+  const chips = [...r1Form(document).querySelectorAll('.days .btn.day')];
+  assert.deepEqual(chips.map(c => c.disabled), [false, false, false, false, false, true, true]);
+  assert.equal(chips[6].classList.contains('on'), false, 'день вне блока не «on», хоть в черновике и стоит');
+  assert.equal(chips[6].getAttribute('aria-pressed'), 'false');
+  assert.equal(r1Chips(document), '0010100', 'выбор — черновик ∧ дни блока');
+  assert.ok(r1Muted(document, 'Дни блока: будни'));
+  // сохранение: внутри будней — выбор, вне их — своя маска как есть
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  const n1 = r1Saved(window).items.find(i => i.id === 'n1');
+  assert.equal(n1.group, 'Школа');
+  assert.deepEqual(n1.schedule.map(x => x.mask), ['1010101', '0010101']);
+  assert.equal(window.effectiveMaskOn(n1, window.todayKey()), '0010100');
+  assert.equal(r1Row(document, 'n1').querySelector('.csub').textContent, ' · ср, пт');
+});
+
+/* ══ «Расписание 1/3»: замечания рецензии, интерфейс (Р1/рецензия) ═══ */
+
+test('Р1/рецензия: «Добавить блок» в осиротевшее имя — отказ «Не останется ни одного дня», форма и выбор целы', async () => {
+  const since = daysAgo(10);
+  // «Вечер» носят действия, блока нет — имя пришло импортом
+  const seed = r1Store([r1Block('Утро')], [
+    r1Action('o1', 'Душ', since, 'Вечер', '1111100'),
+    r1Action('o2', 'Зубы', since, 'Вечер', R1_ALL),
+    r1Action('u1', 'Кровать', since, 'Утро', R1_ALL)
+  ]);
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  const before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="group-add-open"]').click();
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="0000011"]').click();
+  document.getElementById('g-add').value = 'Вечер';
+  document.querySelector('#scr-settings [data-act="group-add-save"]').click();
+  r1Refused(document, window, 'group-add-save', /^Не останется ни одного дня: Душ$/, before);
+  assert.equal(document.getElementById('g-add').value, 'Вечер', 'введённое цело');
+  assert.equal(r1Chips(document), '0000011', 'выбранные дни целы');
+  assert.notEqual(document.activeElement, document.getElementById('g-add'), 'отказ про дни — фокус в название не уводится');
+  assert.equal(window.findGroup('Вечер'), null, 'блок не заведён');
+  // понедельник у «Душа» остаётся — осиротевшее имя addGroup разрешает
+  document.querySelector('#scr-settings [data-act="day-toggle"][data-day="0"]').click();
+  document.getElementById('g-add').value = 'Вечер';
+  document.querySelector('#scr-settings [data-act="group-add-save"]').click();
+  const s = r1Saved(window);
+  assert.deepEqual(s.groups.map(g => g.name), ['Утро', 'Вечер']);
+  assert.equal(window.effectiveMaskOn(s.items.find(i => i.id === 'o1'), window.todayKey()), '1000000');
+  assert.equal(document.querySelector('#scr-settings .flash').textContent, 'Сохранено');
+});
+
+test('Р1/рецензия (C.6.7): восстановление из зеркала гасит форму блока, быструю форму, их черновики и свёртку', async () => {
+  const real = new IDBFactory();
+  // в копии — те же блоки и практика, которой в рабочей нет: предложение встанет
+  const snap = r1SettingsSeed();
+  snap.items.push(r1Action('m1', 'Из копии', daysAgo(10), 'Утро', R1_ALL));
+  snap.days = { [daysAgo(1)]: { m1: true } };
+  await idbPut(real, { json: JSON.stringify(snap), savedAt: 4242, schemaVersion: SCHEMA_VERSION });
+  const { document, window } = await boot({ seed: r1SettingsSeed(), idb: real });
+  r1Settings(document);
+  r1Btn(document, 'group-fold', 'Выходной').click();
+  r1Btn(document, 'quick-open', 'Утро').click();
+  document.getElementById('q-lines').value = 'НАБРАНО ДО ВОССТАНОВЛЕНИЯ';
+  r1Btn(document, 'group-open', 'Утро').click(); // быстрое добавление — в слот черновика
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="0000011"]').click();
+  assert.equal(r1Chips(document), '0000011', 'форма блока открыта с черновиком дней');
+
+  const restore = () => document.querySelector('#scr-settings [data-act="mirror-restore"]');
+  assert.ok(restore(), 'предложение восстановления стоит');
+  restore().click();
+  assert.equal(r1Chips(document), '0000011', 'первый тап только взводит — форма ещё открыта');
+  restore().click();
+  assert.equal(r1Saved(window).items.some(i => i.id === 'm1'), true, 'состояние подменено копией');
+  assert.equal(document.getElementById('scr-settings').hidden, false, 'остались на «Настройках»');
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'форма блока закрыта');
+  assert.equal(r1Btn(document, 'group-fold', 'Выходной').getAttribute('aria-expanded'), 'true', 'свёртка прежних данных снята');
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(r1Chips(document), '1111111', 'черновик дней прежних данных не всплыл');
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+  r1Btn(document, 'quick-open', 'Утро').click();
+  assert.equal(document.getElementById('q-lines').value, '', 'черновик быстрой формы не всплыл');
+});
+
+test('Р1/рецензия: «Добавить действия» в «Без блока», видимой ради «Вернуть», — форма открывается, призрачной формы нет', async () => {
+  const since = daysAgo(10);
+  const seed = r1Store([r1Block('Утро')], [
+    r1Action('u1', 'Кровать', since, 'Утро', R1_ALL),
+    r1Action('l1', 'Одинокое', since, '', R1_ALL)
+  ]);
+  const { document, window } = await boot({ seed });
+  removeItemThroughUi(document, 'l1');
+  const loose = () => document.querySelector('#scr-settings .bcard.loose');
+  assert.ok(loose() && loose().querySelector('.gone-note'), 'карточка стоит ради короткого пути назад');
+  r1Btn(document, 'quick-open', '').click();
+  assert.ok(loose(), 'тап по «Добавить действия» карточку не уносит');
+  assert.ok(loose().querySelector('[data-form="quick"] #q-lines'), 'форма быстрого добавления открылась в ней');
+  assert.equal(window.currentFormKey(), 'quick:');
+  // «Отмена»: ни живых действий без блока, ни короткого пути — карточка уходит, ключа формы нет
+  document.querySelector('#scr-settings [data-act="quick-cancel"]').click();
+  assert.equal(loose(), null);
+  assert.equal(window.currentFormKey(), null, 'призрачного ключа формы не осталось');
+  // возврат из «Убранных» возвращает карточку — без формы, которую никто не открывал
+  [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="item-restore"]')].find(b => b.dataset.id === 'l1').click();
+  assert.ok(loose());
+  assert.equal(loose().querySelector('[data-form="quick"]'), null, 'формы нет');
+  // и добавление из такой карточки доходит до записи
+  removeItemThroughUi(document, 'l1');
+  r1Btn(document, 'quick-open', '').click();
+  document.getElementById('q-lines').value = 'Второе';
+  document.querySelector('#scr-settings [data-act="quick-save"]').click();
+  assert.deepEqual(r1Saved(window).items.filter(i => i.group === '' && i.removedAt === null).map(i => i.name), ['Второе']);
+  assert.equal(loose().querySelector('.flash').textContent, 'Добавлено: 1');
+});
+
+test('Р1/рецензия: блок вернули позже дня ухода — прежние записи в «Убранные» не встают, дублей на «Сегодня» нет', async () => {
+  const since = daysAgo(10), gone = daysAgo(3);
+  const seed = r1Store([r1Block('Утро'), Object.assign(r1Block('Школа'), { removedAt: gone })], [
+    r1Action('u1', 'Кровать', since, 'Утро', R1_ALL),
+    r1Action('s1', 'Звонок', since, 'Школа', R1_ALL, { removedAt: gone }),
+    r1Action('s2', 'Пост', since, 'Школа', R1_ALL, { removedAt: gone }),
+    r1Action('sh', 'Чтение', since, 'Школа', R1_ALL, { area: 'habit', normPerWeek: 7, removedAt: gone })
+  ]);
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  const goneRows = () => [...document.querySelectorAll('#scr-settings .rowwrap.gone')].map(r => r.querySelector('.tname').textContent);
+  assert.deepEqual(goneRows(), ['Школа'], 'до возврата — только блок: ушедшее с ним вернётся с ним');
+  r1Btn(document, 'group-restore', 'Школа').click();
+  const s = r1Saved(window);
+  assert.deepEqual(s.items.filter(i => i.group === 'Школа' && i.removedAt === null).map(i => [i.name, i.addedAt]),
+    [['Звонок', daysAgo(0)], ['Пост', daysAgo(0)], ['Чтение', daysAgo(0)]], 'новые записи с сегодняшнего дня');
+  assert.deepEqual(goneRows(), [], 'прежние отрезки — ни действий, ни привычки — в «Убранные» не встали');
+  assert.equal(document.querySelectorAll('#scr-settings [data-act="item-restore"]').length, 0, '«Вернуть» дубля нигде нет');
+  assert.equal(r1Card(document, 'Школа').querySelectorAll('.bbody .rowwrap').length, 2);
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  const names = [...document.querySelectorAll('#scr-today .list .row .tname')].map(n => n.textContent.trim());
+  assert.deepEqual(names.slice().sort(), ['Звонок', 'Кровать', 'Пост'], 'по одному экземпляру');
+  assert.match(document.querySelector('#scr-today .bar-note').textContent, /^0\s*из\s*3$/);
+
+  // преемник убран — в «Убранных» встаёт он один, последний отрезок
+  const s1b = s.items.find(i => i.name === 'Звонок' && i.removedAt === null);
+  removeItemThroughUi(document, s1b.id);
+  r1Settings(document); // короткий путь снят — остаётся длинный
+  assert.deepEqual(goneRows(), ['Звонок']);
+  assert.equal([...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="item-restore"]')][0].dataset.id, s1b.id);
+});
+
+test('Р1/рецензия: переименование блока уносит черновики по имени — строки быстрого добавления и выбор «Блок»', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  const drafts = () => Object.keys(window.eval('ui').formDraft);
+
+  // (а) набранные строки быстрого добавления → форма блока → новое имя
+  r1Btn(document, 'quick-open', 'Утро').click();
+  document.getElementById('q-lines').value = 'Пост\nГлаза';
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-name').value = 'Рассвет';
+  r1Btn(document, 'group-save', 'Утро').click();
+  assert.equal(drafts().includes('quick:Утро'), false, 'под старым именем черновик не висит');
+  r1Btn(document, 'quick-open', 'Рассвет').click();
+  assert.equal(document.getElementById('q-lines').value, 'Пост\nГлаза', 'набранное переехало вместе с именем');
+  document.querySelector('#scr-settings [data-act="quick-cancel"]').click();
+
+  // (б) выбор «Блок» в несохранённой правке → переименование выбранного блока
+  r1Edit(document, 'u1');
+  r1Pick(document, window, 'Школа');
+  r1Btn(document, 'group-open', 'Школа').click();
+  document.getElementById('g-name').value = 'Учёба';
+  r1Btn(document, 'group-save', 'Школа').click();
+  r1Edit(document, 'u1');
+  assert.equal(document.getElementById('e-group').value, 'Учёба', 'выбор переехал на новое имя');
+  assert.doesNotMatch(r1Form(document).querySelector('#e-group').textContent, /нет в списке/, 'осиротевшего варианта нет');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  const s = r1Saved(window);
+  assert.equal(s.items.find(i => i.id === 'u1').group, 'Учёба', 'действие ушло в переименованный блок, а не в осиротевшее имя');
+  assert.deepEqual(s.groups.map(g => g.name), ['Рассвет', 'Учёба', 'Выходной']);
+  assert.equal(document.querySelector('#scr-settings .bcard.loose'), null, '«Без блока» не появилась');
+});
+
+test('Р1/рецензия: «Дублировать блок» не теряет набранное в форме источника — ни до перерисовки, ни после', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-name').value = 'Утро ранее';
+  document.getElementById('g-cap').value = '6:30';
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="1111100"]').click(); // перерисовка — черновик в слоте
+  document.getElementById('g-cap').value = '6:45'; // набрано ПОСЛЕ перерисовки
+  r1Btn(document, 'group-dup', 'Утро').click();
+  const s = r1Saved(window);
+  assert.deepEqual(s.groups[1], { name: 'Утро (копия)', caption: '7:00', days: [], removedAt: null }, 'копия — сохранённого блока');
+  assert.deepEqual(s.groups[0], { name: 'Утро', caption: '7:00', days: [], removedAt: null }, 'источник не записан');
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'форма закрыта');
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(document.getElementById('g-name').value, 'Утро ранее');
+  assert.equal(document.getElementById('g-cap').value, '6:45', 'набранное после последней перерисовки не пропало');
+  assert.equal(r1Chips(document), '1111100', 'выбранные дни — тоже');
+  // «Отмена» — осознанный отказ: черновик снимается
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(document.getElementById('g-cap').value, '7:00');
+  assert.equal(r1Chips(document), '1111111');
+});
+
+test('Р1/рецензия: свёртку карточки снимает только якорь внутри неё — перенос и возврат привычки её не трогают', async () => {
+  const { document, window } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'group-fold', 'Утро').click();
+  const body = () => r1Card(document, 'Утро').querySelector('.bbody');
+  assert.equal(body().hidden, true);
+  // привычка «Чтение» — из «Школы» в «Утро»: подтверждение ложится в «Привычки»
+  r1Edit(document, 'sh');
+  r1Pick(document, window, 'Утро');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(r1Saved(window).items.find(i => i.id === 'sh').group, 'Утро');
+  assert.equal(body().hidden, true, 'перенос привычки свёртку «Расписания» не снял');
+  // возврат привычки блока «Утро» — тоже
+  removeItemThroughUi(document, 'sh');
+  r1Settings(document);
+  [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="item-restore"]')].find(b => b.dataset.id === 'sh').click();
+  assert.equal(r1Saved(window).items.find(i => i.id === 'sh').removedAt, null);
+  assert.equal(body().hidden, true, 'возврат привычки свёртку не снял');
+  // действие — снимает: его подтверждение ложится в карточку (п. 4.2)
+  r1Edit(document, 'w1');
+  r1Pick(document, window, 'Утро');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(body().hidden, false, 'перенос действия карточку развернул');
+});
+
+test('Р1/рецензия CSS: круг сетки разбора — по первой строке имени, а не по центру растущей ячейки', () => {
+  const css = CSS_SRC();
+  const i = ruleOf(css, '.grid i');
+  assert.ok(i, 'своё правило .grid i');
+  assert.match(i, /align-self:\s*start/, 'не центр ячейки: подпись плана растит её на строки');
+  const m = /margin-top:\s*calc\(\((\d+)px \* ([\d.]+) - ([\d.]+)px\) \/ 2\)/.exec(i);
+  assert.ok(m, 'отступ — формулой из величин, а не подобранным числом');
+  assert.equal(+m[1], px(ruleOf(css, '.g-name'), 'font-size'), 'кегль — имени сетки');
+  assert.equal(+m[2], parseFloat(/line-height:\s*([\d.]+)/.exec(ruleOf(css, 'body'))[1]), 'интерлиньяж — наследуемый от body');
+  assert.equal(+m[3], px(ruleOf(css, '.grid i, .cdays i'), 'height'), 'размер — круга (рамка входит: border-box)');
+  assert.match(ruleOf(css, '*'), /box-sizing:\s*border-box/);
+  assert.match(ruleOf(css, '.g-plan'), /white-space:\s*normal/, 'подпись по-прежнему переносится');
+});
+
+test('Р1/рецензия CSS: короткий путь назад на месте ПЕРВОГО блока — без линии и отступа, как первая карточка', async () => {
+  const css = CSS_SRC();
+  const first = ruleOf(css, '.blocks > .bcard:first-child, .blocks > .gone-note:first-child');
+  assert.ok(first, 'одно правило сброса на первую карточку и на строку на её месте');
+  assert.match(first, /border-top:\s*0/);
+  assert.match(first, /margin-top:\s*0/);
+  assert.equal(px(ruleOf(css, '.blocks > .gone-note:first-child'), 'padding-top'), px(ruleOf(css, '.gone-note'), 'padding'),
+    'поле сверху — собственное поле строки, без отступа от линии, которой нет');
+  // разметка: убран первый блок — строка встаёт первой в .blocks, и правило к ней применимо
+  const { document } = await boot({ seed: r1SettingsSeed() });
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Утро').click();
+  r1Btn(document, 'group-remove', 'Утро').click();
+  r1Btn(document, 'group-remove', 'Утро').click();
+  const note = document.querySelector('#scr-settings .blocks > .gone-note');
+  assert.ok(note && note.matches('.blocks > .gone-note:first-child'), 'строка ушедшего первого блока — первая в .blocks');
+});
+
+/* ══ «Расписание 1/3»: финальное ревью, интерфейс (Р1/ревью) ═══════ */
+
+test('Р1/ревью: блок с двумя одноимёнными действиями вернули назавтра — вернулись оба, «Убранные» пусты', async () => {
+  const since = daysAgo(10), gone = daysAgo(1);
+  const seed = r1Store([Object.assign(r1Block('Утро'), { removedAt: gone })], [
+    r1Action('v1', 'Вода', since, 'Утро', R1_ALL, { removedAt: gone }),
+    r1Action('v2', 'Вода', since, 'Утро', R1_ALL, { removedAt: gone }),
+    r1Action('d1', 'Другое', since, 'Утро', R1_ALL, { removedAt: gone })
+  ]);
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  const goneRows = () => [...document.querySelectorAll('#scr-settings .rowwrap.gone')].map(r => r.querySelector('.tname').textContent);
+  assert.deepEqual(goneRows(), ['Утро']);
+  r1Btn(document, 'group-restore', 'Утро').click();
+  const s = r1Saved(window);
+  assert.deepEqual(s.items.filter(i => i.removedAt === null).map(i => [i.name, i.addedAt]),
+    [['Вода', daysAgo(0)], ['Вода', daysAgo(0)], ['Другое', daysAgo(0)]], 'вернулись все три, вторая «Вода» — тоже');
+  assert.deepEqual(goneRows(), [], 'в «Убранных» пусто — невернувшихся нет');
+  assert.equal(r1Card(document, 'Утро').querySelectorAll('.bbody .rowwrap').length, 3);
+  assert.equal(document.querySelector('#scr-settings .flash').textContent, 'Сохранено');
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.match(document.querySelector('#scr-today .bar-note').textContent, /^0\s*из\s*3$/, '«N из M» — из трёх');
+});
+
+test('Р1/ревью: «Вернулись с днями блока» не называет прежний отрезок с парой; устаревшая «Вернуть» — не отказ хранилища', async () => {
+  const since = daysAgo(10), gone = daysAgo(3), later = daysAgo(2);
+  const seed = r1Store([Object.assign(r1Block('Школа', '', [{ from: since, mask: '1111100' }]), { removedAt: gone })], [
+    // свои выходные в будничном блоке — вернулся бы «как блок»; но у него
+    // есть пара-преемник p2, и он не вернётся вовсе
+    r1Action('p1', 'Звонок', since, 'Школа', '0000011', { removedAt: gone }),
+    r1Action('p2', 'Звонок', later, 'Школа', R1_ALL, { removedAt: later }),
+    r1Action('q1', 'Душ', since, 'Школа', '0000011', { removedAt: gone })
+  ]);
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  r1Btn(document, 'group-restore', 'Школа').click();
+  assert.equal(document.querySelector('#scr-settings .flash').textContent,
+    'Вернулось с днями блока: Душ — свои дни в них не попадали', 'названо только вернувшееся');
+  const s = r1Saved(window);
+  assert.deepEqual(s.items.filter(i => i.removedAt === null).map(i => i.name), ['Душ']);
+  assert.equal(s.items.find(i => i.id === 'p1').removedAt, gone, 'прежний отрезок с парой — не вернулся');
+  const restoreIds = () => [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="item-restore"]')].map(b => b.dataset.id);
+  assert.deepEqual(restoreIds(), ['p2'], 'в «Убранных» — последний отрезок');
+
+  // устаревшая кнопка у прежнего отрезка: возвращать нечего, и хранилище
+  // тут ни при чём — экран перерисован, отказа не сказано
+  const stale = document.createElement('button');
+  stale.dataset.act = 'item-restore';
+  stale.dataset.id = 'p1';
+  document.getElementById('scr-settings').appendChild(stale);
+  const before = window.localStorage.getItem(NS);
+  stale.click();
+  assert.equal(window.localStorage.getItem(NS), before, 'ничего не записано');
+  assert.equal(document.querySelector('#scr-settings .flash.keep'), null, 'отказа нет');
+  assert.doesNotMatch(document.getElementById('scr-settings').textContent, /хранилище недоступно/);
+  assert.equal(stale.isConnected, false, 'экран перерисован — устаревшей кнопки нет');
+
+  // а настоящий отказ записи называется, как прежде
+  const p2 = [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="item-restore"]')].find(b => b.dataset.id === 'p2');
+  withBrokenStorage(window, () => p2.click());
+  assert.match(document.querySelector('#scr-settings .flash.keep').textContent, /^Не возвращено: хранилище недоступно$/);
+  assert.equal(r1Saved(window).items.find(i => i.id === 'p2').removedAt, later);
+});
+
+/* Ключ черновика формы добавления не совпадает с ключом правки блока или
+   упражнения, чьё имя или id — «new»: прежде оба давали 'group:new'
+   ('ex:new'), и дни, выбранные в «Добавить блок», записывались в чужой блок */
+test('Р1/ревью: блок «new» и упражнение «new» — черновик формы добавления не накатывается на их правку', async () => {
+  const since = daysAgo(10);
+  const seed = r1Store([r1Block('new')], [r1Action('n1', 'Кровать', since, 'new', R1_ALL)]);
+  seed.exercises = [{ id: 'new', name: 'Жим', unit: 'кг', value: 40, history: [], addedAt: since, removedAt: null }];
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+
+  document.querySelector('#scr-settings [data-act="group-add-open"]').click();
+  document.getElementById('g-add').value = 'Вечер';
+  document.querySelector('#scr-settings [data-act="days-preset"][data-mask="0000011"]').click();
+  assert.equal(r1Chips(document), '0000011');
+  r1Btn(document, 'group-open', 'new').click();
+  const form = document.querySelector('#scr-settings [data-form="group-edit"]');
+  assert.ok(form && form.dataset.id === 'new', 'открыта правка блока «new»');
+  assert.equal(r1Chips(document), R1_ALL, 'дни блока «new» — его собственные, а не выбор формы добавления');
+  document.querySelector('#scr-settings [data-act="group-save"]').click();
+  assert.deepEqual(r1Saved(window).groups.find(g => g.name === 'new').days, [], 'в дни чужого блока ничего не записано');
+  document.querySelector('#scr-settings [data-act="group-add-open"]').click();
+  assert.equal(document.getElementById('g-add').value, 'Вечер', 'набранное в форме добавления цело');
+  assert.equal(r1Chips(document), '0000011', 'и выбранные дни');
+
+  openSect(document, /Упражнения/);
+  document.querySelector('#scr-settings [data-act="ex-add-open"]').click();
+  document.getElementById('x-add-name').value = 'Присед';
+  byId(document, 'ex-open', 'new').click();
+  assert.equal(document.getElementById('x-name').value, 'Жим', 'открыта правка упражнения «new»');
+  document.querySelector('#scr-settings [data-act="ex-save"]').click();
+  document.querySelector('#scr-settings [data-act="ex-add-open"]').click();
+  assert.equal(document.getElementById('x-add-name').value, 'Присед', 'сохранение правки «new» не сняло черновик формы добавления');
+});
+
+/* Фильтр соседей по блоку в dragSiblings: в карточке «Без блока» в одном
+   списке стоят пункты без блока и пункты с осиротевшим именем из импорта.
+   Прежде фильтр нагружал тест 16F, где чужая строка стояла между соседями;
+   с карточками блоков чужой блок отсекается родителем, и фильтр data-dgroup
+   ничем не проверялся */
+test('Р1/ревью: перетаскивание в «Без блока» — соседи только своего имени (data-dgroup)', async () => {
+  const since = daysAgo(10);
+  const seed = r1Store([r1Block('Утро')], [
+    r1Action('u1', 'Кровать', since, 'Утро', R1_ALL),
+    r1Action('x1', 'Первый', since, '', R1_ALL),
+    r1Action('y1', 'Чужой пункт', since, 'Чужой', R1_ALL),
+    r1Action('x2', 'Второй', since, '', R1_ALL)
+  ]);
+  const { document, window } = await boot({ seed });
+  const saved = () => r1Saved(window).items.map(i => i.id);
+  r1Settings(document);
+  assert.deepEqual(r1Saved(window).groups.map(g => g.name), ['Утро'], 'осиротевшее имя блока не получило');
+  const rows = () => [...document.querySelectorAll('#scr-settings [data-drag="item"]')].filter(r => r.dataset.dragId !== 'u1');
+  assert.deepEqual(rows().map(r => [r.dataset.dragId, r.dataset.dgroup]), [['x1', ''], ['y1', 'Чужой'], ['x2', '']]);
+  assert.equal(new Set(rows().map(r => r.parentElement)).size, 1, 'все три — в одном списке');
+
+  // палец между чужой строкой и x2: среди своих x1 по-прежнему первый
+  stubRows(rows());
+  rows()[0].dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  await hold();
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 320));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 320));
+  assert.deepEqual(saved(), ['u1', 'x1', 'y1', 'x2'], 'чужая строка позицией среди своих не считается');
+
+  // ниже середины x2 — x1 встаёт за ним; чужая строка — на своём месте
+  stubRows(rows());
+  rows()[0].dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  await hold();
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 355));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 355));
+  assert.deepEqual(saved(), ['u1', 'x2', 'y1', 'x1']);
+});
+
+/* Сдвиг окна по дням — логическими днями, а не кратным 24 часам: через
+   перевод стрелок около границы 04:00 фикстуры «вторника» и «назавтра»
+   попадали не в тот день. Часовой пояс владельца подставляется на время
+   теста и возвращается; тест синхронный — ни один таймер окон в это время
+   не срабатывает */
+test('Р1/ревью: shiftWindowDays и moveToWeekday — логический день и через перевод стрелок (America/Toronto)', () => {
+  const was = process.env.TZ;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const fakeWin = iso => {
+    const t = Date.parse(iso);
+    const RealD = Date;
+    return {
+      Date: class extends RealD {
+        constructor(...a) { if (a.length) super(...a); else super(t); }
+        static now() { return t; }
+      },
+      Event: class { constructor(type) { this.type = type; } }
+    };
+  };
+  const doc = { dispatchEvent() {} };
+  const keyOf = w => dayKey(new w.Date());
+  try {
+    process.env.TZ = 'America/Toronto';
+    // пятница 30.10.2026, 04:30 EDT; во вторник 03.11 уже EST
+    let w = fakeWin('2026-10-30T08:30:00Z');
+    assert.equal(keyOf(w), '2026-10-30');
+    moveToWeekday(w, doc, 1);
+    assert.equal(keyOf(w), '2026-11-03', 'осенью: вторник, а не понедельник');
+    // 01.11.2026, 03:30 EST — в день перевода граница дня уже в 03:00
+    // (принятое ограничение dateKeyShift); +24 часа давали тот же 01.11
+    w = fakeWin('2026-11-01T08:30:00Z');
+    assert.equal(keyOf(w), '2026-11-01');
+    shiftWindowDays(w, 1);
+    assert.equal(keyOf(w), '2026-11-02', 'назавтра — следующий логический день');
+    shiftWindowDays(w, 1);
+    assert.equal(keyOf(w), '2026-11-03', 'сдвиги складываются');
+    // весна: пятница 12.03.2027, 03:30 EST — логически четверг 11.03
+    w = fakeWin('2027-03-12T08:30:00Z');
+    assert.equal(keyOf(w), '2027-03-11');
+    moveToWeekday(w, doc, 0);
+    assert.equal(keyOf(w), '2027-03-15', 'весной: понедельник, а не вторник');
+  } finally {
+    process.env.TZ = was !== undefined ? was : zone;
+  }
 });
