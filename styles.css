@@ -251,6 +251,40 @@ h2 {
   text-align: right;
 }
 
+/* Свёрнутый выполненный блок «Сегодня» (задача Р2, п. 4) — на месте
+   заголовка и тем же голосом: имя — как .g-label (13px, 650, капитель,
+   --muted), подпись — .g-cap, справа счёт тем же кеглем. Ступени и цвета
+   существующие, акцента нет: свёртка — уборка решённого, а не объявление
+   («День закрыт» остаётся единственным акцентным словом экрана).
+   Кнопка во всю ширину колонки — тач-цель ≥ 44 px; верхний отступ ставит
+   имя туда, где стояло имя заголовка, и схлопнувшиеся строки не уводят
+   блок вверх. Подпись переносится внутри своей колонки, счёт — никогда. */
+.bfold {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  margin: 12px 0 0;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+.list > .bfold:first-child { margin-top: 0; }
+.bf-name {
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.bfold .g-cap { min-width: 0; text-align: left; }
+.bf-count { margin-left: auto; white-space: nowrap; }
+
 .rowwrap { display: flex; flex-wrap: wrap; align-items: center; gap: 0 14px; } /* зазор текст–точка как до выноса из label */
 .rowwrap > .row { flex: 1 1 auto; min-width: 0; }
 .rowwrap > .card.form, .rowwrap > .miss-note, .rowwrap > .flash { width: 100%; }
@@ -357,6 +391,91 @@ h2 {
 .dot i { width: 7px; height: 7px; border-radius: 50%; background: var(--dot); }
 .miss-note { font-size: 13px; color: var(--muted); padding: 0 0 10px 40px; margin-top: -6px; }
 .miss-note .undo { display: inline-block; margin: 0 0 0 6px; vertical-align: middle; } /* 6 + 8px padding = прежние 14px до подписи */
+
+/* ── «Не сегодня»: свайп строки действия (задача Р2) ─────────────
+   Кнопка лежит ПОД строкой (z-index 0), содержимое строки — над ней
+   (z-index 2). Жест сдвигает содержимое на --sx, открывая кнопку справа.
+   Двигается только transform — ни одного пересчёта раскладки; isolation
+   держит z-index внутри строки.
+
+   В покое кнопка прозрачна и не ловит касаний (фокус с клавиатуры она
+   при этом получает — opacity его не отнимает, в отличие от visibility),
+   а подложки нет: кольцо сцены закрытия дня выходит за край строки, и
+   непрозрачная подложка соседней строки срезала бы его. Подложка ::before
+   появляется только когда кнопка видна — под пальцем, в открытой строке и
+   при фокусе: между кругом, текстом и точкой прозрачные зазоры, и без неё
+   кнопка просвечивала бы в них на всём пути жеста.
+
+   Скролл страницы принадлежит браузеру: pan-y отдаёт ему вертикаль, а
+   горизонталь приходит в JS (свайп). Переход доезда — в окне движения, без
+   задержки, выезд ease-out, возврат ease-in; под пальцем (.swiping) перехода нет — строка идёт за пальцем.
+   При reduced-motion переход гасит глобальный блок, положение мгновенное. */
+.rowwrap.swipe {
+  --skip-w: 124px;
+  --sx: 0px;
+  position: relative;
+  isolation: isolate;
+  touch-action: pan-y;
+}
+.rowwrap.swipe::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--bg);
+  opacity: 0;
+}
+.rowwrap.swipe::before,
+.rowwrap.swipe > :not(.skipbtn) {
+  transform: translateX(var(--sx));
+  transition: transform .22s ease-in;     /* возврат строки — уход кнопки: ease-in */
+}
+/* выезд кнопки — появление: ease-out (кривую берёт состояние, В КОТОРОЕ идёт переход) */
+.rowwrap.swipe.open::before,
+.rowwrap.swipe.open > :not(.skipbtn),
+.rowwrap.swipe:has(> .skipbtn:focus-visible)::before,
+.rowwrap.swipe:has(> .skipbtn:focus-visible) > :not(.skipbtn) { transition-timing-function: ease-out; }
+.rowwrap.swipe > :not(.skipbtn) { position: relative; z-index: 2; }
+.rowwrap.swipe > .cseg { position: absolute; } /* половинки линии остаются абсолютными */
+.rowwrap.swipe > .row { -webkit-user-select: none; user-select: none; } /* жест мышью не выделяет имя */
+.rowwrap.swipe.swiping::before,
+.rowwrap.swipe.swiping > :not(.skipbtn) { transition: none; }
+/* открыта жестом — или кнопка получила фокус с клавиатуры: фокус выдвигает её сам */
+.rowwrap.swipe.open,
+.rowwrap.swipe:has(> .skipbtn:focus-visible) { --sx: calc(-1 * var(--skip-w) - 8px); }
+/* сдвинутое содержимое срезается краем строки, а не уезжает в поля экрана;
+   в покое среза нет — кольцо сцены закрытия дня выходит за край строки */
+.rowwrap.swipe.swiping,
+.rowwrap.swipe.open,
+.rowwrap.swipe:has(> .skipbtn:focus-visible) { overflow: hidden; }
+.skipbtn {
+  position: absolute;
+  top: 6px;
+  right: 4px;                            /* обводка фокуса (2 + 2 px) не срезается краем строки */
+  z-index: 0;
+  width: var(--skip-w);
+  padding: 0 10px;
+  opacity: 0;
+  pointer-events: none;
+}
+/* кнопка видна и нажимается — под пальцем, в открытой строке и при фокусе */
+.rowwrap.swipe.swiping::before,
+.rowwrap.swipe.open::before,
+.rowwrap.swipe:has(> .skipbtn:focus-visible)::before,
+.rowwrap.swipe.swiping > .skipbtn,
+.rowwrap.swipe.open > .skipbtn { opacity: 1; }
+.rowwrap.swipe.open > .skipbtn { pointer-events: auto; }
+/* без :has фокус всё равно виден: кнопка встаёт поверх строки */
+.skipbtn:focus-visible { opacity: 1; z-index: 3; }
+/* глобального правила [hidden] в файле нет — у отмеченной строки кнопка скрыта явно */
+.skipbtn[hidden] { display: none; }
+
+/* Пропущенная строка стоит на месте: имя зачёркнуто и приглушено, круг
+   неактивен — пунктир вместо сплошной обводки. Смысл несёт не только цвет:
+   зачёркивание и пунктир читаются и без него. Токены существующие. */
+.rowwrap.skip .tname { color: var(--muted); text-decoration: line-through; }
+.rowwrap.skip .check { cursor: default; }
+.rowwrap.skip .check .box { border-style: dashed; border-color: var(--control-border); background: var(--bg); }
 
 /* ── «Привычки»: серия и полоса текущей недели ─────────────── */
 
@@ -587,6 +706,31 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
 .presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: -4px 0 14px; }
 .presets .btn { padding: 0 6px; font-size: var(--text-xs); }
 
+/* ── Режимы (задача Р2) ─────────────────────────────────────────
+   Первая строка «Расписания» — «Режим: ‹имя› ⌄». Это .itxt (отклик на
+   нажатие даровой), выложенный в строку: имя слева, шеврон справа. Шеврон —
+   правило .fold свёртки карточки: тот же кегль и тот же поворот по
+   aria-expanded. Список под строкой — строки «Убранных» по виду: имя и тихая
+   мета слева, «Выбрать» справа, «Переименовать» и «Убрать» своими рядами
+   (последствие ухода — под кнопкой). Новых кеглей, цветов и движения нет. */
+.modes { margin: 0 0 var(--gap-block); }
+/* width: вне flex-родителя flex: 1 у .itxt не действует, и кнопка сжималась
+   до текста — шеврон вставал вплотную к имени, а не у правого края (замер
+   в браузере, 375×812) */
+.mhead { width: 100%; flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.mhead .tname { font-weight: 650; }
+/* глобального правила [hidden] в файле нет — список скрывается явно */
+.mlist[hidden] { display: none; }
+.mlist { border-top: 1px solid var(--line); }
+.mlist > .mrow + .mrow, .mlist > .mrow + .rowwrap { border-top: 1px solid var(--line); }
+.mrow > .btns { margin: 0 0 6px; }
+
+/* Имя режима на «Сегодня» — рядом с датой, одной строкой шапки: крупная дата
+   слева, имя справа по базовой линии, приглушённо, ступенью вторичного текста.
+   Длинное имя переносится под дату, а не наезжает на неё. */
+.hdate { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 12px; }
+.hmode { font-size: var(--text-sm); color: var(--muted); overflow-wrap: anywhere; }
+
 /* ── Формы ─────────────────────────────────────────────────── */
 
 .card {
@@ -711,6 +855,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, .itxt:focus-vis
    входит в размер): у однострочной ячейки центр тот же, что давал center. */
 .grid i { align-self: start; margin-top: calc((14px * 1.45 - 9px) / 2); }
 .grid i.on { background: var(--accent); border-color: var(--accent); }
+/* Пропуск «Не сегодня» (задача Р2) — круг с чертой: отличается от пустого
+   круга ФОРМОЙ, а не только тоном, поэтому читается и без цвета. Тон —
+   обводка контролов, тот же, что несёт пустую ячейку цепи (≥3:1). */
+.grid i.skip { position: relative; border-color: var(--control-border); }
+.grid i.skip::after {
+  content: "";
+  position: absolute;
+  left: -2px;                            /* черта шире круга: читается зачёркиванием */
+  right: -2px;
+  top: 50%;
+  height: 1.5px;
+  transform: translateY(-50%);
+  background: var(--control-border);
+}
 
 .line { margin: 10px 0; font-size: 15px; }
 
@@ -1004,6 +1162,7 @@ body.dragging { -webkit-user-select: none; user-select: none; }
 .dot:active,
 .undo:active,
 .itxt:active,
+.bfold:active,
 .sect > summary:active,
 #tabs button:active { background: var(--accent-weak); }
 /* Баннер разбора уже лежит на --accent-weak, и заливка тем же тоном под
@@ -1113,6 +1272,20 @@ body.dragging { -webkit-user-select: none; user-select: none; }
   margin-bottom: 0;
   padding-top: 0;
   padding-bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Свёртка выполненного блока «Сегодня» (задача Р2, п. 4) — отклик на
+   отметку или пропуск, сделавшие блок выполненным: строки блока
+   схлопываются по высоте и гаснут, ease-in (уход), в окне движения и без
+   задержки. max-height ставит инлайном motionFold (от scrollHeight к 0),
+   класс-триггер навешивает только он; узел снимает перерисовка. Заголовок
+   не схлопывается — на его месте встаёт свёрнутая строка. */
+.list > .chain.folding,
+.list > .rowwrap.folding {
+  transition: max-height .22s ease-in, opacity .22s ease-in;
+  opacity: 0;
   overflow: hidden;
   pointer-events: none;
 }

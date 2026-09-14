@@ -148,14 +148,24 @@ const MUTANTS = [
     id: '25.4-день-выбрасывается-целиком',
     file: 'app.js',
     note: 'один посторонний флаг снова уносит весь день с валидными отметками',
+    // якорь обновлён в задаче Р2: фильтр значений дня стал блоком и получил
+    // второе условие — false («Не сегодня») у известного не-действия
+    // отбрасывается. Порча прежняя — день целиком уходит из-за одного
+    // небулева значения; отсев пропуска у не-действия в мутанте сохранён,
+    // чтобы мутант не сносил заодно чужое правило (его держит
+    // R2-миграция-оставляет-пропуск-не-действию)
     edits: [[
       `    if (!isDayKey(k) || !day || typeof day !== 'object' || Array.isArray(day)) { delete s.days[k]; continue; }
-    for (const id of Object.keys(day)) if (typeof day[id] !== 'boolean') delete day[id];
+    for (const id of Object.keys(day)) {
+      if (typeof day[id] !== 'boolean' || (day[id] === false && notAction.has(id))) delete day[id];
+    }
     if (!Object.keys(day).length) delete s.days[k];`,
       `    const ok = isDayKey(k) && day && typeof day === 'object' && !Array.isArray(day) &&
       Object.keys(day).length > 0 &&
       Object.values(day).every(v => typeof v === 'boolean');
-    if (!ok) delete s.days[k];`]]
+    if (!ok) { delete s.days[k]; continue; }
+    for (const id of Object.keys(day)) if (day[id] === false && notAction.has(id)) delete day[id];
+    if (!Object.keys(day).length) delete s.days[k];`]]
   },
   {
     id: '25.5-схема-новее-молчит',
@@ -301,11 +311,14 @@ const MUTANTS = [
     file: 'styles.css',
     note: 'состояние нажатия снова только у .btn — остальные тач-цели молчат под пальцем',
     // якорь обновлён в задаче 28.D: .idetail ушёл из списка вместе с
-    // хвостовой кнопкой строки дня
+    // хвостовой кнопкой строки дня.
+    // якорь обновлён в задаче Р2: в список встала свёрнутая строка блока
+    // .bfold (п. 4). Снимается вместе с прочими — отклика нет ни у кого, кроме .btn
     edits: [[`.btn:active,
 .dot:active,
 .undo:active,
 .itxt:active,
+.bfold:active,
 .sect > summary:active,
 #tabs button:active { background: var(--accent-weak); }`,
       '.btn:active { background: var(--accent-weak); }']]
@@ -648,8 +661,10 @@ const MUTANTS = [
     note: 'блоки, weekLog, история, значения сессий и решения по параметрам снова вне счёта — импорт молчит о потере',
     // якорь обновлён в задаче Р1: между schedule и entries встали категории
     // blockDays и groupLog. Они снимаются вместе с прочими — до 28.B не было
-    // и их; по отдельности их держат мутанты R1-потери-*
-    edits: [["  ['groups', 'блок', 'блока', 'блоков'],\n  ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],\n  ['history', 'запись истории', 'записи истории', 'записей истории'],\n  ['schedule', 'отрезок расписания', 'отрезка расписания', 'отрезков расписания'],\n  ['blockDays', 'отрезок дней блока', 'отрезка дней блока', 'отрезков дней блока'],\n  ['groupLog', 'запись о блоке', 'записи о блоке', 'записей о блоке'],\n  ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],\n  ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']\n", '']]
+    // и их; по отдельности их держат мутанты R1-потери-*.
+    // якорь обновлён в задаче Р2: между groupLog и entries встали категории
+    // modes и modeLog — снимаются вместе с прочими по той же причине
+    edits: [["  ['groups', 'блок', 'блока', 'блоков'],\n  ['weekLog', 'запись счётчика', 'записи счётчика', 'записей счётчика'],\n  ['history', 'запись истории', 'записи истории', 'записей истории'],\n  ['schedule', 'отрезок расписания', 'отрезка расписания', 'отрезков расписания'],\n  ['blockDays', 'отрезок дней блока', 'отрезка дней блока', 'отрезков дней блока'],\n  ['groupLog', 'запись о блоке', 'записи о блоке', 'записей о блоке'],\n  ['modes', 'режим', 'режима', 'режимов'],\n  ['modeLog', 'отрезок режима', 'отрезка режима', 'отрезков режима'],\n  ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],\n  ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']\n", '']]
   },
   {
     id: '28B-6-неделя-закрывается-одним-тапом',
@@ -854,8 +869,10 @@ const MUTANTS = [
     id: '28E-C-эффект-при-обычном-тапе',
     file: 'app.js',
     note: 'сцена играет на любой отметке, а не только на закрывающей день — заметный отклик перестаёт быть событием',
-    edits: [['    if (on && minDayClosed(todayKey())) {',
-      '    if (on) {']]
+    // якорь обновлён в задаче Р2: условие сцены вынесено в переменную scene —
+    // её читает и свёртка выполненного блока (todayFoldAfter, п. 4)
+    edits: [['    const scene = on && minDayClosed(todayKey());',
+      '    const scene = on;']]
   },
   {
     id: '28E-C-эффект-не-гасится-под-reduced-motion',
@@ -983,7 +1000,10 @@ const MUTANTS = [
     id: '29B-сквозной-день-рвёт-серию',
     file: 'app.js',
     note: 'день без применимых пунктов снова даёт ноль вместо null — серия рвётся на выходном по расписанию',
-    edits: [['  return m.total > 0 ? m.done / m.total : null;', '  return m.total > 0 ? m.done / m.total : 0;']]
+    // якорь обновлён в задаче Р2: нейтральность дня решает planned, а не
+    // знаменатель (пропуски выпадают из total, но день нейтральным не делают),
+    // и null ушёл в отдельную строку. Порча прежняя — пустой план даёт 0
+    edits: [['  if (!m.planned) return null;\n  return m.total > 0 ? m.done / m.total : 0;', '  return m.total > 0 ? m.done / m.total : 0;']]
   },
   {
     id: '29B-цепь-читает-сквозной-как-пропуск',
@@ -1152,13 +1172,20 @@ const MUTANTS = [
     id: 'R1-стрелки-блоков-считают-убранные',
     file: 'app.js',
     note: 'до задачи: moveGroup меняется местами с убранным блоком — стрелка «срабатывает», а на экране ничего не движется',
-    edits: [['  const idxs = liveGroupIndexes();\n  const at = idxs.indexOf(i);', '  const idxs = store.groups.map((_, k) => k);\n  const at = idxs.indexOf(i);']]
+    // якорь обновлён в задаче Р2: соседи ищутся в режиме (liveGroupIndexes(m)).
+    // Порча прежняя — убранные считаются соседями; область режима в мутанте
+    // сохранена, чтобы он снимал ровно правило Р1
+    edits: [['  const idxs = liveGroupIndexes(m);\n  const at = idxs.indexOf(i);',
+      '  const idxs = store.groups.map((g, k) => (blockMode(g) === m ? k : -1)).filter(k => k >= 0);\n  const at = idxs.indexOf(i);']]
   },
   {
     id: 'R1-перетаскивание-блоков-считает-убранные',
     file: 'app.js',
     note: 'до задачи: reorderGroup считает позицию среди всех блоков — убранный занимает место в порядке живых',
-    edits: [['  if (!g || !live(g)) return false;\n  const idxs = liveGroupIndexes();', '  if (!g || !live(g)) return false;\n  const idxs = store.groups.map((_, k) => k);']]
+    // якорь обновлён в задаче Р2: позиция считается в режиме
+    // (liveGroupIndexes(m)); область режима в мутанте сохранена
+    edits: [['  if (!g || !live(g)) return false;\n  const idxs = liveGroupIndexes(m);',
+      '  if (!g || !live(g)) return false;\n  const idxs = store.groups.map((x, k) => (blockMode(x) === m ? k : -1)).filter(k => k >= 0);']]
   },
   {
     id: 'R1-уход-блока-оставляет-пункты',
@@ -1170,14 +1197,19 @@ const MUTANTS = [
     id: 'R1-уход-блока-только-ежедневные',
     file: 'app.js',
     note: 'ошибка: removeGroup уводит только ежедневные — счётчик и параметр блока остаются живыми в убранном блоке',
-    edits: [['  const touched = store.items.filter(it => live(it) && groupNameOf(it) === g.name);',
-      "  const touched = store.items.filter(it => live(it) && it.type === 'daily' && groupNameOf(it) === g.name);"]]
+    // якорь обновлён в задаче Р2: выборка разделилась по режиму — действия
+    // режима блока, глобальные пункты только без живого одноимённого блока
+    // (namesake). Порча прежняя — уводятся только ежедневные
+    edits: [['  const touched = store.items.filter(it => live(it) && groupNameOf(it) === g.name &&\n    (isAction(it) ? itemMode(it) === md : !namesake));',
+      "  const touched = store.items.filter(it => live(it) && it.type === 'daily' && groupNameOf(it) === g.name &&\n    (isAction(it) ? itemMode(it) === md : !namesake));"]]
   },
   {
     id: 'R1-возврат-блока-без-пунктов',
     file: 'app.js',
     note: 'ошибка: restoreGroup возвращает пустой блок — ушедшие с ним действия остаются в «Убранных» поштучно',
-    edits: [['  const back = store.items.filter(it => groupNameOf(it) === g.name && it.removedAt === when).map(it => it.id);', '  const back = [];']]
+    // якорь обновлён в задаче Р2: набор возврата вынесен в restoreSetOf (его
+    // читает и строка «Вернулись с днями блока»)
+    edits: [['  const back = restoreSetOf(g, when).map(it => it.id);', '  const back = [];']]
   },
   {
     id: 'R1-копия-блока-с-привычками',
@@ -1190,13 +1222,19 @@ const MUTANTS = [
     id: 'R1-копия-блока-без-дней',
     file: 'app.js',
     note: 'ошибка: копия блока не получает дни источника — будний блок копируется ежедневным',
-    edits: [['    days: m !== WEEK_ALL ? [{ from: t, mask: m }] : [],', '    days: [],']]
+    // якорь обновлён в задаче Р2: та же строка дней появилась у копии режима
+    // (addMode) и копии блока в другой режим (duplicateGroupTo) — прежний
+    // текст встречался трижды. Якорь — хвост литерала duplicateGroup
+    edits: [['    days: m !== WEEK_ALL ? [{ from: t, mask: m }] : [],\n    removedAt: null,\n    mode: md\n  };\n  // действия режима блока',
+      '    days: [],\n    removedAt: null,\n    mode: md\n  };\n  // действия режима блока']]
   },
   {
     id: 'R1-имя-занято-только-в-списке-блоков',
     file: 'app.js',
     note: 'до задачи: nameTaken смотрит только store.groups — переименование в осиротевшее имя применяет дни блока к прошлому чужих пунктов',
-    edits: [['  return store.items.some(it => groupNameOf(it) === n ||\n    (Array.isArray(it.groupLog) && it.groupLog.some(e => e && e.group === n)));', '  return false;']]
+    // якорь обновлён в задаче Р2: имя занимают только действия режима
+    // (isAction, itemMode). Порча прежняя — пункты имя не занимают вовсе
+    edits: [['  return store.items.some(it => isAction(it) && itemMode(it) === m && (groupNameOf(it) === n ||\n    (Array.isArray(it.groupLog) && it.groupLog.some(e => e && e.group === n))));', '  return false;']]
   },
   {
     id: 'R1-вход-в-убранный-блок-без-отказа',
@@ -1208,13 +1246,15 @@ const MUTANTS = [
     id: 'R1-правка-блока-оставляет-действие-без-дней',
     file: 'app.js',
     note: 'ошибка: updateGroup не проверяет zeroDaysIn — сужение дней блока оставляет действие без единого дня, неотличимым от убранного',
-    edits: [['    const names = zeroDaysIn(from, mask);', '    const names = [];']]
+    // якорь обновлён в задаче Р2: zeroDaysIn получила режим блока
+    edits: [['    const names = zeroDaysIn(from, mask, md);', '    const names = [];']]
   },
   {
     id: 'R1-новый-блок-оставляет-действие-без-дней',
     file: 'app.js',
     note: 'ошибка: addGroup в осиротевшее имя не проверяет zeroDaysIn — действия с этим именем входят в блок без единого дня',
-    edits: [['  if (zeroDaysIn(n, m).length) return false;\n', '']]
+    // якорь обновлён в задаче Р2: zeroDaysIn получила режим нового блока
+    edits: [['  if (zeroDaysIn(n, m, md).length) return false;\n', '']]
   },
   {
     id: 'R1-форма-нового-блока-не-называет-действия-без-дней',
@@ -1251,13 +1291,17 @@ const MUTANTS = [
     id: 'R1-быстрое-добавление-режет-по-косой',
     file: 'app.js',
     note: 'ошибка: «/» считается разделителем подписи — «Подтягивания / отжимания» становится именем «Подтягивания» с подписью',
-    edits: [['    const m = /^(.*?)\\s+·(?:\\s+(.*))?$/.exec(line);', '    const m = /^(.*?)\\s+[·\\/](?:\\s+(.*))?$/.exec(line);']]
+    // якорь обновлён в задаче Р2: разделителей стало четыре (« · », « — »,
+    // « – », « - »). Порча прежняя — к ним добавляется «/»
+    edits: [['    const m = /^(.*?)\\s+[·—–-](?:\\s+(.*))?$/.exec(line);', '    const m = /^(.*?)\\s+[·—–\\/-](?:\\s+(.*))?$/.exec(line);']]
   },
   {
     id: 'R1-быстрое-добавление-режет-по-последней-точке',
     file: 'app.js',
     note: 'ошибка: жадная группа режет по ПОСЛЕДНЕМУ « · » — «Чтение · 20 мин · перед сном» даёт имя «Чтение · 20 мин»',
-    edits: [['    const m = /^(.*?)\\s+·(?:\\s+(.*))?$/.exec(line);', '    const m = /^(.*)\\s+·(?:\\s+(.*))?$/.exec(line);']]
+    // якорь обновлён в задаче Р2: разделителей стало четыре; порча прежняя —
+    // жадная группа имени
+    edits: [['    const m = /^(.*?)\\s+[·—–-](?:\\s+(.*))?$/.exec(line);', '    const m = /^(.*)\\s+[·—–-](?:\\s+(.*))?$/.exec(line);']]
   },
   {
     id: 'R1-отказ-быстрого-добавления-закрывает-форму',
@@ -1275,7 +1319,11 @@ const MUTANTS = [
     id: 'R1-миграция-не-возвращает-блок-живого-пункта',
     file: 'app.js',
     note: 'ошибка: импорт живого пункта в убранный блок оставляет блок убранным — маска невидимого блока режет дни, снять нечем',
-    edits: [['    for (const g of s.groups) if (g.removedAt !== null && liveNames.has(g.name)) g.removedAt = null;\n', '']]
+    // якорь обновлён в задаче Р2: возврат разделился по режиму — блок режима
+    // живого действия и блок живого глобального пункта, если одноимённого
+    // живого нет нигде. Снимаются обе ветки: порча прежняя — ни один блок не
+    // возвращается
+    edits: [['    for (const g of s.groups) if (g.removedAt !== null && liveActions.has(JSON.stringify([g.mode, g.name]))) g.removedAt = null;\n    for (const name of liveGlobal) {\n      if (s.groups.some(g => g.name === name && g.removedAt === null)) continue;\n      const g = s.groups.find(x => x.name === name);\n      if (g) g.removedAt = null;\n    }\n', '']]
   },
   {
     id: 'R1-миграция-не-чинит-подпись-блока',
@@ -1305,13 +1353,16 @@ const MUTANTS = [
     id: 'R1-убранный-блок-на-дневном-экране',
     file: 'app.js',
     note: 'до задачи: groupedItems рисует заголовки и убранных блоков — ушедшее из виду остаётся на «Сегодня»',
-    edits: [['    if (!live(g)) continue;\n    known.add(g.name);', '    known.add(g.name);']]
+    // якорь обновлён в задаче Р2: раскладка строится по блокам режима, и
+    // проверка живости слилась с проверкой режима в одну строку
+    edits: [['    if (!live(g) || blockMode(g) !== m) continue;', '    if (blockMode(g) !== m) continue;']]
   },
   {
     id: 'R1-пустой-день-зовёт-заводить-пункты',
     file: 'app.js',
     note: 'до задачи: в день без запланированных действий «Сегодня» пишет «Пунктов пока нет — добавить можно…» и зовёт заводить заведённое',
-    edits: [["  } else if (liveDaily().some(i => i.area === 'min')) {", '  } else if (false) {']]
+    // якорь обновлён в задаче Р2: считаются действия активного режима
+    edits: [["  } else if (liveDaily().some(i => i.area === 'min' && itemMode(i) === modeOn(t))) {", '  } else if (false) {']]
   },
   {
     id: 'R1-сетка-разбора-считает-отметки-вне-плана',
@@ -1324,7 +1375,9 @@ const MUTANTS = [
     id: 'R1-подпись-плана-при-семи-днях',
     file: 'app.js',
     note: 'ошибка: «запланировано 7 дней» печатается у каждого ежедневного действия — подпись, которая ничего не сообщает',
-    edits: [['          if (p.planned < 7) {', '          if (p.planned <= 7) {']]
+    // якорь обновлён в задаче Р2: подпись собирается частями — рядом с
+    // «запланировано D дней» встало «пропусков K», и условие ушло в строку push
+    edits: [['          if (p.planned < 7) parts.push(', '          if (p.planned <= 7) parts.push(']]
   },
   {
     id: 'R1-убрать-блок-одним-тапом',
@@ -1350,6 +1403,315 @@ const MUTANTS = [
     note: 'до задачи: «Система» говорит, что блоки удаляются и пункты не трогают, — словарь «удалить/убрать» расходится с интерфейсом',
     edits: [["text: 'Блоки заводятся, переименовываются и убираются в Настройках → Расписание; убранный блок уводит из виду свои действия и привычки, отметки остаются.'",
       "text: 'Блоки заводятся, переименовываются и удаляются в Настройках; удаление блока пункты не трогает.'"]]
+  },
+
+  /* ── Задача Р2: режимы, «Не сегодня», свёртка блока, хвосты Р1 ──────
+     Решение архитектора: мутанты — только для НОВЫХ доменных функций Р2 и
+     новых доменных правил внутри прежних. Оси: (1) режимы — нормализация,
+     режим дня, область режима у блоков и действий, операции над режимами и
+     копия блока в другой режим; (2) пропуск «Не сегодня» — кодирование
+     false, знаменатель дня, отказы отметки и точки «вчера», счёт недели и
+     свёртка блока; (3) хвосты Р1 — разделители быстрого добавления,
+     преемник упражнения, «Убранные» по всем режимам; (4) migrate v20.
+     «до задачи» в note — поведение, каким оно было до Р2; «ошибка» —
+     правдоподобная порча нового кода. */
+  {
+    id: 'R2-основной-режим-не-дописывается',
+    file: 'app.js',
+    note: 'ошибка: normModes не дописывает основной режим в список без него — файл v19 получает пустой выбор режимов, а действия ссылаются на режим, которого нет',
+    edits: [['  if (!main) { main = { id: MAIN_MODE, name: MAIN_MODE_NAME, removedAt: null }; valid.unshift(main); }',
+      '  if (!main) { main = { id: MAIN_MODE, name: MAIN_MODE_NAME, removedAt: null }; }']]
+  },
+  {
+    id: 'R2-дубль-имени-режима-уводит-в-основной',
+    file: 'app.js',
+    note: 'ошибка: normModes роняет дубль имени без переадресации — блоки и действия дубля уезжают в основной, а не к одноимённому режиму',
+    edits: [['    if (names.has(x.name)) { if (!remap.has(x.id)) remap.set(x.id, names.get(x.name)); continue; }',
+      '    if (names.has(x.name)) continue;']]
+  },
+  {
+    id: 'R2-журнал-режимов-хранит-ведущий-основной',
+    file: 'app.js',
+    note: 'ошибка: normModeLog оставляет ведущий отрезок основного режима — второй способ сказать «основной», migrate от канона меняет журнал',
+    edits: [['    if (!out.length && seg.mode === MAIN_MODE) continue;', '']]
+  },
+  {
+    id: 'R2-режим-дня-с-опозданием-на-день',
+    file: 'app.js',
+    note: 'ошибка: modeOn сравнивает from строго — в день переключения действует прежний режим, выбор вступает в силу назавтра',
+    edits: [['    if (segs[mid].from <= dayKey) { at = mid; lo = mid + 1; } else hi = mid - 1;',
+      '    if (segs[mid].from < dayKey) { at = mid; lo = mid + 1; } else hi = mid - 1;']]
+  },
+  {
+    id: 'R2-активный-режим-всегда-основной',
+    file: 'app.js',
+    note: 'до задачи: activeMode не читает журнал — «Выбрать» пишет отрезок, а «Сегодня», формы и списки остаются в основном режиме',
+    edits: [['const activeMode = () => modeOn(todayKey());', 'const activeMode = () => MAIN_MODE;']]
+  },
+  {
+    id: 'R2-запись-без-поля-режима-выпадает',
+    file: 'app.js',
+    note: 'ошибка: itemMode не читает отсутствие поля основным — запись, собранная без mode, не принадлежит ни одному режиму и выпадает из всех дней',
+    edits: [["const itemMode = it => (it && typeof it.mode === 'string' && it.mode ? it.mode : MAIN_MODE);",
+      'const itemMode = it => (it ? it.mode : MAIN_MODE);']]
+  },
+  {
+    id: 'R2-действие-чужого-режима-в-области',
+    file: 'app.js',
+    note: 'до задачи: belongsToMode пускает любую запись — действие чужого режима встаёт под одноимённый блок и возвращается вместе с чужим блоком',
+    edits: [['const belongsToMode = (it, mode) => !isAction(it) || itemMode(it) === mode;',
+      'const belongsToMode = (it, mode) => true;']]
+  },
+  {
+    id: 'R2-глобальный-пункт-привязан-к-режиму',
+    file: 'app.js',
+    note: 'ошибка: belongsToMode судит глобальный пункт по itemMode — привычка и счётчик принадлежат только основному режиму',
+    edits: [['const belongsToMode = (it, mode) => !isAction(it) || itemMode(it) === mode;',
+      'const belongsToMode = (it, mode) => itemMode(it) === mode;']]
+  },
+  {
+    id: 'R2-имя-убранного-режима-свободно',
+    file: 'app.js',
+    note: 'ошибка: modeNameTaken смотрит только живые режимы — после возврата убранного в выборе два одноимённых режима',
+    edits: [['  return modeList().some(m => m.id !== exceptId && m.name === n);',
+      '  return liveModes().some(m => m.id !== exceptId && m.name === n);']]
+  },
+  {
+    id: 'R2-копия-режима-несёт-убранные-блоки',
+    file: 'app.js',
+    note: 'ошибка: addMode копирует и убранные блоки источника — в новом режиме живым встаёт блок, который владелец убрал',
+    edits: [['      if (!live(g) || blockMode(g) !== copyOf) continue;', '      if (blockMode(g) !== copyOf) continue;']]
+  },
+  {
+    id: 'R2-копия-действия-без-своей-маски',
+    file: 'app.js',
+    note: 'ошибка: actionCopy даёт копии «все семь» — свои дни действия («пн, ср, пт») в новом режиме потеряны',
+    edits: [['    schedule: [{ from: t, mask: scheduleNow(src) }], groupLog: [], mode',
+      '    schedule: [{ from: t, mask: WEEK_ALL }], groupLog: [], mode']]
+  },
+  {
+    id: 'R2-режим-переименовывается-в-занятое',
+    file: 'app.js',
+    note: 'ошибка: renameMode не проверяет занятость — два режима с одним именем, выбирать нечем различить',
+    edits: [["  if (modeNameTaken(n, id)) return { ok: false, reason: 'taken' };\n  const was = m.name;", '  const was = m.name;']]
+  },
+  {
+    id: 'R2-активный-режим-убирается',
+    file: 'app.js',
+    note: 'ошибка: removeMode убирает и активный режим — сегодняшний день остаётся без режима, который можно выбрать',
+    edits: [["  if (activeMode() === id) return { ok: false, reason: 'active' };\n", '']]
+  },
+  {
+    id: 'R2-возврат-режима-без-отката',
+    file: 'app.js',
+    note: 'ошибка: restoreMode при отказе записи не откатывает поле — в памяти режим живой, на диске убранный',
+    edits: [['  m.removedAt = was;\n', '']]
+  },
+  {
+    id: 'R2-выбор-режима-оставляет-хвост-из-будущего',
+    file: 'app.js',
+    note: 'ошибка: setActiveMode снимает только сегодняшний отрезок — отрезок «из будущего» остаётся перед новым, и выбор проигрывает прежнему',
+    edits: [['  while (log.length && log[log.length - 1].from >= t) log.pop();\n  const prev = log.length ? log[log.length - 1].mode : MAIN_MODE;',
+      '  while (log.length && log[log.length - 1].from === t) log.pop();\n  const prev = log.length ? log[log.length - 1].mode : MAIN_MODE;']]
+  },
+  {
+    id: 'R2-выбор-прежнего-режима-не-схлопывает',
+    file: 'app.js',
+    note: 'ошибка: setActiveMode пишет отрезок и при возврате к прежнему режиму — подряд одинаковые отрезки, журнал не канон',
+    edits: [['  if (prev !== id) log.push({ from: t, mode: id });', '  log.push({ from: t, mode: id });']]
+  },
+  {
+    id: 'R2-выбирается-убранный-режим',
+    file: 'app.js',
+    note: 'ошибка: setActiveMode не проверяет живость — активным становится режим, которого в выборе нет',
+    edits: [["  if (!live(m)) return { ok: false, reason: 'removed' };\n  if (!Array.isArray(store.modeLog)) store.modeLog = [];",
+      '  if (!Array.isArray(store.modeLog)) store.modeLog = [];']]
+  },
+  {
+    id: 'R2-копия-в-режим-встаёт-за-источником',
+    file: 'app.js',
+    note: 'ошибка: duplicateGroupTo вставляет копию сразу за источником (как duplicateGroup) — блок цели оказывается среди блоков чужого режима, а не в конце своих',
+    edits: [['  store.groups.splice(at < 0 ? store.groups.length : at + 1, 0, block);',
+      '  store.groups.splice(store.groups.indexOf(g) + 1, 0, block);']]
+  },
+  {
+    id: 'R2-копия-в-режим-всегда-с-суффиксом',
+    file: 'app.js',
+    note: 'ошибка: duplicateGroupTo зовёт копию «(копия)», даже когда имя в целевом режиме свободно',
+    edits: [['  let nm = g.name;\n  if (nameTaken(nm, undefined, md)) {', '  let nm = g.name;\n  if (true) {']]
+  },
+  {
+    id: 'R2-возврат-блока-берёт-чужой-режим',
+    file: 'app.js',
+    note: 'до задачи: restoreSetOf не смотрит режим — возврат блока возвращает действия одноимённого блока другого режима, ушедшие в тот же день',
+    edits: [['  return store.items.filter(it => groupNameOf(it) === g.name && it.removedAt === day && belongsToMode(it, md));',
+      '  return store.items.filter(it => groupNameOf(it) === g.name && it.removedAt === day);']]
+  },
+  {
+    id: 'R2-убранные-судят-глобальный-по-активному-режиму',
+    file: 'app.js',
+    note: 'до задачи: goneBesideBlock ищет блок глобального пункта в активном режиме — пункт блока, убранного во всех режимах, стоит в «Убранных», и одиночный возврат молча оживит блок на следующем старте',
+    edits: [['  const same = store.groups.filter(g => g.name === name);\n  return !same.length || same.some(live);',
+      '  const g = findGroup(name);\n  return !g || live(g);']]
+  },
+  {
+    id: 'R2-пропуск-путается-с-неотмеченным',
+    file: 'app.js',
+    note: 'ошибка: isSkipped читает любое ложное значение пропуском — неотмеченный пункт в дне с чужими отметками считается пропущенным',
+    edits: [['  return !!store.days[dayKey] && store.days[dayKey][itemId] === false;',
+      '  return !!store.days[dayKey] && !store.days[dayKey][itemId];']]
+  },
+  {
+    id: 'R2-пропуск-вне-плана',
+    file: 'app.js',
+    note: 'ошибка: skipToday не проверяет план дня — false ложится на пункт вне расписания, режима или дней блока',
+    edits: [['  if (!isAction(item) || !dueNow(item, t) || isMarked(t, itemId) || isSkipped(t, itemId)) return false;',
+      '  if (!isAction(item) || isMarked(t, itemId) || isSkipped(t, itemId)) return false;']]
+  },
+  {
+    id: 'R2-пропуск-у-привычки',
+    file: 'app.js',
+    note: 'ошибка: skipToday пускает любой пункт — привычка получает false и её круг запирается (пропущенному тап отказывает)',
+    edits: [['  if (!isAction(item) || !dueNow(item, t) || isMarked(t, itemId) || isSkipped(t, itemId)) return false;',
+      '  if (!item || !dueNow(item, t) || isMarked(t, itemId) || isSkipped(t, itemId)) return false;']]
+  },
+  {
+    id: 'R2-пропуск-стирает-отметку',
+    file: 'app.js',
+    note: 'ошибка: skipToday не проверяет отметку — «Не сегодня» у отмеченного переписывает true на false, отметка потеряна',
+    edits: [['  if (!isAction(item) || !dueNow(item, t) || isMarked(t, itemId) || isSkipped(t, itemId)) return false;',
+      '  if (!isAction(item) || !dueNow(item, t) || isSkipped(t, itemId)) return false;']]
+  },
+  {
+    id: 'R2-вернуть-оставляет-пустой-день',
+    file: 'app.js',
+    note: 'ошибка: unskipToday не удаляет опустевший день — в days{} остаётся {}, день без единого значения существует',
+    edits: [['  if (emptied) delete store.days[t];\n', '']]
+  },
+  {
+    id: 'R2-пропуски-недели-вне-плана',
+    file: 'app.js',
+    note: 'ошибка: weekSkips считает пропуски и в днях, ушедших из плана — «пропусков» больше, чем дней плана',
+    edits: [['    if (isSkipped(k, item.id) && dueOn(item, k)) n++;', '    if (isSkipped(k, item.id)) n++;']]
+  },
+  {
+    id: 'R2-свёртка-блока-не-видит-пропусков',
+    file: 'app.js',
+    note: 'ошибка: blockTally считает блок выполненным только по отметкам — блок с решённым «Не сегодня» не сворачивается',
+    edits: [['  return { done, skipped, full: items.length > 0 && done + skipped === items.length };',
+      '  return { done, skipped, full: items.length > 0 && done === items.length };']]
+  },
+  {
+    id: 'R2-преемник-упражнения-не-опознаётся',
+    file: 'app.js',
+    note: 'до задачи: laterExerciseOf выключен — прежняя запись упражнения стоит в «Убранных» рядом с живым преемником, и «Вернуть» заводит второе поле на листе',
+    edits: [['function laterExerciseOf(ex) {\n  if (!ex || live(ex) || !ex.removedAt) return null;', 'function laterExerciseOf(ex) {\n  return null;']]
+  },
+  {
+    id: 'R2-преемник-в-тот-же-день',
+    file: 'app.js',
+    note: 'ошибка: successorAmong берёт в преемники запись, заведённую в день ухода, — одноимённое соседнее дело прячет убранное',
+    edits: [['!(y.addedAt > x.removedAt)', '!(y.addedAt >= x.removedAt)']]
+  },
+  {
+    id: 'R2-быстрое-добавление-режет-только-по-точке',
+    file: 'app.js',
+    note: 'до задачи: разделитель подписи — только « · »; «Зарядка — 10 мин» и «Зарядка - 10 мин» становятся именем целиком',
+    edits: [['    const m = /^(.*?)\\s+[·—–-](?:\\s+(.*))?$/.exec(line);', '    const m = /^(.*?)\\s+·(?:\\s+(.*))?$/.exec(line);']]
+  },
+  {
+    id: 'R2-разделитель-без-пробелов-режет-имя',
+    file: 'app.js',
+    note: 'ошибка: знак без пробелов по бокам считается разделителем — «Кросс-фит» становится именем «Кросс» с подписью «фит»',
+    edits: [['    const m = /^(.*?)\\s+[·—–-](?:\\s+(.*))?$/.exec(line);', '    const m = /^(.*?)\\s*[·—–-](?:\\s*(.*))?$/.exec(line);']]
+  },
+  {
+    id: 'R2-блок-ищется-во-всех-режимах',
+    file: 'app.js',
+    note: 'до задачи: findGroup ищет блок только по имени — дни одноимённого блока другого режима режут действие',
+    edits: [['  return store.groups.find(g => g.name === n && blockMode(g) === m) || null;',
+      '  return store.groups.find(g => g.name === n) || null;']]
+  },
+  {
+    id: 'R2-имя-блока-занято-во-всех-режимах',
+    file: 'app.js',
+    note: 'до задачи: nameTaken видит блоки всех режимов — одноимённый блок в другом режиме не заводится, копия в режим получает «(копия)»',
+    edits: [['  if (store.groups.some(g => g.name === n && blockMode(g) === m)) return true;',
+      '  if (store.groups.some(g => g.name === n)) return true;']]
+  },
+  {
+    id: 'R2-горячая-применимость-без-режима',
+    file: 'app.js',
+    note: 'ошибка: inEffectiveDays (горячий путь серии и рекорда) забывает режим дня и расходится с effectiveMaskOn — вчерашние числа читают нынешний режим',
+    edits: [['  if (itemMode(item) !== modeOn(dayKey)) return false;\n', '']]
+  },
+  {
+    id: 'R2-пропуск-остаётся-в-знаменателе',
+    file: 'app.js',
+    note: 'до задачи: minDayMarks не вычитает пропуски — «Не сегодня» оставляет дело в «N из M», день с пропуском не закрывается',
+    edits: [['  return { done, total: items.length - skipped, skipped, planned: items.length };',
+      '  return { done, total: items.length, skipped, planned: items.length };']]
+  },
+  {
+    id: 'R2-сплошные-пропуски-сквозной-день',
+    file: 'app.js',
+    note: 'ошибка: dayScore отдаёт null дню, где всё пропущено, — «Не сегодня» у всех дел даёт серию без единой отметки',
+    edits: [['  return m.total > 0 ? m.done / m.total : 0;', '  return m.total > 0 ? m.done / m.total : null;']]
+  },
+  {
+    id: 'R2-сплошные-пропуски-закрывают-день',
+    file: 'app.js',
+    note: 'ошибка: minDayClosed проверяет план, а не знаменатель — день, где всё пропущено, «закрыт» с 0 из 0 и играет сцену',
+    edits: [['  return m.total > 0 && m.done === m.total;', '  return m.planned > 0 && m.done === m.total;']]
+  },
+  {
+    id: 'R2-тап-по-пропущенному-отмечает',
+    file: 'app.js',
+    note: 'до задачи: toggleMark не отказывает пропущенному — тап по неактивному кругу переписывает пропуск отметкой',
+    edits: [['  if (isSkipped(dayKey, itemId)) return false;\n', '']]
+  },
+  {
+    id: 'R2-отметка-за-вчера-переписывает-пропуск',
+    file: 'app.js',
+    note: 'до задачи: markYesterday не отказывает вчерашнему пропуску — решение владельца переписывается отметкой задним числом',
+    edits: [['  if (isSkipped(y, item.id)) return false;\n  const day = store.days[y]', '  const day = store.days[y]']]
+  },
+  {
+    id: 'R2-точка-вчера-у-пропущенного',
+    file: 'app.js',
+    note: 'до задачи: missedYesterday не видит пропуска — за вчерашнее «Не сегодня» показывается укор «вчера — пропуск»',
+    edits: [['  if (isSkipped(y, item.id)) return false;\n  return everMarked(item, y);', '  return everMarked(item, y);']]
+  },
+  {
+    id: 'R2-миграция-без-списка-режимов',
+    file: 'app.js',
+    note: 'ошибка: migrate нормализует режимы, только если список в файле есть, — файл v19 остаётся без основного режима',
+    edits: [['  s.modes = modesNorm.modes;', '  s.modes = Array.isArray(s.modes) ? modesNorm.modes : [];']]
+  },
+  {
+    id: 'R2-миграция-не-ставит-режим-действию',
+    file: 'app.js',
+    note: 'ошибка: migrate не ставит mode действию — действие v19 без поля, неизвестный режим остаётся ссылкой в никуда',
+    edits: [["    if (it.type === 'daily' && it.area === 'min') it.mode = modeOf(it.mode);\n    else delete it.mode;",
+      "    if (!(it.type === 'daily' && it.area === 'min')) delete it.mode;"]]
+  },
+  {
+    id: 'R2-миграция-оставляет-режим-не-действию',
+    file: 'app.js',
+    note: 'ошибка: migrate не снимает mode у привычки, параметра и счётчика — глобальный пункт привязан к режиму данными',
+    edits: [['    else delete it.mode;\n', '']]
+  },
+  {
+    id: 'R2-миграция-оставляет-пропуск-не-действию',
+    file: 'app.js',
+    note: 'ошибка: migrate оставляет false у известного не-действия — круг привычки из импорта заперт навсегда',
+    edits: [['typeof day[id] !== \'boolean\' || (day[id] === false && notAction.has(id))', 'typeof day[id] !== \'boolean\'']]
+  },
+  {
+    id: 'R2-миграция-не-возвращает-активный-режим',
+    file: 'app.js',
+    note: 'ошибка: импорт убранного режима, действующего сегодня, оставляет его убранным — активный режим, которого нет в выборе',
+    edits: [['    if (am && am.removedAt !== null) am.removedAt = null;\n', '']]
   }
 ];
 

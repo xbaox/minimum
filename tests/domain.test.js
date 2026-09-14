@@ -1652,12 +1652,14 @@ test('З28D/6: импорт файла с формулой и лестницей
   assert.equal(back.ladder.step, 1);
   assert.equal(back.ladderLog.length, 2);
   assert.equal(back.ladderLog[0].start, true);
-  // и сам счёт совпадает по всем категориям, кроме расписания: его migrate
-  // ДОСТРАИВАЕТ живому пункту (задача 29/B), и это прибавка, а не потеря
+  // и сам счёт совпадает по всем категориям, кроме расписания и режимов: их
+  // migrate ДОСТРАИВАЕТ — отрезок живому пункту (задача 29/B) и основной
+  // режим файлу без режимов (задача Р2), — и это прибавка, а не потеря
   const after = app.dataCounts(incoming);
   assert.equal(app.droppedLine(was, after), '', 'ни одна категория не потеряла');
-  assert.deepEqual(Object.assign({}, after, { schedule: was.schedule }), was);
+  assert.deepEqual(Object.assign({}, after, { schedule: was.schedule, modes: was.modes }), was);
   assert.ok(after.schedule >= was.schedule, 'отрезки расписания только достраиваются');
+  assert.ok(after.modes >= was.modes, 'режимы только достраиваются');
 });
 
 /* ── Задача 15. Группы и цепочки (инвариант 13) ────────────── */
@@ -1681,8 +1683,9 @@ test('З15: миграция v8→v9 — группы в порядке перв
   });
 
   // v19: блок в канонической форме — без подписи, дни «все семь», не убран;
-  // досборка v8→v9 обязана заводить его сразу такой (второго прогона у неё нет)
-  const blk = name => ({ name, caption: '', days: [], removedAt: null });
+  // досборка v8→v9 обязана заводить его сразу такой (второго прогона у неё нет).
+  // v20: и в основном режиме — у данных до v9 режимов не было
+  const blk = name => ({ name, caption: '', days: [], removedAt: null, mode: 'main' });
   const m = app.migrate(mkV8());
   assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   assert.deepEqual(m.groups, [blk('Сон'), blk('Тело')]); // порядок первого появления
@@ -1801,8 +1804,9 @@ test('З15: addGroup/moveGroup — границы и уникальность', 
   assert.deepEqual(names(), ['Утро', 'Подряд', 'Движение', 'Вечер']); // в конец, с trim
   assert.equal(app.addGroup('Вечер'), false); // дубль
   assert.equal(app.addGroup('   '), false);   // пустое
-  // v19: блок — имя, подпись, дни и день ухода; addGroup(name) даёт канон
-  assert.deepEqual(s.groups[3], { name: 'Вечер', caption: '', days: [], removedAt: null });
+  // v19: блок — имя, подпись, дни и день ухода; addGroup(name) даёт канон.
+  // v20: и режим — активный, в свежем store это основной
+  assert.deepEqual(s.groups[3], { name: 'Вечер', caption: '', days: [], removedAt: null, mode: 'main' });
 
   assert.equal(app.moveGroup('Утро', 'up'), false);        // уже первая
   assert.equal(app.moveGroup('Вечер', 'down'), false);     // уже последняя
@@ -1926,7 +1930,7 @@ test('З16B: день закрыт по всем активным пунктам
 
   assert.equal(app.minDayClosed(y), false);
   app.toggleMark(y, 'm1');
-  assert.deepEqual(app.minDayMarks(y), { done: 1, total: 2 });
+  assert.deepEqual(app.minDayMarks(y), { done: 1, total: 2, skipped: 0, planned: 2 }); // Р2: пропусков нет — знаменатель равен плану
   assert.equal(app.minDayClosed(y), false, 'отмечено не всё');
   app.toggleMark(y, 'm2');
   assert.equal(app.minDayClosed(y), true);
@@ -1942,11 +1946,11 @@ test('З16B: день закрыт по всем активным пунктам
   // действует с сегодняшнего дня включительно (инвариант 12)
   const m2 = s.items.find(i => i.id === 'm2');
   m2.removedAt = t;
-  assert.deepEqual(app.minDayMarks(y), { done: 2, total: 2 }, 'вчера не сдвинулось');
-  assert.deepEqual(app.minDayMarks(t), { done: 0, total: 1 }, 'а сегодня пункта уже нет');
+  assert.deepEqual(app.minDayMarks(y), { done: 2, total: 2, skipped: 0, planned: 2 }, 'вчера не сдвинулось');
+  assert.deepEqual(app.minDayMarks(t), { done: 0, total: 1, skipped: 0, planned: 1 }, 'а сегодня пункта уже нет');
   // убранный в день заведения не попадает в знаменатель ни одного дня
   m2.removedAt = m2.addedAt;
-  assert.deepEqual(app.minDayMarks(y), { done: 1, total: 1 });
+  assert.deepEqual(app.minDayMarks(y), { done: 1, total: 1, skipped: 0, planned: 1 });
 
   // пунктов нет — день не закрыт: закрывать было нечего
   s.items = [];
@@ -2594,7 +2598,7 @@ test('З16.1: копия пишется целиком, «Вернуть» во�
   assert.deepEqual(copy.stats, stats);
   assert.equal(typeof copy.wipedAt, 'number');
   assert.deepEqual(Object.keys(stats).sort(),
-    ['days', 'exercises', 'groups', 'items', 'ladders', 'notes', 'reviews', 'sessions']);
+    ['days', 'exercises', 'groups', 'items', 'ladders', 'modeLog', 'modes', 'notes', 'reviews', 'sessions']);
   assert.equal(stats.ladders, 1);
   assert.equal(stats.notes, 1);
   assert.equal(stats.sessions, 1);
@@ -2794,7 +2798,7 @@ test('З17: dayScore — доля по существовавшим в тот д
   s.items.push(mkMin('later', t));
   assert.equal(app.dayScore(y), 1, 'вчера его не существовало');
   assert.equal(app.dayScore(t), 0, 'а сегодня он в знаменателе');
-  assert.deepEqual(app.minDayMarks(t), { done: 0, total: 5 });
+  assert.deepEqual(app.minDayMarks(t), { done: 0, total: 5, skipped: 0, planned: 5 }); // Р2: без пропусков знаменатель — весь план
 
   // применимых пунктов нет — null, и день выпадает из счёта серии
   s.items = [];
@@ -3485,10 +3489,13 @@ test('З20/A.1.3: режим — свойство формулы, а не пун
   const s = freshStore();
   const it = s.items.find(i => i.type === 'daily' && i.area === 'min');
   assert.equal(it.formula, null, 'формулы ещё нет');
-  assert.equal('mode' in it, false, 'у самого пункта поля режима нет');
+  // Задача Р2 завела у действия поле mode — но это РЕЖИМ РАСПИСАНИЯ (id
+  // режима), а не режим формулы. Предмет теста прежний: режим формулы живёт
+  // в формуле и на пункт не выходит — поле пункта им не пишется и не читается
+  assert.equal(it.mode, 'main', 'у пункта mode — режим расписания, а не формулы');
 
   it.formula = app.normFormula({ anchor: 'x', mode: 'break' });
-  assert.equal('mode' in it, false, 'и после нормализации формулы — тоже нет');
+  assert.equal(it.mode, 'main', 'нормализация формулы поле пункта не трогает');
   assert.equal(it.formula.mode, 'break');
 
   // пустая формула — null, режим уходит вместе с ней
@@ -3980,18 +3987,22 @@ test('З25/3: dataCounts считает по сырому файлу, droppedLin
   };
   const was = app.dataCounts(raw);
   assert.deepEqual(was, {
-    items: 3, days: 2, marks: 2, notes: 2, reviews: 2, exercises: 2, sessions: 2,
-    groups: 4, weekLog: 3, history: 4, schedule: 0, blockDays: 0, groupLog: 0, entries: 2, params: 2
+    // пропусков (задача Р2) в файле нет: e: 1 — не булево, ни отметка, ни пропуск
+    items: 3, days: 2, marks: 2, skips: 0, notes: 2, reviews: 2, exercises: 2, sessions: 2,
+    groups: 4, weekLog: 3, history: 4, schedule: 0, blockDays: 0, groupLog: 0, modes: 0, modeLog: 0,
+    entries: 2, params: 2
   });
 
   // считать обязательно ДО migrate: он мутирует переданный объект
   const got = app.dataCounts(app.migrate(raw, { external: true }));
   assert.deepEqual(got, {
-    items: 1, days: 1, marks: 1, notes: 1, reviews: 1, exercises: 1, sessions: 1,
+    items: 1, days: 1, marks: 1, skips: 0, notes: 1, reviews: 1, exercises: 1, sessions: 1,
     // расписания в сыром файле не было — migrate достроил уцелевшему пункту
     // якорь «все семь». Это ПРИБАВКА: droppedLine считает только убыль
     // журнал принадлежности пункт получил пустым: одно состояние — не история
-    groups: 1, weekLog: 1, history: 2, schedule: 1, blockDays: 0, groupLog: 0, entries: 1, params: 1
+    // основной режим migrate дописал файлу без режимов (задача Р2) — тоже прибавка
+    groups: 1, weekLog: 1, history: 2, schedule: 1, blockDays: 0, groupLog: 0, modes: 1, modeLog: 0,
+    entries: 1, params: 1
   });
 
   assert.equal(app.droppedLine(was, got),
@@ -4569,8 +4580,9 @@ test('З28E/A.7.1: миграция v16→v17 не сдвигает числа �
   app.store = m;
   assert.equal(m.schemaVersion, app.SCHEMA_VERSION);
   // v19 («Расписание 1/3»): цепочка шагов проходит и через дни блоков —
-  // числа обязаны уцелеть и после неё, поэтому версия — нынешняя
-  assert.equal(m.schemaVersion, 19, 'схема поднята до девятнадцатой');
+  // числа обязаны уцелеть и после неё, поэтому версия — нынешняя.
+  // v20 (Р2): и через режимы — тем же доводом версия нынешняя, двадцатая
+  assert.equal(m.schemaVersion, 20, 'схема поднята до двадцатой');
 
   const after = [];
   for (let k = m.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
@@ -4868,8 +4880,9 @@ test('З29B/6.1: миграция v17→v18 не сдвигает числа «�
   const m = app.migrate(raw);
   app.store = m;
   // v19 («Расписание 1/3»): цепочка шагов проходит и через дни блоков —
-  // числа обязаны уцелеть и после неё, поэтому версия — нынешняя
-  assert.equal(m.schemaVersion, 19, 'схема поднята до девятнадцатой');
+  // числа обязаны уцелеть и после неё, поэтому версия — нынешняя.
+  // v20 (Р2): и через режимы — тем же доводом версия нынешняя, двадцатая
+  assert.equal(m.schemaVersion, 20, 'схема поднята до двадцатой');
 
   const after = [];
   for (let k = m.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
@@ -5205,6 +5218,12 @@ function r1Item(id, since, group, mask, extra) {
 
 const r1Block = (name, days, removedAt, caption) =>
   ({ name, caption: caption || '', days: days || [], removedAt: removedAt || null });
+
+/* Тот же блок в каноне v20 (задача Р2): migrate и фабрики заводят блок в
+   режиме, и у данных без режимов это основной. Блок без поля читается
+   основным, поэтому фикстуры r1Block остаются как есть — меняются только
+   ожидания от migrate и от операций, которые блок ЗАВОДЯТ. */
+const inMain = g => Object.assign({}, g, { mode: 'main' });
 
 /* Фикстура владельца (п. 6 задачи) — ОДНА на оба уровня тестов: данные и
    сборка в tests/r1-owner.js, здесь — сборка через тестовый хук (addGroup,
@@ -5631,6 +5650,101 @@ test('Р1/7: parseQuickLines — разделитель, пустые строк
   }
 });
 
+test('Р2/0: parseQuickLines — четыре разделителя наравне, первое вхождение любого, границы', () => {
+  const P = app.parseQuickLines;
+  // Каждый из четырёх делит одинаково — и в середине строки, и хвостом.
+  for (const sep of ['·', '—', '–', '-']) {
+    assert.deepEqual(P(`Развитие ${sep} 10 мин`), [{ name: 'Развитие', note: '10 мин' }], `« ${sep} » делит`);
+    assert.deepEqual(P(`Кровать ${sep}`), [{ name: 'Кровать', note: '' }], `хвостовой « ${sep}» — пустая подпись`);
+    assert.deepEqual(P(`Кровать ${sep}   `), [{ name: 'Кровать', note: '' }], `хвостовой « ${sep} » с пробелами`);
+    assert.deepEqual(P(`Чай\t${sep} с мятой`), [{ name: 'Чай', note: 'с мятой' }], `« ${sep} » — пробельные по бокам любые`);
+    assert.deepEqual(P(`a${sep}b`), [{ name: `a${sep}b`, note: '' }], `«${sep}» без пробелов — часть имени`);
+    assert.deepEqual(P(`a ${sep}b`), [{ name: `a ${sep}b`, note: '' }], `«${sep}» без пробела справа — часть имени`);
+    assert.deepEqual(P(`a${sep} b`), [{ name: `a${sep} b`, note: '' }], `«${sep}» без пробела слева — часть имени`);
+    assert.deepEqual(P(`${sep} подпись`), [{ name: `${sep} подпись`, note: '' }], `имя не бывает пустым: « ${sep} » в начале строки`);
+  }
+  // Первое вхождение ЛЮБОГО — не первый по списку знак.
+  assert.deepEqual(P('a — b · c'), [{ name: 'a', note: 'b · c' }], 'тире раньше точки — делит тире');
+  assert.deepEqual(P('a · b — c'), [{ name: 'a', note: 'b — c' }], 'точка раньше тире — делит точка');
+  assert.deepEqual(P('a - b – c — d'), [{ name: 'a', note: 'b – c — d' }], 'остальные — в подписи как есть');
+  assert.deepEqual(P('a – b - c'), [{ name: 'a', note: 'b - c' }]);
+  // Дефис и тире внутри слова и числа — не разделители; разделитель после них — делит.
+  assert.deepEqual(P('Кросс-фит'), [{ name: 'Кросс-фит', note: '' }], 'дефис внутри слова');
+  assert.deepEqual(P('10–15 минут'), [{ name: '10–15 минут', note: '' }], 'тире в диапазоне без пробелов');
+  assert.deepEqual(P('Кросс-фит - 10–15 минут'), [{ name: 'Кросс-фит', note: '10–15 минут' }], 'делит дефис с пробелами, а не внутри слова');
+  assert.deepEqual(P('Планка -5'), [{ name: 'Планка -5', note: '' }], 'минус у числа — не разделитель');
+  assert.deepEqual(P('a -- b'), [{ name: 'a -- b', note: '' }], 'двойной дефис — не разделитель');
+  // «/» — не разделитель ни с пробелами, ни без; делит следующий за ним знак.
+  assert.deepEqual(P('Подтягивания / отжимания - 5 / 10'), [{ name: 'Подтягивания / отжимания', note: '5 / 10' }]);
+  assert.deepEqual(P('50 минут / 10 перерыв'), [{ name: '50 минут / 10 перерыв', note: '' }]);
+  // Пустые строки и повторы — как в Р1, с любым разделителем.
+  assert.deepEqual(P('Вода — стакан\n\n  Вода — стакан  \r\n   \nСон - 8 ч'), [
+    { name: 'Вода', note: 'стакан' }, { name: 'Вода', note: 'стакан' }, { name: 'Сон', note: '8 ч' }
+  ], 'пустые пропущены, повтор — второе действие, порядок сохранён');
+});
+
+test('Р2/5: restoreExercise — правило преемника: то же имя, addedAt строго позже removedAt, пара одна на запись', () => {
+  fakeLocalStorage();
+  try {
+    setNow(2026, 9, 14, 12, 0);
+    const s = freshStore();
+    const ex = (id, name, extra) => Object.assign({ id, name, unit: 'кг', value: 40, history: [], addedAt: '2026-08-31', removedAt: null }, extra);
+    s.exercises = [ex('e1', 'Жим'), ex('e2', 'Тяга')];
+
+    // возврат в тот же день — полная отмена: преемника нет и не заводится
+    assert.equal(app.removeExercise('e1'), true);
+    assert.equal(app.laterExerciseOf(s.exercises[0]), null, 'пока преемника нет');
+    assert.equal(app.restoreExercise('e1'), s.exercises[0], 'та же запись');
+    assert.equal(s.exercises.length, 2);
+
+    // возврат ПОЗЖЕ дня ухода — новая запись сразу за прежней; прежняя
+    // получает преемника и вторым экземпляром не возвращается
+    assert.equal(app.removeExercise('e1'), true);
+    advanceDays(2);
+    const back = app.restoreExercise('e1');
+    assert.ok(back && back.id !== 'e1');
+    assert.deepEqual(s.exercises.map(e => e.id), ['e1', back.id, 'e2'], 'сразу за прежней');
+    assert.equal(app.laterExerciseOf(s.exercises[0]), back, 'у прежней — преемник');
+    assert.equal(app.laterExerciseOf(back), null, 'живая запись прежним отрезком не бывает');
+    const n = s.exercises.length;
+    const saved = localStorage.getItem('minimum:data');
+    assert.equal(app.restoreExercise('e1'), null, '«Вернуть» прежней записи дубля не заводит');
+    assert.equal(s.exercises.length, n);
+    assert.equal(localStorage.getItem('minimum:data'), saved, 'и ничего не записано');
+    // прошлое не двигается: у прежней записи — прежние поля
+    assert.deepEqual([s.exercises[0].removedAt, s.exercises[0].addedAt], ['2026-09-14', '2026-08-31']);
+
+    // уход преемника: прежняя прячется и за убранным, последний отрезок — нет
+    assert.equal(app.removeExercise(back.id), true);
+    assert.equal(app.laterExerciseOf(back), null, 'последний отрезок прятать нечем');
+    assert.equal(app.laterExerciseOf(s.exercises[0]), back, 'прежняя — за убранным преемником');
+
+    // не преемник: заведённое В ДЕНЬ ухода (строго позже) и другое имя
+    const t = app.todayKey();
+    s.exercises.push(ex('x1', 'Присед', { removedAt: t }), ex('x2', 'Присед', { addedAt: t }), ex('y1', 'Выпады', { removedAt: '2026-09-01' }), ex('y2', 'Присед', { addedAt: '2026-09-10' }));
+    const x1 = s.exercises.find(e => e.id === 'x1');
+    const y1 = s.exercises.find(e => e.id === 'y1');
+    assert.equal(app.laterExerciseOf(y1), null, 'другое имя — не преемник');
+    assert.equal(app.laterExerciseOf(x1), null, 'заведённое в день ухода — соседнее, а не продолжение');
+
+    // пара одна на запись: два одноимённых убранных, один преемник — прячется
+    // ровно одна прежняя, вторая остаётся без пары и возвращается
+    s.exercises = [ex('d1', 'Вис', { removedAt: '2026-09-02' }), ex('d2', 'Вис', { removedAt: '2026-09-02' }), ex('d3', 'Вис', { addedAt: '2026-09-05' })];
+    const [d1, d2, d3] = s.exercises;
+    assert.equal([d1, d2].filter(d => app.laterExerciseOf(d) === d3).length, 1, 'преемник прячет ровно одну');
+    const unpaired = [d1, d2].find(d => !app.laterExerciseOf(d));
+    assert.ok(unpaired, 'одна запись без пары');
+    const again = app.restoreExercise(unpaired.id);
+    assert.ok(again && again.name === 'Вис', 'запись без пары возвращается');
+    assert.equal([d1, d2].filter(d => !app.laterExerciseOf(d)).length, 0, 'после возврата у обеих есть пара');
+
+    // общая часть правила — одна у пунктов и упражнений
+    assert.equal(typeof app.successorAmong, 'function');
+  } finally {
+    clearLocalStorage();
+  }
+});
+
 test('Р1/8: addActions — в конец items[], канон, пусто — без записи, отказ записи — откат', () => {
   fakeLocalStorage();
   setNow(2026, 9, 7, 12, 0);
@@ -5689,7 +5803,8 @@ test('Р1/9: duplicateGroup — имя копии, дни и подпись, т�
   assert.equal(nm, 'Школа (копия)');
   assert.deepEqual(s.groups.map(g => g.name), ['Школа', 'Школа (копия)', 'Вечер'], 'копия — сразу за источником');
   const copy = app.findGroup(nm);
-  assert.deepEqual(copy, { name: nm, caption: '8:30', days: [{ from: t, mask: '1111100' }], removedAt: null });
+  // v20 (Р2): копия встаёт в режим источника — у блока без поля это основной
+  assert.deepEqual(copy, { name: nm, caption: '8:30', days: [{ from: t, mask: '1111100' }], removedAt: null, mode: 'main' });
 
   const copies = s.items.slice(6);
   assert.deepEqual(copies.map(i => i.name), ['Чтение', 'Тренировка'],
@@ -5756,7 +5871,7 @@ test('Р1/10: уход и возврат блока — в тот же день 
     'ушли живые пункты блока обеих областей и всех типов; чужой и убранный раньше — нет');
   assert.equal(app.removeGroup('Школа'), false, 'уже убран');
   assert.deepEqual(app.liveGroups().map(x => x.name), ['Вечер']);
-  assert.deepEqual(app.minDayMarks('2026-09-04'), { done: 2, total: 3 }, 'прошлая пятница — прежняя');
+  assert.deepEqual(app.minDayMarks('2026-09-04'), { done: 2, total: 3, skipped: 0, planned: 3 }, 'прошлая пятница — прежняя');
   assert.equal(app.dueOn(a, '2026-09-05'), false, 'дни убранного блока прошлое помнит');
   assert.equal(app.groupJoinRefusal('Школа'), 'Блок «Школа» убран — вернуть можно в «Убранных»');
   assert.equal(app.groupJoinRefusal('Вечер'), null, 'в живой блок вступать можно');
@@ -5864,8 +5979,9 @@ test('Р1/11: nameTaken и renameGroup — журналы переписываю
   assert.equal(app.addGroup('Архив'), false, 'имя убранного блока занято');
   assert.equal(app.addGroup('Нули', '', '0000000'), false, 'пустая маска — не дни');
   assert.equal(app.addGroup(' Будни ', ' 8:30 ', '1111100'), true);
+  // v20 (Р2): новый блок — в активном режиме, здесь основном
   assert.deepEqual(app.findGroup('Будни'),
-    { name: 'Будни', caption: '8:30', days: [{ from: '2026-09-14', mask: '1111100' }], removedAt: null });
+    { name: 'Будни', caption: '8:30', days: [{ from: '2026-09-14', mask: '1111100' }], removedAt: null, mode: 'main' });
   clearLocalStorage();
 });
 
@@ -5996,7 +6112,9 @@ test('Р1/14: миграция v18→v19 — аддитивна, идемпот�
 
   const m = app.migrate(raw);
   app.store = m;
-  assert.equal(m.schemaVersion, 19);
+  // v20 (Р2): цепочка шагов проходит дальше, через режимы; предмет теста —
+  // шаг v18→v19, и его обещания (days, reviews, маски, журналы) проверяются ниже
+  assert.equal(m.schemaVersion, 20);
   assert.deepEqual(m.days, days, 'days{} цел');
   assert.deepEqual(m.reviews, reviews, 'reviews[] цел');
   for (const it of m.items) {
@@ -6004,7 +6122,7 @@ test('Р1/14: миграция v18→v19 — аддитивна, идемпот�
     if (it.type === 'daily' && it.area === 'min') assert.deepEqual(it.groupLog, [], 'журнал действия пуст: ' + it.id);
     else assert.equal('groupLog' in it, false, 'у прочих журнала нет: ' + it.id);
   }
-  assert.deepEqual(m.groups, [r1Block('Утро'), r1Block('Движение')], 'подпись пустая, дни «все семь», не убран; chain снят');
+  assert.deepEqual(m.groups, [r1Block('Утро'), r1Block('Движение')].map(inMain), 'подпись пустая, дни «все семь», не убран; chain снят; режим основной (v20)');
 
   const after = [];
   for (let k = m.settings.calendarSince; k <= t; k = app.addDays(k, 1)) {
@@ -6020,14 +6138,15 @@ test('Р1/14: миграция v18→v19 — аддитивна, идемпот�
   // v1-store: литерал «Принять душ» — сразу канон, досборка блоков — тоже
   const once = app.migrate(v1Store());
   assert.deepEqual(once.items.find(i => i.name === 'Принять душ').groupLog, []);
-  assert.deepEqual(once.groups.find(g => g.name === 'Тело'), r1Block('Тело'), 'v8→v9 заводит блок сразу каноническим');
+  assert.deepEqual(once.groups.find(g => g.name === 'Тело'), inMain(r1Block('Тело')), 'v8→v9 заводит блок сразу каноническим');
   assert.deepEqual(app.migrate(JSON.parse(JSON.stringify(once))), once, 'v1-store: два прогона совпадают');
   assert.equal(JSON.stringify(app.migrate(JSON.parse(JSON.stringify(once)))), JSON.stringify(once));
 
-  // фабрики: defaultStore и посев — в каноне v19 и совпадают с migrate от себя
+  // фабрики: defaultStore и посев — в нынешнем каноне (v20: блоки в основном
+  // режиме) и совпадают с migrate от себя
   const def = app.defaultStore();
   assert.equal(JSON.stringify(app.migrate(JSON.parse(JSON.stringify(def)))), JSON.stringify(def));
-  assert.deepEqual(def.groups, [r1Block('Утро'), r1Block('Подряд'), r1Block('Движение')]);
+  assert.deepEqual(def.groups, [r1Block('Утро'), r1Block('Подряд'), r1Block('Движение')].map(inMain));
   assert.deepEqual(app.emptyStore(4).groups, []);
 });
 
@@ -6068,7 +6187,7 @@ test('Р1/15: migrate — канон блоков, мусор дней отбр�
     r1Block('Школа', [{ from: '2026-09-07', mask: '1111100' }], null, '8:30'),
     r1Block('Архив', [{ from: '2026-09-04', mask: '1111100' }, { from: '2026-09-09', mask: '1010100' }], '2026-09-05'),
     r1Block('Мусор')
-  ], 'Школа возвращена живым пунктом; Архив остался убранным — его пункты тоже убраны');
+  ].map(inMain), 'Школа возвращена живым пунктом; Архив остался убранным — его пункты тоже убраны; v20 — в основном режиме');
   assert.equal('groupLog' in m.items.find(i => i.id === 'h'), false, 'привычке журнал не положен');
   assert.equal('groupLog' in m.items.find(i => i.id === 'w'), false);
   assert.deepEqual(m.items.find(i => i.id === 'a').groupLog, []);
@@ -6103,7 +6222,7 @@ test('Р1/15: migrate — канон блоков, мусор дней отбр�
     { id: 'h', name: 'H', type: 'daily', area: 'habit', addedAt: '2026-09-01', group: 'Архив' }
   ], groups: [{ name: 'X', removedAt: 'не дата' }, { name: 'Архив', removedAt: '2026-09-05' }],
   days: {}, settings: { dayBoundary: 4, calendarSince: '2026-08-31', seed17: true, habitSeeded: true } });
-  assert.deepEqual(rev.groups, [r1Block('X'), r1Block('Архив')], 'мусор — null; блок живой привычки возвращён');
+  assert.deepEqual(rev.groups, [r1Block('X'), r1Block('Архив')].map(inMain), 'мусор — null; блок живой привычки возвращён');
 
   // normBlockDays напрямую
   const nb = app.normBlockDays;
@@ -6151,7 +6270,8 @@ test('Р1/16: normGroupLog — канон и идемпотентность на
 
 test('Р1/17: категории потерь blockDays и groupLog — склонения и счёт по сырому файлу', () => {
   const zero = { items: 0, days: 0, marks: 0, notes: 0, reviews: 0, exercises: 0, sessions: 0, groups: 0,
-    weekLog: 0, history: 0, schedule: 0, blockDays: 0, groupLog: 0, entries: 0, params: 0 };
+    weekLog: 0, history: 0, schedule: 0, blockDays: 0, groupLog: 0, entries: 0, params: 0,
+    modes: 0, modeLog: 0, skips: 0 }; // Р2: режимы, отрезки режима и пропуски — их склонения в тестах Р2/
   assert.deepEqual(Object.keys(app.dataCounts({})).sort(), Object.keys(zero).sort(), 'категории счёта — ровно эти');
   const line = (key, n) => app.droppedLine(Object.assign({}, zero, { [key]: n }), zero);
   assert.equal(line('blockDays', 1), '1 отрезок дней блока');
@@ -6658,7 +6778,8 @@ test('Р1/рецензия: addGroup в осиротевшее имя — отк
   assert.equal(app.addGroup('Вечер', '', '0000011'), false, 'у «Душа» будни — в выходные ему не останется ни одного дня');
   assert.equal(JSON.stringify(s), before, 'ничего не заведено и не записано');
   assert.equal(app.addGroup('Вечер', 'до 22:30', '1000011'), true, 'понедельник у «Душа» остаётся — можно');
-  assert.deepEqual(app.findGroup('Вечер'), { name: 'Вечер', caption: 'до 22:30', days: [{ from: R1_MON, mask: '1000011' }], removedAt: null });
+  // v20 (Р2): блок заводится в активном режиме — здесь основном
+  assert.deepEqual(app.findGroup('Вечер'), { name: 'Вечер', caption: 'до 22:30', days: [{ from: R1_MON, mask: '1000011' }], removedAt: null, mode: 'main' });
   assert.equal(app.effectiveMaskOn(s.items[0], R1_MON), '1000000');
   assert.equal(app.effectiveMaskOn(s.items[0], '2026-09-06'), '1111100', 'прошлое не двигается: дни блока — с сегодняшнего дня');
   // без дней («все семь» — нейтральный элемент ∧) осиротевшее имя берётся всегда
@@ -6881,5 +7002,1358 @@ test('Р1/рецензия: scheduleCore снимает отрезки «из б
   s.items.push(g);
   assert.equal(app.scheduleCore(g, '1111110'), true);
   assert.deepEqual(g.schedule.map(x => x.from), [since, '2026-09-14'], 'будущий 20.09 снят, порядок цел');
+  clearLocalStorage();
+});
+
+/* ── Р2: режимы, домен (задача Р2, п. 1 и 7) ─────────────────────────
+   Сегодня — понедельник 14.09.2026. Основной режим — 'main'; прочие
+   заводятся записями прямо в фикстуре. Хелперы — поверх r1Item/r1Block:
+   форма та же, режим назван явно. */
+
+const R2_T = '2026-09-14';
+const r2Mode = (id, name, removedAt) => ({ id, name, removedAt: removedAt || null });
+const r2Act = (id, since, group, mask, mode, extra) => r1Item(id, since, group, mask, Object.assign({ mode }, extra || {}));
+const r2Block = (name, mode, days, removedAt, caption) => Object.assign(r1Block(name, days, removedAt, caption), { mode });
+const r2Weekly = (id, since, group, goal) => ({
+  id, name: id, value: null, unit: '', type: 'weekly', area: 'min', goal, note: '', group, removedAt: null,
+  addedAt: since, at: '', raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
+  formula: null, ladder: null, ladderLog: []
+});
+const r2Param = (id, since, group) => ({
+  id, name: id, value: null, unit: '', type: 'param', area: 'habit', pkind: 'time', pvalue: 1380, pstep: -15,
+  goal: null, note: '', group, removedAt: null, addedAt: since, at: '', raiseAfter: 0, raiseAfterWeek: null,
+  lowerAfterWeek: null, history: [{ date: since, value: 1380 }], formula: null, ladder: null, ladderLog: []
+});
+
+function r2Store() {
+  fakeLocalStorage();
+  setNow(2026, 9, 14, 12, 0);
+  const s = freshStore();
+  s.items = []; s.groups = []; s.days = {};
+  s.settings.calendarSince = '2026-08-17';
+  return s;
+}
+
+test('Р2/1: modeOn — последний отрезок с from ≤ дня; до первого и при пустом журнале — основной; сотни отрезков совпадают с линейным проходом', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('school', 'Школа'), r2Mode('hol', 'Каникулы')];
+  s.modeLog = [];
+  assert.equal(app.modeOn('2020-01-01'), 'main', 'пустой журнал — основной на всю жизнь');
+  assert.equal(app.activeMode(), 'main');
+  s.modeLog = [{ from: '2026-09-01', mode: 'school' }, { from: '2026-09-07', mode: 'hol' },
+    { from: '2026-09-10', mode: 'main' }, { from: '2026-09-12', mode: 'school' }];
+  const want = {
+    '2026-08-31': 'main', '2026-09-01': 'school', '2026-09-06': 'school', '2026-09-07': 'hol', '2026-09-09': 'hol',
+    '2026-09-10': 'main', '2026-09-11': 'main', '2026-09-12': 'school', [R2_T]: 'school', '2030-01-01': 'school'
+  };
+  for (const [k, m] of Object.entries(want)) assert.equal(app.modeOn(k), m, k);
+  assert.equal(app.activeMode(), 'school', 'активный — режим сегодняшнего дня');
+  assert.equal(app.modeOn('2026-09-08', [{ from: '2026-09-08', mode: 'hol' }]), 'hol', 'журнал можно передать явно (migrate)');
+  assert.equal(app.modeOn('2026-09-07', [{ from: '2026-09-08', mode: 'hol' }]), 'main');
+
+  const ids = ['main', 'school', 'hol'];
+  const log = [];
+  let k = '2024-01-01';
+  for (let i = 0; i < 400; i++) {
+    k = app.addDays(k, 1 + (i * 7) % 4);
+    const prev = log.length ? log[log.length - 1].mode : 'main';
+    log.push({ from: k, mode: ids[(ids.indexOf(prev) + 1 + i % 2) % 3] });
+  }
+  s.modeLog = log;
+  assert.deepEqual(app.normModeLog(log, s.modes), log, 'журнал фикстуры канонический');
+  const linear = day => { let m = 'main'; for (const x of log) if (x.from <= day) m = x.mode; return m; };
+  for (let d = '2023-12-25'; d <= app.addDays(k, 3); d = app.addDays(d, 1)) assert.equal(app.modeOn(d), linear(d), d);
+  clearLocalStorage();
+});
+
+test('Р2/1: normModes и normModeLog — основной есть всегда, мусор и дубли роняются, ссылка дубля имени ведёт к одноимённому; идемпотентно', () => {
+  setNow(2026, 9, 14, 12, 0);
+  assert.deepEqual(app.normModes(undefined).modes, [r2Mode('main', 'Основной')]);
+  assert.deepEqual(app.normModes('мусор').modes, [r2Mode('main', 'Основной')]);
+  const n = app.normModes([
+    { id: 'b', name: ' Школа ' },
+    { id: 'main', name: 'Главный', removedAt: '2026-09-01' },
+    { id: 'b', name: 'Другое' },   // дубль id
+    { id: 'c', name: 'Школа' },    // дубль имени
+    { id: '', name: 'Пусто' }, null, [], { id: 'd', name: '   ' }, { id: 7, name: 'Число' },
+    { id: 'e', name: 'Лето', removedAt: 'не дата' }
+  ]);
+  assert.deepEqual(n.modes, [r2Mode('b', 'Школа'), r2Mode('main', 'Главный', '2026-09-01'), r2Mode('e', 'Лето')],
+    'основной на своём месте; имя с trim; мусорный день ухода — null');
+  assert.equal(n.resolve('b'), 'b');
+  assert.equal(n.resolve('c'), 'b', 'дубль имени — туда, где владелец видел записи');
+  assert.equal(n.resolve('d'), 'main', 'отброшенный мусор — в основной');
+  assert.equal(n.resolve(undefined), 'main');
+  assert.equal(n.known('zzz'), 'zzz', 'known неизвестное не подменяет — журнал его уронит');
+  assert.deepEqual(app.normModes(n.modes).modes, n.modes, 'повторный прогон ничего не меняет');
+  assert.equal(app.normModes([{ id: 'x', name: 'Основной' }]).resolve('x'), 'main', 'имя основного занимается первым');
+
+  const ids = ['main', 'b', 'e'];
+  const log = app.normModeLog([
+    { from: '2026-09-05', mode: 'b' },
+    { from: '2026-09-01', mode: 'main' },   // ведущий основной — до первого и так основной
+    { from: 'не дата', mode: 'b' },
+    { from: '2026-09-07', mode: 'zzz' },    // неизвестный режим
+    { from: '2026-09-08', mode: 'b' },      // тот же режим продолжается
+    { from: '2026-09-10', mode: 'e' },
+    { from: '2026-09-10', mode: 'main' },   // один день — один отрезок, побеждает последний
+    null, 'строка', { from: '2026-09-12' }
+  ], ids);
+  assert.deepEqual(log, [{ from: '2026-09-05', mode: 'b' }, { from: '2026-09-10', mode: 'main' }]);
+  assert.deepEqual(app.normModeLog(log, ids), log, 'идемпотентно');
+  assert.deepEqual(app.normModeLog(log, n.modes), log, 'режимы можно передать записями');
+  assert.deepEqual(app.normModeLog('мусор', ids), []);
+  assert.deepEqual(app.normModeLog([{ from: '2026-09-05', mode: 'b' }, { from: '2026-09-05', mode: 'main' }], ids), [],
+    'замена в тот же день основным — пустой журнал');
+});
+
+test('Р2/1: setActiveMode — отрезок с сегодняшнего дня по правилам setSchedule; только живой режим; одна запись, откат', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('school', 'Школа'), r2Mode('old', 'Старый', '2026-09-01')];
+  const disk = () => JSON.parse(global.localStorage.getItem('minimum:data'));
+  const canon = () => assert.deepEqual(app.normModeLog(s.modeLog, s.modes), s.modeLog, 'журнал в каноне');
+
+  assert.deepEqual(app.setActiveMode('school'), { ok: true });
+  assert.deepEqual(s.modeLog, [{ from: R2_T, mode: 'school' }]);
+  assert.deepEqual(disk().modeLog, s.modeLog, 'записано');
+  assert.equal(app.activeMode(), 'school');
+  canon();
+  assert.deepEqual(app.setActiveMode('school'), { ok: true }, 'повторный выбор того же — не ошибка');
+  assert.deepEqual(s.modeLog, [{ from: R2_T, mode: 'school' }], 'и не второй отрезок');
+  assert.deepEqual(app.setActiveMode('main'), { ok: true });
+  assert.deepEqual(s.modeLog, [], 'возврат к прежнему в тот же день схлопывает');
+  canon();
+
+  assert.deepEqual(app.setActiveMode('old'), { ok: false, reason: 'removed' }, 'убранный не выбирается');
+  assert.deepEqual(app.setActiveMode('nope'), { ok: false, reason: 'missing' });
+  assert.deepEqual(s.modeLog, []);
+
+  s.modeLog = [{ from: '2026-09-01', mode: 'school' }];
+  assert.deepEqual(app.setActiveMode('main'), { ok: true });
+  assert.deepEqual(s.modeLog, [{ from: '2026-09-01', mode: 'school' }, { from: R2_T, mode: 'main' }], 'прежний отрезок не тронут');
+  canon();
+  assert.deepEqual(app.setActiveMode('school'), { ok: true });
+  assert.deepEqual(s.modeLog, [{ from: '2026-09-01', mode: 'school' }], 'в тот же день назад к прежнему — отрезок схлопнут');
+  s.modeLog = [{ from: '2026-09-01', mode: 'school' }, { from: '2026-09-20', mode: 'main' }];
+  assert.deepEqual(app.setActiveMode('main'), { ok: true });
+  assert.deepEqual(s.modeLog, [{ from: '2026-09-01', mode: 'school' }, { from: R2_T, mode: 'main' }],
+    'отрезок 20.09 из будущего снят, новый — с сегодняшнего; порядок по возрастанию');
+  canon();
+
+  const before = JSON.stringify(s.modeLog);
+  withBrokenWrite(() => { assert.deepEqual(app.setActiveMode('school'), { ok: false, reason: 'storage' }); });
+  assert.equal(JSON.stringify(s.modeLog), before, 'откат журнала');
+  assert.equal(app.activeMode(), 'main');
+  clearLocalStorage();
+});
+
+test('Р2/1: переключение режима сегодня не меняет вчера — minDayMarks, dayScore, цепь, серия, рекорд, точка «вчера»; dueOn с режимом', () => {
+  const s = r2Store();
+  const since = '2026-08-17';
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('school', 'Школа')];
+  s.groups = [r2Block('Утро', 'main'), r2Block('Утро', 'school', [{ from: since, mask: '1111100' }]), r2Block('Учёба', 'school')];
+  const a1 = r2Act('a1', since, 'Утро', R1_WEEK, 'main');
+  const a2 = r2Act('a2', since, '', R1_WEEK, 'main');
+  const b1 = r2Act('b1', since, 'Утро', R1_WEEK, 'school');
+  const b2 = r2Act('b2', since, 'Учёба', '1010100', 'school');
+  const h = r1Item('h', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 5 });
+  s.items = [a1, a2, b1, b2, h];
+  s.modeLog = [{ from: '2026-08-31', mode: 'school' }, { from: '2026-09-07', mode: 'main' }];
+
+  assert.equal(app.dueOn(a1, '2026-08-28'), true, 'пятница основного');
+  assert.equal(app.dueOn(b1, '2026-08-28'), false, 'действие школы в день основного — не в плане');
+  assert.equal(app.dueOn(a1, '2026-09-02'), false, 'действие основного в неделю школы — не в плане');
+  assert.equal(app.dueOn(b1, '2026-09-02'), true, 'имя блока — в режиме действия: будни «Утра» школы');
+  assert.equal(app.dueOn(b1, '2026-09-05'), false, 'суббота вне дней блока школы');
+  assert.equal(app.dueOn(b2, '2026-09-04'), true, 'своя маска пн, ср, пт');
+  assert.equal(app.dueOn(h, '2026-09-02'), true, 'привычка глобальна');
+  assert.equal(app.dueOn(h, '2026-08-28'), true);
+  assert.equal(app.effectiveMaskOn(a1, '2026-09-02'), '0000000');
+  assert.equal(app.dayScore('2026-09-05'), null, 'суббота школы: запланированного нет — день нейтрален');
+  for (let k = since; k <= '2026-09-20'; k = app.addDays(k, 1)) {
+    for (const it of s.items) {
+      assert.equal(app.effectiveMaskOn(it, k)[app.weekdayOf(k)] === '1', app.inEffectiveDays(it, k), `горячий путь совпадает: ${it.id} ${k}`);
+    }
+  }
+
+  let n = 0;
+  for (let k = since; k < R2_T; k = app.addDays(k, 1), n++) {
+    const due = [a1, a2, b1, b2].filter(it => app.dueOn(it, k));
+    let marked = n % 6 === 2 ? due.slice(0, 1) : due;
+    if (n % 9 === 4) marked = [];
+    const day = {};
+    for (const it of marked) day[it.id] = true;
+    if (n % 2 === 0) day.h = true;
+    if (Object.keys(day).length) s.days[k] = day;
+  }
+  (s.days['2026-09-08'] || (s.days['2026-09-08'] = {})).b1 = true; // вне плана: в числах не участвует
+  delete s.days['2026-09-13'].a1;
+
+  const yesterday = app.addDays(R2_T, -1);
+  const picture = () => {
+    const days = [];
+    for (let k = since; k <= yesterday; k = app.addDays(k, 1)) {
+      const x = app.minDayMarks(k);
+      days.push(`${k} ${x.done}/${x.total} ${app.dayScore(k)} ${app.minDayClosed(k)}`);
+    }
+    return {
+      days,
+      chain: app.chainWeeks(8).map(w => [0, 1, 2, 3, 4, 5, 6].map(i => app.addDays(w, i)).filter(k => k < R2_T).map(app.dayScore)),
+      streak: app.dayStreak(),
+      best: app.bestStreak(),
+      dots: s.items.map(it => app.missedYesterday(it, R2_T)),
+      marks: s.items.map(it => app.marksInSystem(it))
+    };
+  };
+  const before = picture();
+  assert.ok(before.best > 0, 'рекорд не пуст: ' + before.best);
+  assert.deepEqual(before.dots.slice(0, 4), [true, false, false, false], 'вчера (вс, основной) a1 пропущен; у действий школы вчера плана не было');
+  assert.deepEqual(app.minDayItems(R2_T).map(i => i.id), ['a1', 'a2']);
+
+  assert.equal(app.setActiveMode('school').ok, true);
+  assert.deepEqual(app.minDayItems(R2_T).map(i => i.id), ['b1', 'b2'], 'сегодня — действия школы');
+  assert.deepEqual(picture(), before, 'прошлое то же до последней ячейки');
+  assert.equal(app.markYesterday('b1'), false, 'вчера у действия школы плана не было');
+  assert.equal(app.setActiveMode('main').ok, true);
+  assert.deepEqual(picture(), before);
+  assert.deepEqual(app.minDayItems(R2_T).map(i => i.id), ['a1', 'a2']);
+  clearLocalStorage();
+});
+
+test('Р2/1: неделя чужого режима — дни плана 0, guard m = 0 держит повышение и понижение; частичная неделя считает только свои дни', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('school', 'Школа')];
+  const since = '2026-08-17';
+  const x = r2Act('x', since, '', R1_WEEK, 'main', { value: 5, unit: 'мин' });
+  const y = r2Act('y', since, '', R1_WEEK, 'main');
+  s.items = [x, y];
+  for (let k = since; k < R2_T; k = app.addDays(k, 1)) s.days[k] = { x: true };
+  s.days['2026-08-19'].y = true; // y начат и больше не отмечался
+  assert.deepEqual(app.closedWeeks(3), ['2026-08-24', '2026-08-31', '2026-09-07']);
+
+  assert.equal(app.raiseEligible(x), true, 'контроль: без режимов x готов к повышению');
+  assert.equal(app.lowerEligible(y), true, 'и y — к понижению');
+
+  s.modeLog = [{ from: '2026-08-31', mode: 'school' }, { from: '2026-09-07', mode: 'main' }];
+  assert.equal(app.weekMaskDays(x, '2026-08-31'), 0, 'неделя целиком в другом режиме — дней плана 0');
+  assert.equal(app.planWeekCount(x, '2026-08-31'), 0, 'отметки в днях чужого режима в числитель не идут');
+  for (let k = '2026-08-31'; k <= '2026-09-06'; k = app.addDays(k, 1)) assert.equal(app.dueOn(x, k), false, k);
+  assert.equal(app.dueOn(x, '2026-09-07'), true);
+  assert.equal(app.raiseEligible(x), false, 'неделя без дней плана — не «держится»');
+  assert.equal(app.lowerEligible(y), false, 'и не «не держится»');
+  assert.deepEqual(s.days['2026-09-02'], { x: true }, 'отметки на месте');
+
+  s.modeLog = [{ from: '2026-09-03', mode: 'school' }, { from: '2026-09-05', mode: 'main' }];
+  assert.equal(app.weekMaskDays(x, '2026-08-31'), 5, 'два дня чужого режима');
+  assert.equal(app.planWeekCount(x, '2026-08-31'), 5);
+  assert.equal(app.raiseEligible(x), true, '5 из 5 ≥ ceil(6/7·5)');
+  assert.equal(app.lowerEligible(y), true, '0 ≤ floor(3/7·5)');
+  assert.deepEqual(app.weekPlan(x, ['2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05']), { planned: 2, done: 2 },
+    'сетка разбора — тем же правилом');
+  clearLocalStorage();
+});
+
+test('Р2/1: addMode — пустой и копия: блоки и живые действия новыми записями с сегодняшнего дня; привычки, параметры и счётчики не копируются; копия ≡ migrate; откат', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Другой')];
+  const since = '2026-08-31';
+  s.groups = [
+    r2Block('Утро', 'main', [{ from: '2026-09-07', mask: '1111100' }], null, '7:00'),
+    r2Block('Вечер', 'main', [], '2026-09-10'),
+    r2Block('Утро', 'x', [], null, 'чужая подпись'),
+    r2Block('Школа', 'main')
+  ];
+  const a = r2Act('a', since, 'Утро', '1010100', 'main', {
+    value: 5, unit: 'мин', note: 'вслух', at: '07:10', raiseAfterWeek: '2026-09-07',
+    history: [{ date: since, value: 3 }, { date: '2026-09-03', value: 5 }],
+    groupLog: [{ from: since, group: 'Школа' }, { from: '2026-09-07', group: 'Утро' }]
+  });
+  const loose = r2Act('loose', since, '', R1_WEEK, 'main', { note: 'без блока' });
+  const gone = r2Act('gone', since, 'Утро', R1_WEEK, 'main', { removedAt: '2026-09-10' });
+  const sch = r2Act('sch', since, 'Школа', R1_WEEK, 'main');
+  const other = r2Act('other', since, 'Утро', R1_WEEK, 'x');
+  const hab = r1Item('hab', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7 });
+  s.items = [a, hab, r2Weekly('w', since, 'Утро', 3), loose, gone, r2Param('par', since, 'Утро'), sch, other];
+  s.days = { '2026-09-10': { a: true, w: true } };
+
+  assert.deepEqual(app.addMode('  '), { ok: false, reason: 'empty' });
+  assert.deepEqual(app.addMode(' Основной '), { ok: false, reason: 'taken' });
+  assert.deepEqual(app.addMode('Лето', { copyOf: 'nope' }), { ok: false, reason: 'missing' });
+  assert.equal(s.modes.length, 2, 'отказы ничего не заводят');
+
+  const e = app.addMode(' Лето ');
+  assert.equal(e.ok, true);
+  assert.deepEqual(s.modes[2], r2Mode(e.id, 'Лето'));
+  assert.ok(e.id && e.id !== 'main' && e.id !== 'x', 'новый id');
+  assert.deepEqual([s.groups.length, s.items.length], [4, 8], 'пустой режим — только запись в списке');
+  assert.equal(app.activeMode(), 'main', 'новый режим не становится активным сам');
+  assert.deepEqual(s.modeLog, []);
+  assert.deepEqual(app.addMode('Лето'), { ok: false, reason: 'taken' });
+  assert.deepEqual(JSON.parse(global.localStorage.getItem('minimum:data')).modes, s.modes, 'записано');
+
+  const c = app.addMode('Школа летом', { copyOf: 'main' });
+  assert.equal(c.ok, true);
+  const blocks = s.groups.filter(g => g.mode === c.id);
+  assert.deepEqual(blocks, [
+    { name: 'Утро', caption: '7:00', days: [{ from: R2_T, mask: '1111100' }], removedAt: null, mode: c.id },
+    { name: 'Школа', caption: '', days: [], removedAt: null, mode: c.id }
+  ], 'живые блоки источника в его порядке, дни на сегодня одним отрезком; убранный и чужой не копируются');
+  const copies = s.items.filter(i => i.mode === c.id);
+  assert.deepEqual(copies.map(i => i.name), ['a', 'loose', 'sch'], 'живые действия режима — и в блоках, и без блока');
+  assert.ok(copies.every(i => !['a', 'loose', 'sch'].includes(i.id)), 'новые id');
+  const [ca, cl] = copies;
+  assert.deepEqual([ca.addedAt, ca.group, ca.value, ca.unit, ca.note, ca.at, ca.raiseAfterWeek, ca.removedAt, ca.type, ca.area],
+    [R2_T, 'Утро', 5, 'мин', 'вслух', '07:10', null, null, 'daily', 'min']);
+  assert.deepEqual(ca.schedule, [{ from: R2_T, mask: '1010100' }], 'своя маска на сегодня');
+  assert.deepEqual(ca.groupLog, [], 'прошлого у копии нет');
+  assert.deepEqual(ca.history, [{ date: R2_T, value: 5 }], 'одна стартовая запись');
+  assert.deepEqual([cl.group, cl.note, cl.history], ['', 'без блока', []]);
+  assert.equal(s.items.filter(i => i.type === 'weekly').length, 1, 'счётчик не копируется');
+  assert.equal(s.items.filter(i => i.area === 'habit').length, 2, 'привычка и параметр не копируются');
+  assert.deepEqual(s.days, { '2026-09-10': { a: true, w: true } }, 'отметки при прежних записях');
+
+  const m = app.migrate(JSON.parse(JSON.stringify(s)));
+  assert.deepEqual(m.modes, s.modes);
+  assert.deepEqual(m.groups.filter(g => g.mode === c.id), blocks, 'блоки-копии — канон');
+  for (const x of copies) assert.deepEqual(m.items.find(i => i.id === x.id), x, 'копия ≡ migrate(копия): ' + x.name);
+
+  assert.equal(app.dueNow(ca), false, 'сегодня действует основной');
+  assert.equal(app.setActiveMode(c.id).ok, true);
+  assert.equal(app.dueNow(ca), true);
+  assert.equal(app.effectiveMaskOn(ca, R2_T), '1010100');
+  assert.equal(app.dueNow(a), false, 'источник — в днях своего режима');
+  assert.equal(app.findGroup('Утро'), blocks[0], 'поиск по умолчанию — в активном режиме');
+
+  const before = JSON.stringify(s);
+  withBrokenWrite(() => { assert.deepEqual(app.addMode('Зима', { copyOf: 'main' }), { ok: false, reason: 'storage' }); });
+  assert.equal(JSON.stringify(s), before, 'ни режима, ни блоков, ни действий');
+  clearLocalStorage();
+});
+
+test('Р2/1: renameMode, removeMode, restoreMode — активный не убирается, убранный не выбирается и держит имя; прошлое читается режимом того дня', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('school', 'Школа')];
+  const since = '2026-08-17';
+  s.groups = [r2Block('Утро', 'school', [{ from: since, mask: '1111100' }])];
+  const b = r2Act('b', since, 'Утро', R1_WEEK, 'school');
+  s.items = [b];
+  s.modeLog = [{ from: '2026-08-31', mode: 'school' }, { from: '2026-09-07', mode: 'main' }];
+  const snap = () => JSON.stringify([s.groups, s.items, s.modeLog, s.days]);
+  const was = snap();
+
+  assert.deepEqual(app.removeMode('main'), { ok: false, reason: 'active' }, 'активный убрать нельзя');
+  assert.deepEqual(app.removeMode('nope'), { ok: false, reason: 'missing' });
+  assert.deepEqual(app.removeMode('school'), { ok: true });
+  assert.equal(s.modes[1].removedAt, R2_T);
+  assert.equal(snap(), was, 'отрезки, блоки и действия не тронуты');
+  assert.equal(app.modeOn('2026-09-02'), 'school', 'прошлые дни — режимом того дня');
+  assert.equal(app.dueOn(b, '2026-09-02'), true, 'и действия того режима в них запланированы');
+  assert.deepEqual(app.removeMode('school'), { ok: false, reason: 'removed' });
+  assert.deepEqual(app.setActiveMode('school'), { ok: false, reason: 'removed' });
+  assert.deepEqual(app.addMode('Школа'), { ok: false, reason: 'taken' }, 'имя убранного занято');
+  assert.deepEqual(app.renameMode('main', ' Школа '), { ok: false, reason: 'taken' });
+  assert.equal(app.modeNameTaken('Школа'), true);
+  assert.equal(app.modeNameTaken('Школа', 'school'), false, 'своё имя себе не помеха');
+  assert.deepEqual(app.liveModes().map(m => m.id), ['main']);
+
+  assert.deepEqual(app.restoreMode('school'), { ok: true });
+  assert.equal(s.modes[1].removedAt, null);
+  assert.deepEqual(app.restoreMode('school'), { ok: false, reason: 'live' });
+  assert.deepEqual(app.restoreMode('nope'), { ok: false, reason: 'missing' });
+  assert.deepEqual(app.setActiveMode('school'), { ok: true });
+  assert.deepEqual(app.removeMode('school'), { ok: false, reason: 'active' });
+  assert.deepEqual(app.removeMode('main'), { ok: true }, 'неактивный основной убирается так же');
+  assert.equal(app.modeOn('2026-08-20'), 'main', 'до первого отрезка — по-прежнему основной');
+
+  assert.deepEqual(app.renameMode('school', '  '), { ok: false, reason: 'empty' });
+  assert.deepEqual(app.renameMode('nope', 'X'), { ok: false, reason: 'missing' });
+  assert.deepEqual(app.renameMode('school', ' Учёба '), { ok: true });
+  assert.equal(s.modes[1].name, 'Учёба');
+  assert.deepEqual(app.renameMode('school', 'Учёба'), { ok: true }, 'то же имя — законно');
+  assert.equal(JSON.parse(global.localStorage.getItem('minimum:data')).modes[1].name, 'Учёба', 'записано');
+
+  const m0 = JSON.stringify(s.modes);
+  withBrokenWrite(() => {
+    assert.deepEqual(app.renameMode('school', 'Зима'), { ok: false, reason: 'storage' });
+    assert.deepEqual(app.restoreMode('main'), { ok: false, reason: 'storage' });
+  });
+  assert.equal(JSON.stringify(s.modes), m0, 'откат имени и дня ухода');
+  assert.deepEqual(app.restoreMode('main'), { ok: true });
+  assert.deepEqual(app.setActiveMode('main'), { ok: true });
+  const m1 = JSON.stringify(s.modes);
+  withBrokenWrite(() => { assert.deepEqual(app.removeMode('school'), { ok: false, reason: 'storage' }); });
+  assert.equal(JSON.stringify(s.modes), m1);
+  clearLocalStorage();
+});
+
+test('Р2/1: имя блока уникально в пределах режима; одноимённые блоки разных режимов друг на друга не влияют', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Другой')];
+  const since = '2026-08-31';
+  assert.equal(app.addGroup('Утро', '7:00', '1111100'), true, 'в активном режиме');
+  assert.equal(app.addGroup('Утро', '', undefined, 'x'), true, 'то же имя в другом режиме — законно');
+  assert.equal(app.addGroup('Утро'), false, 'в своём режиме имя занято');
+  assert.equal(app.addGroup('Утро', '', undefined, 'x'), false);
+  const [gm, gx] = s.groups;
+  assert.deepEqual([gm.mode, gx.mode, gm.caption, gx.caption], ['main', 'x', '7:00', '']);
+  assert.equal(app.findGroup('Утро'), gm, 'по умолчанию — активный режим');
+  assert.equal(app.findGroup('Утро', 'x'), gx);
+  assert.equal(app.findGroup('Утро', 'nope'), null);
+  assert.deepEqual(app.liveGroups(), [gm]);
+  assert.deepEqual(app.liveGroups('x'), [gx]);
+
+  const am = r2Act('am', since, 'Утро', R1_WEEK, 'main', { groupLog: [{ from: since, group: 'Былое' }, { from: '2026-09-07', group: 'Утро' }] });
+  const ax = r2Act('ax', since, 'Утро', '1100000', 'x', { groupLog: [{ from: since, group: 'Былое' }, { from: '2026-09-07', group: 'Утро' }] });
+  const om = r2Act('om', since, 'Сирота', R1_WEEK, 'main');
+  const hp = r1Item('hp', since, 'Привычное', R1_WEEK, { area: 'habit', normPerWeek: 7 });
+  s.items = [am, ax, om, hp];
+
+  assert.equal(app.nameTaken('Сирота'), true, 'осиротевшее имя действия занято в его режиме');
+  assert.equal(app.nameTaken('Сирота', undefined, 'x'), false, 'и свободно в другом');
+  assert.equal(app.nameTaken('Былое', undefined, 'x'), true, 'имя из журнала — в режиме действия');
+  assert.equal(app.nameTaken('Привычное'), false, 'глобальный пункт имя не занимает: дни блока его не режут');
+  assert.equal(app.addGroup('Сирота', '', undefined, 'x'), true);
+
+  assert.deepEqual(app.zeroDaysIn('Утро', '0000011'), []);
+  assert.deepEqual(app.zeroDaysIn('Утро', '0000011', 'x'), ['ax']);
+  assert.deepEqual(app.updateGroup('Утро', { mask: '0000011' }, 'x'), { ok: false, reason: 'zero', names: ['ax'] });
+  assert.deepEqual(app.updateGroup('Утро', { mask: '0000011' }), { ok: true, name: 'Утро' }, 'действие другого режима правке не мешает');
+  assert.deepEqual(gm.days, [{ from: R2_T, mask: '0000011' }]);
+  assert.deepEqual(gx.days, [], 'одноимённый блок другого режима не тронут');
+
+  assert.deepEqual(app.updateGroup('Утро', { name: 'Сирота' }), { ok: false, reason: 'taken' });
+  assert.equal(app.renameGroup('Утро', 'Рассвет'), true);
+  assert.deepEqual([am.group, am.groupLog[0].group, am.groupLog[1].group], ['Рассвет', 'Былое', 'Рассвет']);
+  assert.deepEqual([ax.group, ax.groupLog[1].group, gx.name], ['Утро', 'Утро', 'Утро'], 'другой режим — при своём имени');
+  assert.equal(app.findGroup(app.groupOn(ax, '2026-09-08'), 'x'), gx, 'прошлое ax находит свой блок');
+  assert.equal(app.renameGroup('Утро', 'Рассвет', 'x'), true, 'имя, занятое в другом режиме, свободно в этом');
+  assert.deepEqual([gm.name, gx.name, ax.group, ax.groupLog[1].group], ['Рассвет', 'Рассвет', 'Рассвет', 'Рассвет']);
+
+  assert.equal(app.removeGroup('Рассвет'), true);
+  assert.deepEqual([gm.removedAt, gx.removedAt, am.removedAt, ax.removedAt], [R2_T, null, R2_T, null], 'уход — в режиме блока');
+  assert.match(app.groupJoinRefusal('Рассвет'), /убран/);
+  assert.equal(app.groupJoinRefusal('Рассвет', 'x'), null, 'в другом режиме блок живой');
+  assert.equal(app.addGroup('Рассвет'), false, 'имя убранного блока занято в его режиме');
+
+  assert.equal(app.duplicateGroup('Рассвет', 'x'), 'Рассвет (копия)');
+  const gi = s.groups.indexOf(gx);
+  assert.deepEqual([s.groups[gi + 1].name, s.groups[gi + 1].mode], ['Рассвет (копия)', 'x'], 'копия — за источником, в его режиме');
+  assert.deepEqual(s.items.filter(i => i.group === 'Рассвет (копия)').map(i => [i.name, i.mode]), [['ax', 'x']]);
+  clearLocalStorage();
+});
+
+test('Р2/1: порядок и раскладка — в области режима (moveGroup, reorderGroup, groupedItems, moveItem, canMoveItem, reorderItem); преемник и возврат — в режиме действия', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Другой')];
+  const since = '2026-08-31';
+  s.groups = [r2Block('A', 'main'), r2Block('C', 'x'), r2Block('B', 'main'), r2Block('R', 'main', [], '2026-09-10'),
+    r2Block('D', 'x'), r2Block('E', 'main')];
+  const names = () => s.groups.map(g => g.name).join('');
+  assert.equal(app.moveGroup('A', 'down'), true);
+  assert.equal(names(), 'BCARDE', 'соседи — живые блоки своего режима: C другого режима на месте');
+  assert.equal(app.moveGroup('A', 'down'), true);
+  assert.equal(names(), 'BCERDA', 'убранный R перепрыгнут и остался на месте');
+  assert.equal(app.moveGroup('A', 'down'), false, 'последний живой блок режима');
+  assert.equal(app.moveGroup('C', 'up', 'x'), false);
+  assert.equal(app.moveGroup('C', 'down', 'x'), true);
+  assert.equal(names(), 'BDERCA');
+  assert.equal(app.moveGroup('D', 'down'), false, 'блок другого режима в активном не ищется');
+  assert.deepEqual(app.liveGroupIndexes('x'), [1, 4]);
+  assert.equal(app.reorderGroup('A', 0), true);
+  assert.equal(names(), 'ADBRCE');
+  assert.equal(app.reorderGroup('C', 0, 'x'), true);
+  assert.equal(names(), 'ACBRDE');
+  assert.equal(app.reorderGroup('R', 0), false, 'убранный не перетаскивается');
+  assert.equal(app.reorderGroup('C', 1), false, 'C в активном режиме не ищется');
+
+  const m1 = r2Act('m1', since, 'A', R1_WEEK, 'main');
+  const x1 = r2Act('x1', since, 'A', R1_WEEK, 'x');
+  const m2 = r2Act('m2', since, 'A', R1_WEEK, 'main');
+  const xc = r2Act('xc', since, 'C', R1_WEEK, 'x');
+  const h = r1Item('h', since, 'C', R1_WEEK, { area: 'habit', normPerWeek: 7 });
+  s.items = [m1, x1, m2, r2Weekly('w', since, 'A', 2), xc, h];
+  const lay = mode => app.groupedItems(s.items, mode)
+    .map(sec => (sec.group ? sec.group.name : '—') + ':' + sec.items.map(i => i.id).join(','));
+  assert.deepEqual(lay(), ['A:m1,m2,w', '—:x1,xc,h'], 'действие другого режима под одноимённым блоком не встаёт; глобальные — по имени');
+  assert.deepEqual(lay('x'), ['C:xc,h', '—:m1,x1,m2,w']);
+
+  assert.equal(app.moveItem('m1', 'down'), true);
+  assert.deepEqual(s.items.map(i => i.id), ['m2', 'x1', 'm1', 'w', 'xc', 'h'], 'x1 другого режима перепрыгнут и остался на месте');
+  assert.equal(app.canMoveItem('x1', 'up'), false);
+  assert.equal(app.canMoveItem('x1', 'down'), false, 'у x1 соседей в его режиме нет');
+  assert.equal(app.canMoveItem('m1', 'down'), true, 'счётчик — сосед по карточке активного режима');
+  assert.equal(app.reorderItem('m1', 0), true);
+  assert.deepEqual(s.items.map(i => i.id), ['m1', 'x1', 'm2', 'w', 'xc', 'h']);
+
+  const old = r2Act('old', since, 'A', R1_WEEK, 'main', { name: 'Вода', removedAt: '2026-09-10' });
+  const later = r2Act('later', '2026-09-12', 'A', R1_WEEK, 'x', { name: 'Вода' });
+  s.items.push(old, later);
+  assert.equal(app.laterSegmentOf(old), null, 'одноимённое дело в одноимённом блоке другого режима — соседнее, не продолжение');
+  const back = app.restoreItem('old');
+  assert.ok(back, 'возврат не отказывает');
+  assert.deepEqual([back.mode, back.addedAt, back.name, back.groupLog], ['main', R2_T, 'Вода', []], 'новая запись — в режиме прежней');
+  assert.equal(app.laterSegmentOf(old), back);
+  clearLocalStorage();
+});
+
+test('Р2/1: глобальные пункты при уходе, возврате и переименовании одноимённых блоков в двух режимах', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Другой'), r2Mode('y', 'Третий', '2026-09-01')];
+  const since = '2026-08-31';
+  s.groups = [r2Block('Утро', 'main'), r2Block('Утро', 'x')];
+  s.items = [
+    r2Act('am', since, 'Утро', R1_WEEK, 'main'),
+    r2Act('ax', since, 'Утро', R1_WEEK, 'x'),
+    r1Item('h', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7 }),
+    r2Weekly('w', since, 'Утро', 2),
+    r2Param('p', since, 'Утро')
+  ];
+  const alive = () => s.items.filter(app.live).map(i => i.name).sort().join(' ');
+  const gone = () => s.items.filter(i => !app.live(i)).map(i => i.name + '@' + i.removedAt).sort().join(' ');
+
+  assert.equal(app.removeGroup('Утро'), true);
+  assert.equal(alive(), 'ax h p w', 'одноимённый блок жив в другом режиме — глобальные остаются при нём');
+  assert.equal(app.restoreGroup('Утро'), true, 'в тот же день — полная отмена');
+  assert.equal(alive(), 'am ax h p w');
+  assert.equal(s.items.length, 5, 'новых записей нет');
+
+  assert.equal(app.removeGroup('Утро', 'x'), true);
+  assert.equal(alive(), 'am h p w');
+  advanceDays(1); // 15.09
+  assert.equal(app.removeGroup('Утро'), true, 'последний живой одноимённый — глобальные уходят с ним');
+  assert.equal(alive(), '');
+  assert.equal(gone(), 'am@2026-09-15 ax@2026-09-14 h@2026-09-15 p@2026-09-15 w@2026-09-15');
+
+  advanceDays(2); // 17.09
+  assert.equal(app.restoreGroup('Утро', 'x'), true);
+  assert.equal(alive(), 'ax', 'с блоком x вернулось только ушедшее с ним: глобальные ушли в другой день');
+  const liveOf = nm => s.items.find(i => i.name === nm && app.live(i));
+  assert.deepEqual([liveOf('ax').mode, liveOf('ax').addedAt], ['x', '2026-09-17']);
+  assert.equal(app.restoreGroup('Утро'), true);
+  assert.equal(alive(), 'am ax h p w', 'глобальные вернулись с тем уходом, который их увёл, — по одному экземпляру');
+  assert.ok(['h', 'p', 'w'].every(nm => !('mode' in liveOf(nm))), 'у глобальных копий режима нет');
+  assert.equal(liveOf('am').mode, 'main');
+
+  const groupsOf = () => ['am', 'ax', 'h', 'p', 'w'].map(nm => liveOf(nm).group);
+  assert.equal(app.renameGroup('Утро', 'Рассвет'), true);
+  assert.deepEqual(groupsOf(), ['Рассвет', 'Утро', 'Утро', 'Утро', 'Утро'], 'блок «Утро» есть в другом режиме — глобальные при старом имени');
+  s.groups.push(r2Block('Утро', 'y', [], '2026-09-01'));
+  assert.equal(app.renameGroup('Утро', 'Закат', 'x'), true);
+  // Р2/рецензия: прежде здесь стояло «и убранный блок убранного режима держит
+  // имя» — живые привычка, параметр и счётчик оставались при имени, у которого
+  // нет ни одного живого блока, и следующий старт оживлял убранный блок y
+  assert.deepEqual(groupsOf(), ['Рассвет', 'Закат', 'Закат', 'Закат', 'Закат'],
+    'живого одноимённого блока не осталось — живые глобальные идут за переименованием, убранный их не держит');
+  assert.equal(app.renameGroup('Утро', 'Полдень', 'y'), true);
+  assert.deepEqual(groupsOf(), ['Рассвет', 'Закат', 'Закат', 'Закат', 'Закат'],
+    'переименование убранного блока живые пункты чужого имени не трогает');
+  clearLocalStorage();
+});
+
+test('Р2/1: duplicateGroupTo — блок с живыми действиями в другой режим: имя то же, если свободно; в конец блоков цели; только действия; отказы и откат', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Другой'), r2Mode('gone', 'Убранный', '2026-09-01')];
+  const since = '2026-08-31';
+  s.groups = [r2Block('Школа', 'main', [{ from: '2026-09-07', mask: '1111100' }], null, '8:30'), r2Block('Вечер', 'x'), r2Block('Утро', 'main')];
+  const a = r2Act('a', since, 'Школа', '1010101', 'main', {
+    value: 5, unit: 'мин', note: 'n', at: '08:30',
+    history: [{ date: since, value: 3 }, { date: '2026-09-03', value: 5 }],
+    groupLog: [{ from: since, group: 'Утро' }, { from: '2026-09-07', group: 'Школа' }]
+  });
+  s.items = [a, r2Act('goneA', since, 'Школа', R1_WEEK, 'main', { removedAt: '2026-09-10' }), r2Weekly('w', since, 'Школа', 3),
+    r1Item('h', since, 'Школа', R1_WEEK, { area: 'habit', normPerWeek: 7 }), r2Act('ev', since, 'Вечер', R1_WEEK, 'x')];
+  const layout = () => s.groups.map(g => g.name + '/' + g.mode);
+
+  assert.equal(app.duplicateGroupTo('Школа', 'main'), null, 'в свой же режим — не сюда (duplicateGroup)');
+  assert.equal(app.duplicateGroupTo('Школа', 'gone'), null, 'в убранный режим — нет');
+  assert.equal(app.duplicateGroupTo('Школа', 'nope'), null);
+  assert.equal(app.duplicateGroupTo('Нет', 'x'), null);
+  assert.equal(s.groups.length, 3);
+
+  assert.equal(app.duplicateGroupTo('Школа', 'x'), 'Школа', 'в цели имя свободно — остаётся тем же');
+  assert.deepEqual(layout(), ['Школа/main', 'Вечер/x', 'Школа/x', 'Утро/main'], 'в конец блоков цели');
+  const copy = s.groups[2];
+  assert.deepEqual(copy, { name: 'Школа', caption: '8:30', days: [{ from: R2_T, mask: '1111100' }], removedAt: null, mode: 'x' });
+  const made = s.items.slice(5);
+  assert.deepEqual(made.map(i => i.name), ['a'], 'только живые действия: счётчик, привычка и убранное — нет');
+  const [c] = made;
+  assert.notEqual(c.id, 'a');
+  assert.deepEqual([c.mode, c.group, c.addedAt, c.value, c.unit, c.note, c.at], ['x', 'Школа', R2_T, 5, 'мин', 'n', '08:30']);
+  assert.deepEqual([c.schedule, c.groupLog, c.history], [[{ from: R2_T, mask: '1010101' }], [], [{ date: R2_T, value: 5 }]]);
+  const m = app.migrate(JSON.parse(JSON.stringify(s)));
+  assert.deepEqual(m.groups[2], copy, 'блок-копия — канон');
+  assert.deepEqual(m.items.find(i => i.id === c.id), c, 'копия ≡ migrate(копия)');
+  assert.equal(app.findGroup('Школа', 'x'), copy);
+  assert.equal(app.findGroup('Школа'), s.groups[0], 'источник на месте');
+
+  assert.equal(app.duplicateGroupTo('Школа', 'x'), 'Школа (копия)', 'занято в цели — «(копия)»');
+  assert.equal(app.duplicateGroupTo('Школа', 'x'), 'Школа (копия 2)');
+  assert.deepEqual(layout(), ['Школа/main', 'Вечер/x', 'Школа/x', 'Школа (копия)/x', 'Школа (копия 2)/x', 'Утро/main']);
+  s.items.push(r2Act('orph', since, 'Утро', R1_WEEK, 'x'));
+  assert.equal(app.duplicateGroupTo('Утро', 'x'), 'Утро (копия)', 'осиротевшее в цели имя не берётся');
+  assert.equal(app.duplicateGroupTo('Вечер', 'main', 'x'), 'Вечер', 'источник — из названного режима');
+  assert.equal(layout()[layout().length - 1], 'Вечер/main', 'в конец блоков основного');
+  assert.deepEqual([s.items[s.items.length - 1].name, s.items[s.items.length - 1].mode], ['ev', 'main']);
+
+  const before = JSON.stringify(s);
+  withBrokenWrite(() => { assert.equal(app.duplicateGroupTo('Школа', 'x'), null); });
+  assert.equal(JSON.stringify(s), before, 'откат: ни блока, ни действий');
+  clearLocalStorage();
+});
+
+test('Р2/1: миграция v19→v20 — режим «Основной», блоки и действия в нём, журнал пуст; days{}, reviews[], schedule, groupLog — ни символа; идемпотентна (v1, v18, v19, файл с режимами)', () => {
+  setNow(2026, 8, 16, 12, 0);
+  const raw = JSON.parse(JSON.stringify(app.migrate(v16Fixture())));
+  raw.schemaVersion = 19;
+  delete raw.modes; delete raw.modeLog;
+  raw.groups = [
+    { name: 'Утро', caption: '7:00', days: [{ from: '2026-06-01', mask: '1111100' }], removedAt: null },
+    { name: 'Движение', caption: '', days: [], removedAt: '2026-08-10' }
+  ];
+  for (const it of raw.items) delete it.mode;
+  const m1 = raw.items.find(i => i.id === 'm1');
+  m1.group = 'Утро';
+  m1.groupLog = [{ from: '2026-05-04', group: 'Движение' }, { from: '2026-06-15', group: 'Утро' }];
+  raw.items.find(i => i.id === 'm3').group = 'Утро';
+  raw.items.find(i => i.id === 'h1').group = 'Утро';
+  raw.items.find(i => i.id === 'h1').mode = 'мусор'; // привычке поле не положено
+  raw.items.find(i => i.id === 'w1').mode = 'main';  // счётчику — тоже
+  raw.reviews = [{ closedAt: 1, week: '2026-08-03', keys: [], perItem: {}, trainings: {}, oneChange: 'x', raises: [], lowers: [], params: [] }];
+  const days = JSON.stringify(raw.days);
+  const reviews = JSON.stringify(raw.reviews);
+  const blockDays = JSON.stringify(raw.groups.map(g => g.days));
+  const scheds = {}, logs = {};
+  for (const it of raw.items) {
+    if (it.schedule) scheds[it.id] = JSON.stringify(it.schedule);
+    if (it.groupLog) logs[it.id] = JSON.stringify(it.groupLog);
+  }
+
+  // «ДО»: числа эпохи на непромигрированном файле — без полей режима всё читается основным
+  const numbers = () => {
+    const out = [];
+    for (let k = '2026-05-04'; k <= '2026-08-16'; k = app.addDays(k, 1)) {
+      const x = app.minDayMarks(k);
+      out.push(x.done + '/' + x.total);
+    }
+    return out.concat([app.dayStreak(), app.bestStreak()]);
+  };
+  app.store = JSON.parse(JSON.stringify(raw));
+  const before = numbers();
+
+  const m = app.migrate(raw);
+  app.store = m;
+  assert.equal(m.schemaVersion, 20);
+  assert.deepEqual(m.modes, [r2Mode('main', 'Основной')]);
+  assert.deepEqual(m.modeLog, []);
+  assert.deepEqual(m.groups.map(g => g.mode), ['main', 'main']);
+  for (const it of m.items) {
+    if (it.type === 'daily' && it.area === 'min') assert.equal(it.mode, 'main', 'действие в основном: ' + it.id);
+    else assert.equal('mode' in it, false, 'глобальному поле не положено: ' + it.id);
+    if (scheds[it.id]) assert.equal(JSON.stringify(it.schedule), scheds[it.id], 'schedule ни символа: ' + it.id);
+    if (logs[it.id]) assert.equal(JSON.stringify(it.groupLog), logs[it.id], 'groupLog ни символа: ' + it.id);
+  }
+  assert.equal(JSON.stringify(m.days), days, 'days{} ни символа');
+  assert.equal(JSON.stringify(m.reviews), reviews, 'reviews[] ни символа');
+  assert.equal(JSON.stringify(m.groups.map(g => g.days)), blockDays, 'дни блоков ни символа');
+  assert.deepEqual(numbers(), before, 'числа каждого дня эпохи, серия и рекорд — те же');
+  const again = app.migrate(JSON.parse(JSON.stringify(m)));
+  assert.equal(JSON.stringify(again), JSON.stringify(m), 'второй прогон — побайтово то же');
+
+  // v18-файл: блок — одно имя, журналов и режимов нет
+  const r18 = JSON.parse(JSON.stringify(m));
+  r18.schemaVersion = 18;
+  delete r18.modes; delete r18.modeLog;
+  r18.groups = [{ name: 'Утро' }];
+  for (const it of r18.items) { delete it.mode; delete it.groupLog; }
+  const m18 = app.migrate(r18);
+  assert.deepEqual(m18.modes, [r2Mode('main', 'Основной')]);
+  assert.deepEqual(m18.groups, [{ name: 'Утро', caption: '', days: [], removedAt: null, mode: 'main' }]);
+  assert.ok(m18.items.filter(i => i.type === 'daily' && i.area === 'min').every(i => i.mode === 'main'));
+  assert.equal(JSON.stringify(m18.days), days);
+  assert.equal(JSON.stringify(app.migrate(JSON.parse(JSON.stringify(m18)))), JSON.stringify(m18), 'v18: идемпотентно');
+
+  // v1-файл: литерал «Принять душ» и досборка блоков — сразу в режиме
+  const once = app.migrate(v1Store());
+  assert.deepEqual(once.modes, [r2Mode('main', 'Основной')]);
+  assert.equal(once.items.find(i => i.name === 'Принять душ').mode, 'main');
+  assert.equal('mode' in once.items.find(i => i.name === 'Тренировка'), false);
+  assert.ok(once.groups.length && once.groups.every(g => g.mode === 'main'));
+  assert.equal(JSON.stringify(app.migrate(JSON.parse(JSON.stringify(once)))), JSON.stringify(once), 'v1: идемпотентно');
+
+  // файл с режимами: дубль имени, неизвестные ссылки, убранный активный
+  setNow(2026, 9, 14, 12, 0);
+  const imp = app.migrate({
+    schemaVersion: 20,
+    modes: [{ id: 's', name: 'Школа', removedAt: '2026-09-02' }, { id: 's2', name: 'Школа' }, { id: 'k', name: 'Каникулы', removedAt: '2026-09-01' }],
+    modeLog: [{ from: '2026-09-01', mode: 's2' }, { from: '2026-09-03', mode: 'zzz' }],
+    groups: [{ name: 'A', mode: 's2' }, { name: 'A', mode: 's', caption: 'дубль' }, { name: 'B', mode: 'zzz' }, { name: 'A' }],
+    items: [
+      { id: 'x', name: 'X', type: 'daily', area: 'min', addedAt: '2026-09-01', group: 'A', mode: 's2' },
+      { id: 'y', name: 'Y', type: 'daily', area: 'min', addedAt: '2026-09-01', group: 'B' },
+      { id: 'h', name: 'H', type: 'daily', area: 'habit', addedAt: '2026-09-01', group: 'A', mode: 's' }
+    ],
+    days: {}, settings: { dayBoundary: 4, calendarSince: '2026-08-31', seed17: true, habitSeeded: true }
+  }, { external: true });
+  assert.deepEqual(imp.modes, [r2Mode('main', 'Основной'), r2Mode('s', 'Школа'), r2Mode('k', 'Каникулы', '2026-09-01')],
+    'основной дописан первым; дубль имени снят; режим, действующий сегодня, убранным не бывает');
+  assert.deepEqual(imp.modeLog, [{ from: '2026-09-01', mode: 's' }], 'ссылка дубля — на одноимённый; неизвестный отрезок уронен');
+  assert.deepEqual(imp.groups.map(g => [g.name, g.mode, g.caption]), [['A', 's', ''], ['B', 'main', ''], ['A', 'main', '']],
+    'дубль имени в режиме схлопнут в первый; неизвестный режим — основной');
+  assert.deepEqual(imp.items.map(i => i.mode), ['s', 'main', undefined]);
+  assert.equal(JSON.stringify(app.migrate(JSON.parse(JSON.stringify(imp)))), JSON.stringify(imp), 'идемпотентно');
+});
+
+test('Р2/1: категории потерь «режим» и «отрезок режима» — склонения и счёт по сырому файлу', () => {
+  setNow(2026, 9, 14, 12, 0);
+  const zero = app.dataCounts({});
+  const line = (key, n) => app.droppedLine(Object.assign({}, zero, { [key]: n }), zero);
+  assert.equal(line('modes', 1), '1 режим');
+  assert.equal(line('modes', 2), '2 режима');
+  assert.equal(line('modes', 5), '5 режимов');
+  assert.equal(line('modeLog', 1), '1 отрезок режима');
+  assert.equal(line('modeLog', 3), '3 отрезка режима');
+  assert.equal(line('modeLog', 11), '11 отрезков режима');
+  const settings = { dayBoundary: 4, calendarSince: '2026-08-31', seed17: true, habitSeeded: true };
+  const raw = {
+    schemaVersion: 20,
+    modes: [{ id: 'main', name: 'Основной' }, { id: 'b', name: 'Школа' }, { id: 'c', name: 'Школа' }, 'мусор'],
+    modeLog: [{ from: '2026-09-01', mode: 'b' }, { from: 'нет', mode: 'b' }, { from: '2026-09-03', mode: 'c' }, { from: '2026-09-05', mode: 'zzz' }],
+    items: [], groups: [], days: {}, settings
+  };
+  const was = app.dataCounts(JSON.parse(JSON.stringify(raw)));
+  assert.deepEqual([was.modes, was.modeLog], [4, 4]);
+  const got = app.dataCounts(app.migrate(raw, { external: true }));
+  assert.deepEqual([got.modes, got.modeLog], [2, 1]);
+  const dropped = app.droppedLine(was, got);
+  assert.match(dropped, /2 режима/);
+  assert.match(dropped, /3 отрезка режима/);
+  const v19 = { schemaVersion: 19, items: [], groups: [], days: {}, settings: Object.assign({}, settings) };
+  const w19 = app.dataCounts(JSON.parse(JSON.stringify(v19)));
+  assert.equal(app.droppedLine(w19, app.dataCounts(app.migrate(v19, { external: true }))), '',
+    'файл без режимов потерь не называет: основной появляется, а не пропадает');
+});
+
+test('Р2/1: места создания действия и фабрики — в каноне v20: режим у действия, у глобальных поля нет', () => {
+  const s = r2Store();
+  const def = app.defaultStore();
+  assert.deepEqual([def.modes, def.modeLog], [[r2Mode('main', 'Основной')], []]);
+  for (const it of def.items) {
+    if (it.type === 'daily' && it.area === 'min') assert.equal(it.mode, 'main', it.name);
+    else assert.equal('mode' in it, false, it.name);
+  }
+  assert.ok(def.groups.every(g => g.mode === 'main'));
+  const empty = app.emptyStore(4);
+  assert.deepEqual([empty.modes, empty.modeLog], [[r2Mode('main', 'Основной')], []], 'чистый лист — основной режим');
+
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Другой')];
+  assert.equal(app.setActiveMode('x').ok, true);
+  assert.equal(app.addGroup('Школа', '', '1111100'), true);
+  assert.equal(app.findGroup('Школа').mode, 'x', 'новый блок — в активном режиме');
+  const [q] = app.addActions('Школа', app.parseQuickLines('Звонок · родным'));
+  assert.equal(q.mode, 'x', 'быстрое добавление — в активном режиме');
+  assert.equal(app.dueNow(q), true);
+  assert.equal(app.setItemType(q, 'weekly', 2), true);
+  assert.equal('mode' in q, false, 'счётчик глобален');
+  assert.equal(app.setActiveMode('main').ok, true);
+  assert.equal(app.setItemType(q, 'daily'), true);
+  assert.equal(q.mode, 'main', 'ежедневный рождается в активном режиме');
+
+  const [r] = app.addActions('Школа', app.parseQuickLines('Пост'), 'x');
+  assert.equal(r.mode, 'x', 'режим можно назвать явно');
+  assert.equal(app.removeItem(r.id), true);
+  advanceDays(2);
+  const back = app.restoreItem(r.id);
+  assert.ok(back);
+  assert.deepEqual([back.mode, back.groupLog], ['x', []], 'новая запись возврата — в режиме прежней, не в активном');
+  assert.deepEqual(app.migrate(JSON.parse(JSON.stringify(s))).items.find(i => i.id === back.id), back, 'копия возврата — канон');
+  clearLocalStorage();
+});
+
+test('Р2/1: bestStreak и dayStreak на трёх годах с журналом режимов из сотен отрезков держат пороги инварианта', () => {
+  const { store: s } = perfStore();
+  app.store = s;
+  const since = s.settings.calendarSince;
+  const t = app.todayKey();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('alt', 'Другой')];
+  // двойники действий во втором режиме с теми же отметками: дни второго
+  // режима считаются его действиями, и ответ обязан совпасть с прежним
+  const min = s.items.filter(i => i.type === 'daily' && i.area === 'min');
+  for (const i of min) s.items.push(Object.assign(JSON.parse(JSON.stringify(i)), { id: i.id + '-alt', mode: 'alt' }));
+  for (const k of Object.keys(s.days)) for (const i of min) if (s.days[k][i.id]) s.days[k][i.id + '-alt'] = true;
+  const bestPlain = app.bestStreak();
+  const dayPlain = app.dayStreak();
+
+  const log = [];
+  for (let k = app.addDays(since, 3), n = 0; k <= t; k = app.addDays(k, 3), n++) log.push({ from: k, mode: n % 2 ? 'main' : 'alt' });
+  s.modeLog = log;
+  assert.ok(log.length >= 300, 'сотни отрезков: ' + log.length);
+  assert.deepEqual(app.normModeLog(log, s.modes), log, 'журнал канонический');
+  assert.deepEqual(app.minDayItems(log[0].from).map(i => i.mode), min.map(() => 'alt'), 'в дни второго режима — его действия');
+  // ответ сначала: сторож скорости не должен разрешать неверный счёт
+  assert.equal(app.bestStreak(), bestPlain, 'рекорд тот же');
+  assert.equal(app.dayStreak(), dayPlain, 'серия та же');
+  assert.ok(bestPlain > 0);
+  const best = measureMs(() => app.bestStreak());
+  const day = measureMs(() => app.dayStreak());
+  assert.ok(best < 50, `bestStreak с режимами: ${best.toFixed(1)} мс ≥ 50 мс`);
+  assert.ok(day < 30, `dayStreak с режимами: ${day.toFixed(1)} мс ≥ 30 мс`);
+});
+
+test('Р2/2: goneBesideBlock — строка «Убранных» по блоку: у действия — блок его режима, у глобального пункта — все режимы', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Другой')];
+  const since = '2026-08-31';
+  const off = { removedAt: '2026-09-08' };
+  s.groups = [r2Block('Утро', 'main', [], '2026-09-10'), r2Block('Утро', 'x'), r2Block('Лагерь', 'x', [], '2026-09-10'), r2Block('Школа', 'main')];
+  const habit = (id, group) => r1Item(id, since, group, R1_WEEK, Object.assign({ area: 'habit', normPerWeek: 7 }, off));
+  s.items = [
+    r2Act('am', since, 'Утро', R1_WEEK, 'main', off),   // блок своего режима убран
+    r2Act('ax', since, 'Утро', R1_WEEK, 'x', off),      // блок своего режима жив
+    r2Act('an', since, 'Лагерь', R1_WEEK, 'main', off), // у своего режима такого блока нет
+    habit('hU', 'Утро'),                                // одноимённый жив в другом режиме
+    habit('hL', 'Лагерь'),                              // единственный такой блок убран
+    Object.assign(r2Weekly('wL', since, 'Лагерь', 2), off),
+    Object.assign(r2Param('pS', since, 'Школа'), off),
+    habit('hN', 'Нигде'),                               // блока с именем нет нигде
+    habit('h0', '')
+  ];
+  const shown = s.items.filter(app.goneBesideBlock).map(i => i.id);
+  assert.deepEqual(shown, ['ax', 'an', 'hU', 'pS', 'hN', 'h0']);
+  // активный режим на ответ не влияет: правило не читает выбор
+  app.setActiveMode('x');
+  assert.deepEqual(s.items.filter(app.goneBesideBlock).map(i => i.id), shown);
+  // возврат блока «Лагерь» делает его пункты возвращаемыми поодиночке
+  assert.equal(app.restoreGroup('Лагерь', 'x'), true);
+  assert.deepEqual(['hL', 'wL'].map(id => app.goneBesideBlock(s.items.find(i => i.id === id))), [true, true]);
+  clearLocalStorage();
+});
+
+test('Р2/2: domFormKey — формы режима: переименование по id, «Новый режим» через «+»; ни один ключ не совпадает с чужим ни при каком имени и id', () => {
+  const f = (form, id) => ({ dataset: id === undefined ? { form } : { form, id } });
+  assert.equal(app.domFormKey(f('mode-rename', 'kan')), 'mode:kan');
+  assert.equal(app.domFormKey(f('mode-add')), 'mode+new');
+  assert.notEqual(app.domFormKey(f('mode-rename', 'new')), app.domFormKey(f('mode-add')), 'режим с id «new» — не форма добавления');
+  // приставки всех форм «Настроек» различны: имя блока или id режима не даёт чужого ключа
+  const tricky = ['new', 'x', 'mode:x', 'group:Утро', '', 'a+new'];
+  const owner = new Map(); // ключ → вид формы, его давший
+  const put = (kind, key) => {
+    assert.ok(!owner.has(key) || owner.get(key) === kind, `ключ «${key}» дают две формы: ${owner.get(key)} и ${kind}`);
+    owner.set(key, kind);
+  };
+  for (const x of tricky) {
+    for (const kind of ['mode-rename', 'group-edit', 'ex-edit', 'quick', 'edit']) put(kind, app.domFormKey(f(kind, x)));
+  }
+  for (const kind of ['add', 'group-add', 'ex-add', 'mode-add']) put(kind, app.domFormKey(f(kind)));
+  assert.equal(owner.size, tricky.length * 5 + 4, 'все ключи различны');
+});
+
+/* ══ Задача Р2, этап 4: «Не сегодня» ══════════════════════════
+   Пропуск — false в days{}[день][id]: true — отметка, false — пропуск,
+   ключа нет — не отмечено. Даты фиксированы: сегодня понедельник
+   14.09.2026, эпоха с 17.08.2026 (r2Store). */
+
+const R2_SINCE = '2026-08-17';
+const r2Days = (s, from, to, fill) => { // fill(k) → объект значений дня или null
+  for (let k = from; k <= to; k = app.addDays(k, 1)) {
+    const d = fill(k);
+    if (d && Object.keys(d).length) s.days[k] = d; else delete s.days[k];
+  }
+};
+
+test('Р2/3: кодирование пропуска — false в days{}; прежние читатели отметки видят «не отмечено»; круг пропущенного отказывает; одна запись с откатом', () => {
+  const s = r2Store();
+  const a = r2Act('a', R2_SINCE, '', R1_WEEK, 'main');
+  const b = r2Act('b', R2_SINCE, '', R1_WEEK, 'main');
+  s.items = [a, b];
+  const disk = () => JSON.parse(global.localStorage.getItem('minimum:data')).days;
+
+  assert.equal(app.skipToday('a'), true);
+  assert.deepEqual(s.days[R2_T], { a: false }, 'пропуск — отдельное значение, не отметка');
+  assert.deepEqual(disk()[R2_T], { a: false }, 'и оно записано');
+  assert.equal(app.isSkipped(R2_T, 'a'), true);
+  assert.equal(app.isMarked(R2_T, 'a'), false);
+  // прежние проверки истинности отметки читают false как «не отмечено» без правки
+  assert.equal(app.everMarked(a), false, 'everMarked');
+  assert.equal(app.marksInSystem(a), 0, 'marksInSystem');
+  assert.equal(app.itemWeekCount(a, R2_T), 0, 'itemWeekCount');
+  assert.equal(app.planWeekCount(a, R2_T), 0, 'planWeekCount');
+  assert.deepEqual(app.weekPlan(a, [R2_T]), { planned: 1, done: 0 }, 'weekPlan');
+  assert.equal(app.weekSkips(a, [R2_T]), 1, 'weekSkips — третье число строки разбора');
+  assert.deepEqual([app.dataCounts(s).marks, app.dataCounts(s).skips], [0, 1], 'dataCounts: отметок нет, пропуск один');
+
+  assert.equal(app.toggleMark(R2_T, 'a'), false, 'круг пропущенного неактивен');
+  assert.deepEqual(s.days[R2_T], { a: false }, 'и значение не тронуто');
+  assert.equal(app.skipToday('a'), false, 'повторный пропуск — отказ');
+
+  assert.equal(app.unskipToday('a'), true);
+  assert.equal(s.days[R2_T], undefined, 'день без значений не существует');
+  assert.equal(disk()[R2_T], undefined);
+  assert.equal(app.unskipToday('a'), false, 'снимать нечего');
+  assert.equal(app.toggleMark(R2_T, 'a'), true, 'после «Вернуть» круг снова работает');
+  assert.equal(app.skipToday('a'), false, 'отмеченному «Не сегодня» не предлагается');
+  assert.equal(app.skipToday('b'), true);
+  assert.equal(app.unskipToday('b'), true);
+  assert.deepEqual(s.days[R2_T], { a: true }, 'снятие пропуска чужих значений дня не трогает');
+
+  // отказ хранилища: память откатывается целиком, пустого дня не остаётся
+  app.toggleMark(R2_T, 'a');
+  assert.equal(s.days[R2_T], undefined);
+  const real = global.localStorage.setItem;
+  global.localStorage.setItem = () => { throw new Error('quota'); };
+  assert.equal(app.skipToday('a'), false, 'не записалось — отказ');
+  assert.equal(s.days[R2_T], undefined, 'в памяти не осталось того, чего нет на диске');
+  global.localStorage.setItem = real;
+  assert.equal(app.skipToday('b'), true);
+  global.localStorage.setItem = () => { throw new Error('quota'); };
+  assert.equal(app.unskipToday('b'), false);
+  assert.deepEqual(s.days[R2_T], { b: false }, 'возврат не записался — пропуск на месте');
+  global.localStorage.setItem = real;
+  assert.deepEqual(disk()[R2_T], { b: false });
+  clearLocalStorage();
+});
+
+test('Р2/3: пропуск — только сегодня и только живое действие минимума, запланированное сегодня и не отмеченное', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('school', 'Школа')];
+  s.groups = [r2Block('Выходные', 'main', [{ from: R2_SINCE, mask: '0000011' }])];
+  const ok = r2Act('ok', R2_SINCE, '', R1_WEEK, 'main');
+  const fresh = r2Act('fresh', R2_T, '', R1_WEEK, 'main');                 // заведён сегодня
+  const offDay = r2Act('offDay', R2_SINCE, '', '0111111', 'main');          // понедельник вне своей маски
+  const offBlock = r2Act('offBlock', R2_SINCE, 'Выходные', R1_WEEK, 'main'); // понедельник вне дней блока
+  const other = r2Act('other', R2_SINCE, '', R1_WEEK, 'school');           // действие чужого режима
+  const gone = r2Act('gone', R2_SINCE, '', R1_WEEK, 'main', { removedAt: '2026-09-10' });
+  const h = r1Item('h', R2_SINCE, '', R1_WEEK, { area: 'habit', normPerWeek: 7 });
+  const w = r2Weekly('w', R2_SINCE, '', 3);
+  const p = r2Param('p', R2_SINCE, '');
+  s.items = [ok, fresh, offDay, offBlock, other, gone, h, w, p];
+
+  for (const id of ['offDay', 'offBlock', 'other', 'gone', 'h', 'w', 'p', 'нет-такого']) {
+    assert.equal(app.skipToday(id), false, 'отказ: ' + id);
+  }
+  assert.equal(s.days[R2_T], undefined, 'отказы не завели ни значения, ни пустого дня');
+  assert.equal(app.skipToday('fresh'), true, 'заведённый сегодня — уже в плане');
+  app.toggleMark(R2_T, 'ok');
+  assert.equal(app.skipToday('ok'), false, 'отмеченный');
+  assert.deepEqual(s.days[R2_T], { fresh: false, ok: true });
+  // тип действия в день заведения не меняется, пока у него сегодняшний пропуск
+  assert.equal(app.typeChangeRefusal(fresh, 'weekly'), 'Тип не меняется: у пункта сегодня «Не сегодня»');
+  assert.equal(app.setItemType(fresh, 'weekly', 3), false);
+
+  // вчера: пропуск, сделанный вчера, из интерфейса больше не снимается и
+  // отметкой не переписывается; «завтра» у пропуска нет — только сегодняшний ключ
+  const Y = app.addDays(R2_T, -1);
+  s.days[Y] = { ok: false };
+  assert.equal(app.unskipToday('ok'), false, 'вчерашний пропуск «Вернуть» не снимает');
+  assert.equal(app.toggleMark(Y, 'ok'), false, 'и круг за вчера ему отказывает');
+  assert.equal(app.markYesterday('ok'), false);
+  assert.deepEqual(s.days[Y], { ok: false });
+  setNow(2026, 9, 15, 12, 0); // наступил вторник
+  assert.equal(app.unskipToday('fresh'), false, 'пропуск понедельника во вторник уже не снимается');
+  assert.equal(app.skipToday('ok'), true, 'а пропуск ложится в новый сегодняшний день');
+  assert.deepEqual(Object.keys(s.days).sort(), [Y, R2_T, '2026-09-15']);
+  assert.deepEqual(s.days['2026-09-15'], { ok: false });
+  clearLocalStorage();
+});
+
+test('Р2/3: знаменатель дня — minDayMarks {done, total, skipped, planned}, dayScore, «день закрыт», thresholdNote', () => {
+  const s = r2Store();
+  s.items = ['a', 'b', 'c', 'd'].map(id => r2Act(id, R2_SINCE, '', '1111110', 'main')); // воскресенье вне плана
+  const m = k => app.minDayMarks(k);
+
+  assert.deepEqual(m(R2_T), { done: 0, total: 4, skipped: 0, planned: 4 });
+  assert.equal(app.thresholdNote(), 'День зачтён, если отмечено не меньше 4 из 4.');
+  app.toggleMark(R2_T, 'a');
+  app.toggleMark(R2_T, 'b');
+  app.skipToday('c');
+  assert.deepEqual(m(R2_T), { done: 2, total: 3, skipped: 1, planned: 4 }, 'пропущенное выпало из знаменателя');
+  assert.equal(app.dayScore(R2_T), 2 / 3);
+  assert.equal(app.minDayClosed(R2_T), false);
+  assert.equal(app.thresholdNote(), 'День зачтён, если отмечено не меньше 3 из 3.', 'подпись зачёта — по тому же знаменателю');
+  app.toggleMark(R2_T, 'd');
+  assert.deepEqual(m(R2_T), { done: 3, total: 3, skipped: 1, planned: 4 });
+  assert.equal(app.minDayClosed(R2_T), true, 'все непропущенные отмечены — день закрыт');
+  assert.equal(app.dayScore(R2_T), 1);
+
+  // всё пропущено: план есть — день НЕ нейтрален: доля 0, не закрыт
+  const thu = '2026-09-10';
+  s.days[thu] = { a: false, b: false, c: false, d: false };
+  assert.deepEqual(m(thu), { done: 0, total: 0, skipped: 4, planned: 4 });
+  assert.equal(app.dayScore(thu), 0, 'сплошные пропуски — не null');
+  assert.equal(app.minDayClosed(thu), false, 'закрывать было что, закрыто не было');
+  // день без плана нейтрален, даже если в данных лежит пропуск (импорт)
+  const sun = '2026-09-13';
+  s.days[sun] = { a: false };
+  assert.deepEqual(m(sun), { done: 0, total: 0, skipped: 0, planned: 0 });
+  assert.equal(app.dayScore(sun), null, 'нейтральность решает план, а не знаменатель');
+
+  // сегодня всё пропущено — подписи зачёта нет: из 0 зачитывать нечего
+  for (const id of ['a', 'b', 'd']) app.toggleMark(R2_T, id);
+  for (const id of ['a', 'b', 'd']) app.skipToday(id);
+  assert.deepEqual(m(R2_T), { done: 0, total: 0, skipped: 4, planned: 4 });
+  assert.equal(app.thresholdNote(), '');
+  assert.equal(app.dayScore(R2_T), 0);
+  clearLocalStorage();
+});
+
+test('Р2/3: сплошные пропуски ≠ нейтральный день — серия рвётся и тратит амнистию по общему правилу; день без плана проходит насквозь; рекорд тем же правилом', () => {
+  const s = r2Store();
+  s.items = ['a', 'b'].map(id => r2Act(id, R2_SINCE, '', '1111110', 'main'));
+  const full = k => (app.weekdayOf(k) === 6 ? null : { a: true, b: true });
+  const Y = app.addDays(R2_T, -1);
+
+  // 24 дня плана до вчера; среда 09.09 — пропущено всё. Сегодня пусто
+  r2Days(s, R2_SINCE, Y, k => (k === '2026-09-09' ? { a: false, b: false } : full(k)));
+  assert.equal(app.dayScore('2026-09-09'), 0);
+  assert.equal(app.dayStreak(), 23, 'одна амнистия: день в счёт не идёт, серию не рвёт');
+  assert.equal(app.bestStreak(), 23);
+  // тот же счёт, что у дня вовсе без отметок: пропуск — не отметка
+  r2Days(s, '2026-09-09', '2026-09-09', () => null);
+  assert.equal(app.dayStreak(), 23);
+
+  // второй день сплошных пропусков через два дня — амнистия уже потрачена
+  r2Days(s, R2_SINCE, Y, k => (k === '2026-09-09' || k === '2026-09-11' ? { a: false, b: false } : full(k)));
+  assert.equal(app.dayStreak(), 2, 'пт прощён, ср обрывает: 12.09 и 10.09');
+  assert.equal(app.bestStreak(), 21, 'рекорд: 20 дней до 08.09, прощённая среда и 10.09');
+
+  // контраст: если пятница — день БЕЗ плана, она проходит насквозь и амнистии не тратит
+  for (const it of s.items) {
+    it.schedule = [{ from: R2_SINCE, mask: '1111110' }, { from: '2026-09-11', mask: '1111010' }, { from: '2026-09-12', mask: '1111110' }];
+  }
+  assert.equal(app.dayScore('2026-09-11'), null, 'пятница вне плана: пропуски в ней не считаются');
+  assert.equal(app.dayStreak(), 22, 'сквозная пятница: 12.09, 10.09, прощённая среда и 20 дней до неё');
+  assert.equal(app.bestStreak(), 22);
+  clearLocalStorage();
+});
+
+test('Р2/3: пороги планки пропусков не знают — m по расписанию, числитель — отметки, пропуск = не сделано', () => {
+  const s = r2Store();
+  const a = r2Act('a', R2_SINCE, '', R1_WEEK, 'main', { value: 10, unit: 'мин', history: [{ date: R2_SINCE, value: 10 }] });
+  s.items = [a];
+  const W = app.closedWeeks(3);
+  assert.deepEqual(W, ['2026-08-24', '2026-08-31', '2026-09-07']);
+  const week = (mon, marks, skips) => {
+    for (let i = 0; i < 7; i++) {
+      const k = app.addDays(mon, i);
+      if (i < marks) s.days[k] = { a: true };
+      else if (i < marks + skips) s.days[k] = { a: false };
+      else delete s.days[k];
+    }
+  };
+
+  // шесть отметок и пропуск — ≥ 6 из 7: готов к повышению
+  for (const w of W) week(w, 6, 1);
+  assert.deepEqual(W.map(w => [app.weekMaskDays(a, w), app.planWeekCount(a, w)]), [[7, 6], [7, 6], [7, 6]],
+    'знаменатель — дни расписания, пропуск его не уменьшает');
+  assert.equal(app.raiseEligible(a), true);
+  // пять отметок и два пропуска — «5 из 5 непропущенных» порогом не считается
+  for (const w of W) week(w, 5, 2);
+  assert.equal(app.raiseEligible(a), false, 'пропуск — не сделано');
+  // понижение: три отметки и четыре пропуска — ≤ 3 из 7, облегчение предлагается
+  for (const w of W) week(w, 3, 4);
+  assert.equal(app.lowerEligible(a), true);
+  // пропуски знаменатель не уменьшают: 4 отметки из 7 — не «не держится»
+  for (const w of W) week(w, 4, 3);
+  assert.equal(app.lowerEligible(a), false);
+  // пункт, у которого за всю жизнь одни пропуски, не начат: облегчать нечего
+  for (const w of W) week(w, 0, 7);
+  for (const k of Object.keys(s.days)) if (s.days[k].a === true) delete s.days[k];
+  assert.equal(app.everMarked(a), false);
+  assert.equal(app.lowerEligible(a), false, 'пропуски — не начало практики');
+  clearLocalStorage();
+});
+
+test('Р2/3: точка «вчера — пропуск» у пропущенного вчера не рисуется, markYesterday отказывает', () => {
+  const s = r2Store();
+  const a = r2Act('a', R2_SINCE, '', R1_WEEK, 'main');
+  const b = r2Act('b', R2_SINCE, '', R1_WEEK, 'main');
+  s.items = [a, b];
+  const Y = app.addDays(R2_T, -1);
+  s.days['2026-09-10'] = { a: true, b: true }; // оба начаты
+  s.days[Y] = { a: false };                    // «Не сегодня» у a было вчера
+  assert.equal(app.missedYesterday(a, R2_T), false, 'пропуск — решение, а не забытая отметка');
+  assert.equal(app.missedYesterday(b, R2_T), true, 'забытая отметка — точка есть');
+  assert.equal(app.markYesterday('a'), false);
+  assert.deepEqual(s.days[Y], { a: false }, 'пропуск отметкой не переписан');
+  assert.equal(app.markYesterday('b'), true);
+  assert.deepEqual(s.days[Y], { a: false, b: true });
+  clearLocalStorage();
+});
+
+test('Р2/3: срез closeWeek — skips и skipCount отдельным рядом; count — отметки; убранный с одними пропусками в срезе', () => {
+  const s = r2Store();
+  const a = r2Act('a', R2_SINCE, '', R1_WEEK, 'main');
+  const r = r2Act('r', R2_SINCE, '', R1_WEEK, 'main', { removedAt: '2026-09-12' });
+  const q = r2Act('q', R2_SINCE, '', R1_WEEK, 'main', { removedAt: '2026-09-12' }); // убран без фактов в окне
+  const h = r1Item('h', R2_SINCE, '', R1_WEEK, { area: 'habit', normPerWeek: 3 });
+  s.items = [a, r, q, h];
+  s.days['2026-09-07'] = { a: true, h: true };
+  s.days['2026-09-08'] = { a: true };
+  s.days['2026-09-09'] = { a: false };
+  s.days['2026-09-10'] = { r: false };
+  assert.equal(app.reviewDue(), true);
+  assert.equal(app.closeWeek(), true);
+  const rev = s.reviews[s.reviews.length - 1];
+  const F = false, T = true;
+  assert.deepEqual(rev.perItem.a, { name: 'a', marks: [T, T, F, F, F, F, F], count: 2, skips: [F, F, T, F, F, F, F], skipCount: 1 });
+  assert.deepEqual(rev.perItem.r, { name: 'r', marks: [F, F, F, F, F, F, F], count: 0, skips: [F, F, F, T, F, F, F], skipCount: 1 },
+    'факт недели — и пропуск тоже: убранный с ним стоит в срезе');
+  assert.equal(rev.perItem.q, undefined, 'убранный без фактов — нет');
+  assert.deepEqual([rev.perItem.h.count, rev.perItem.h.skipCount], [1, 0], 'у привычки ряд тот же, пропусков нет');
+  assert.deepEqual(s.days['2026-09-09'], { a: false }, 'срез days{} не трогает');
+  clearLocalStorage();
+});
+
+test('Р2/3: migrate — пропуск законен только у действия; экспорт → импорт переносит; категория потерь «пропуск»; зеркало видит день пропусков', () => {
+  setNow(2026, 9, 14, 12, 0);
+  const zero = app.dataCounts({});
+  const line = (n) => app.droppedLine(Object.assign({}, zero, { skips: n }), zero);
+  assert.equal(line(1), '1 пропуск');
+  assert.equal(line(2), '2 пропуска');
+  assert.equal(line(5), '5 пропусков');
+
+  const act = r2Act('a', R2_SINCE, '', R1_WEEK, 'main');
+  const raw = {
+    schemaVersion: 20,
+    modes: [r2Mode('main', 'Основной')], modeLog: [],
+    items: [act, r1Item('h', R2_SINCE, '', R1_WEEK, { area: 'habit', normPerWeek: 7 }), r2Weekly('w', R2_SINCE, '', 2), r2Param('p', R2_SINCE, '')],
+    groups: [],
+    days: {
+      '2026-09-10': { a: false, h: false, w: false, p: false, ghost: false, a2: 'x' },
+      '2026-09-11': { a: true, h: true },
+      '2026-09-12': { h: false }
+    },
+    settings: { dayBoundary: 4, calendarSince: R2_SINCE, seed17: true, habitSeeded: true }
+  };
+  const was = app.dataCounts(JSON.parse(JSON.stringify(raw)));
+  assert.deepEqual([was.marks, was.skips, was.days], [2, 6, 3]);
+  const got = app.migrate(raw, { external: true });
+  assert.deepEqual(got.days, { '2026-09-10': { a: false, ghost: false }, '2026-09-11': { a: true, h: true } },
+    'у привычки, счётчика и параметра false отброшен; у действия и неизвестного id — остался');
+  const gc = app.dataCounts(got);
+  assert.deepEqual([gc.marks, gc.skips, gc.days], [2, 2, 2]);
+  assert.equal(app.droppedLine(was, gc), '1 день, 4 пропуска');
+  assert.deepEqual(app.migrate(JSON.parse(JSON.stringify(got)), { external: true }).days, got.days, 'идемпотентно');
+
+  // экспорт — JSON.stringify(store), импорт — migrate({external}): пропуск доезжает как есть
+  const s = r2Store();
+  s.items = [r2Act('a', R2_SINCE, '', R1_WEEK, 'main'), r2Act('b', R2_SINCE, '', R1_WEEK, 'main')];
+  app.toggleMark(R2_T, 'a');
+  app.skipToday('b');
+  s.days['2026-09-09'] = { b: false };
+  const file = JSON.parse(JSON.stringify(app.store));
+  const back = app.migrate(file, { external: true });
+  assert.deepEqual(back.days, { [R2_T]: { a: true, b: false }, '2026-09-09': { b: false } });
+  app.store = back;
+  assert.deepEqual(app.minDayMarks(R2_T), { done: 1, total: 1, skipped: 1, planned: 2 }, 'импорт — те же числа дня');
+  assert.equal(app.droppedLine(app.dataCounts(JSON.parse(JSON.stringify(s))), app.dataCounts(back)), '', 'потерь нет');
+  // зеркало: день из одних пропусков — тоже практика, которой в рабочей копии нет
+  const cur = JSON.parse(JSON.stringify(back));
+  delete cur.days['2026-09-09'];
+  assert.equal(app.mirrorHasMore(back, cur), true);
+  clearLocalStorage();
+});
+
+/* ── Свёртка выполненного блока «Сегодня» (задача Р2, п. 4) ─────
+   Сама свёртка — состояние экрана (интерфейсный уровень). Здесь — её
+   доменная опора: счёт блока, чистая функция от days{}. */
+
+test('Р2/4: blockTally — выполнен, когда каждое действие блока отмечено или пропущено и их ≥ 1; N — отмеченные, K — пропуски; чужой день и чужие пункты не в счёт', () => {
+  const s = r2Store();
+  s.groups = [r2Block('Утро', 'main', [], null, '7:00'), r2Block('Вечер', 'main', [], null, '')];
+  const a = r2Act('a', R2_SINCE, 'Утро', R1_WEEK, 'main');
+  const b = r2Act('b', R2_SINCE, 'Утро', R1_WEEK, 'main');
+  const c = r2Act('c', R2_SINCE, 'Вечер', R1_WEEK, 'main');
+  const loose = r2Act('l', R2_SINCE, '', R1_WEEK, 'main');
+  s.items = [a, b, c, loose];
+  const secs = () => app.groupedItems(app.minDayItems(R2_T), 'main');
+  const utro = () => secs().find(x => x.group && x.group.name === 'Утро').items;
+
+  assert.deepEqual(app.blockTally([], R2_T), { done: 0, skipped: 0, full: false }, 'пустой блок выполненным не бывает');
+  assert.deepEqual(app.blockTally(utro(), R2_T), { done: 0, skipped: 0, full: false });
+  app.toggleMark(R2_T, 'a');
+  assert.deepEqual(app.blockTally(utro(), R2_T), { done: 1, skipped: 0, full: false }, 'один не отмечен — не выполнен');
+  app.toggleMark(R2_T, 'b');
+  assert.deepEqual(app.blockTally(utro(), R2_T), { done: 2, skipped: 0, full: true }, 'все отмечены — «✓ 2 из 2»');
+  app.toggleMark(R2_T, 'b');
+  assert.equal(app.skipToday('b'), true);
+  assert.deepEqual(app.blockTally(utro(), R2_T), { done: 1, skipped: 1, full: true }, 'отмечен и пропущен — «1 из 1 · пропусков 1»');
+  app.toggleMark(R2_T, 'a');
+  assert.equal(app.skipToday('a'), true);
+  assert.deepEqual(app.blockTally(utro(), R2_T), { done: 0, skipped: 2, full: true },
+    'сплошные пропуски блок выполненным делают — «день закрыт» при этом нет');
+  assert.equal(app.minDayClosed(R2_T), false);
+
+  // счёт — по переданным пунктам и по этому дню: соседний блок, пункт без
+  // блока и вчерашние отметки в него не входят
+  const vecher = secs().find(x => x.group && x.group.name === 'Вечер').items;
+  assert.deepEqual(app.blockTally(vecher, R2_T), { done: 0, skipped: 0, full: false });
+  s.days['2026-09-13'] = { c: true };
+  assert.deepEqual(app.blockTally(vecher, R2_T), { done: 0, skipped: 0, full: false }, 'вчерашняя отметка — не сегодняшняя');
+  assert.deepEqual(app.blockTally(vecher, '2026-09-13'), { done: 1, skipped: 0, full: true });
+  assert.equal(secs().some(x => !x.group && x.items.some(i => i.id === 'l')), true, 'пункт без блока — в секции без заголовка');
+
+  // чистая функция: store не меняет, ui не читает
+  const before = JSON.stringify(app.store);
+  app.blockTally(utro(), R2_T);
+  assert.equal(JSON.stringify(app.store), before);
+  assert.doesNotMatch(app.blockTally.toString(), /\bui\b/, 'развёртку владельца решает интерфейс, не счёт');
+  clearLocalStorage();
+});
+
+/* ══ Задача Р2: ремонт по рецензии ═══════════════════════════════ */
+
+test('Р2/рецензия: переименование — убранный одноимённый блок другого режима живых глобальных пунктов не держит; store остаётся каноном', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Каникулы')];
+  const since = '2026-08-31';
+  s.groups = [r2Block('Утро', 'main'), r2Block('Утро', 'x')];
+  s.items = [
+    r2Act('am', since, 'Утро', R1_WEEK, 'main'),
+    r2Act('ax', since, 'Утро', R1_WEEK, 'x'),
+    r1Item('h', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7 }),
+    r2Weekly('w', since, 'Утро', 2)
+  ];
+  const byIdOf = id => s.items.find(i => i.id === id);
+  const shape = st => JSON.stringify({ groups: st.groups, items: st.items });
+
+  assert.equal(app.removeGroup('Утро', 'x'), true, 'уход «Утра» другого режима');
+  assert.deepEqual(['h', 'w'].map(id => byIdOf(id).removedAt), [null, null], 'живое «Утро» основного держит глобальные');
+  advanceDays(1); // 15.09
+  const r = app.updateGroup('Утро', { name: 'Morning' }, 'main');
+  assert.deepEqual(r, { ok: true, name: 'Morning' });
+  assert.deepEqual(['am', 'ax', 'h', 'w'].map(id => byIdOf(id).group), ['Morning', 'Утро', 'Morning', 'Morning'],
+    'привычка и счётчик идут за переименованием: у старого имени живого блока не осталось');
+  const secs = app.groupedItems(s.items.filter(i => app.live(i)), 'main')
+    .map(x => (x.group ? x.group.name : '—') + ':' + x.items.map(i => i.id).join(','));
+  assert.deepEqual(secs, ['Morning:am,h,w'], 'пункты не выпали из блока, где только что стояли');
+  const m = app.migrate(JSON.parse(JSON.stringify(s)));
+  assert.equal(shape(m), shape(s), 'migrate(store) ≡ store: старт убранный блок не оживляет');
+  assert.equal(s.groups.find(g => g.mode === 'x').removedAt, R2_T, '«Утро» режима x осталось убранным');
+  assert.equal(app.restoreGroup('Утро', 'x'), true, 'и возвращается только владельцем');
+  assert.deepEqual(s.items.filter(i => app.live(i) && i.name === 'ax').map(i => [i.mode, i.group]), [['x', 'Утро']]);
+  clearLocalStorage();
+});
+
+test('Р2/рецензия: переименование — убранный одноимённый блок держит глобальные пункты, ушедшие с ним в один день, и только их', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Каникулы')];
+  const since = '2026-08-31';
+  s.groups = [r2Block('Утро', 'x')];
+  s.items = [
+    r2Act('ax', since, 'Утро', R1_WEEK, 'x'),
+    r1Item('h', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7 }),
+    r1Item('h2', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7, removedAt: '2026-09-13' })
+  ];
+  const byIdOf = id => s.items.find(i => i.id === id);
+
+  assert.equal(app.removeGroup('Утро', 'x'), true);
+  assert.equal(byIdOf('h').removedAt, R2_T, 'живого одноимённого нет — привычка ушла с блоком');
+  assert.equal(app.addGroup('Утро', '', undefined, 'main'), true, 'одноимённый блок заведён в основном');
+  assert.deepEqual(app.updateGroup('Утро', { name: 'Рассвет' }, 'main'), { ok: true, name: 'Рассвет' });
+  assert.equal(byIdOf('h').group, 'Утро', 'ушедшая с «Утром» x в тот же день — при нём: её вернёт его возврат');
+  assert.equal(byIdOf('h2').group, 'Рассвет', 'убранная поштучно в другой день — идёт за переименованием');
+  assert.equal(app.goneBesideBlock(byIdOf('h')), false, 'в «Убранных» её нет — дорога назад через блок');
+  assert.equal(app.goneBesideBlock(byIdOf('h2')), true);
+  assert.equal(app.restoreGroup('Утро', 'x'), true);
+  assert.deepEqual([byIdOf('h').removedAt, byIdOf('h').group], [null, 'Утро'], 'вернулась с блоком');
+  assert.equal(byIdOf('h2').removedAt, '2026-09-13');
+  clearLocalStorage();
+});
+
+test('Р2/рецензия: возврат блока — одноимённые блоки двух режимов убраны в один день; возвращаются действия только режима блока (restoreSetOf)', () => {
+  const setup = () => {
+    const s = r2Store();
+    s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Каникулы')];
+    const since = '2026-08-31';
+    s.groups = [r2Block('Утро', 'main'), r2Block('Утро', 'x')];
+    s.items = [
+      r2Act('am', since, 'Утро', R1_WEEK, 'main'),
+      r2Act('ax', since, 'Утро', R1_WEEK, 'x'),
+      r1Item('h', since, 'Утро', R1_WEEK, { area: 'habit', normPerWeek: 7 })
+    ];
+    assert.equal(app.removeGroup('Утро', 'x'), true);
+    assert.equal(app.removeGroup('Утро', 'main'), true);
+    return s;
+  };
+  const ids = arr => arr.map(i => i.id).sort();
+
+  let s = setup();
+  assert.deepEqual(s.items.map(i => i.removedAt), [R2_T, R2_T, R2_T], 'все ушли в один день');
+  assert.deepEqual(ids(app.restoreSetOf(app.findGroup('Утро', 'main'))), ['am', 'h'], 'действие режима x в набор основного не входит');
+  assert.deepEqual(ids(app.restoreSetOf(app.findGroup('Утро', 'x'))), ['ax', 'h']);
+  assert.equal(app.restoreGroup('Утро', 'main'), true, 'в тот же день — полная отмена');
+  assert.deepEqual(s.items.map(i => [i.id, i.removedAt]), [['am', null], ['ax', R2_T], ['h', null]]);
+  assert.equal(app.findGroup('Утро', 'x').removedAt, R2_T, 'блок режима x остался убранным');
+  assert.equal(app.migrate(JSON.parse(JSON.stringify(s))).groups.find(g => g.mode === 'x').removedAt, R2_T, 'и старт его не оживляет');
+  clearLocalStorage();
+
+  s = setup();
+  advanceDays(1); // 15.09 — возврат позже заводит новые записи
+  assert.equal(app.restoreGroup('Утро', 'main'), true);
+  assert.deepEqual(s.items.filter(i => app.live(i)).map(i => [i.name, i.addedAt]).sort(), [['am', '2026-09-15'], ['h', '2026-09-15']],
+    'новые записи — только своего режима и глобальная');
+  assert.equal(s.items.filter(i => i.name === 'ax').length, 1, 'копии действия режима x не заведено');
+  assert.equal(s.items.find(i => i.name === 'ax').removedAt, R2_T);
+  assert.equal(app.findGroup('Утро', 'x').removedAt, R2_T);
+  clearLocalStorage();
+});
+
+test('Р2/рецензия: hasLiveNamesake — живой одноимённый блок другого режима; убранный и сам блок не в счёт', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('x', 'Каникулы')];
+  s.groups = [r2Block('Утро', 'main'), r2Block('Утро', 'x'), r2Block('Школа', 'main'), r2Block('Школа', 'x', [], '2026-09-10')];
+  const [um, ux, sm, sx] = s.groups;
+  assert.equal(app.hasLiveNamesake(um), true);
+  assert.equal(app.hasLiveNamesake(ux), true);
+  assert.equal(app.hasLiveNamesake(sm), false, 'одноимённый убран');
+  assert.equal(app.hasLiveNamesake(sx), true, 'для убранного — живой в другом режиме');
+  s.groups = [um];
+  assert.equal(app.hasLiveNamesake(um), false, 'сам блок себе не тёзка');
+  clearLocalStorage();
+});
+
+test('Р2/рецензия: режимы — содержание store: чистка, «Вернуть» и импорт кладут их в копию; стартовый основной содержанием не считается', () => {
+  const mem = fakeLocalStorage();
+  setNow(2026, 9, 14, 12, 0);
+  app.store = app.emptyStore(4, 0.8);
+  const st = () => app.wipeStats(app.store);
+  assert.deepEqual([st().modes, st().modeLog, app.hasData(app.store)], [0, 0, false], 'пустой store с основным — пуст');
+
+  const r = app.addMode('Лето');
+  assert.equal(r.ok, true);
+  assert.deepEqual([st().modes, st().modeLog, app.hasData(app.store)], [1, 0, true], 'заведённый режим — содержание');
+  assert.equal(app.setActiveMode(r.id).ok, true);
+  assert.equal(st().modeLog, 1);
+
+  // чистка store из одних режимов кладёт их в копию — прежде копии не было вовсе
+  assert.equal(app.wipeAll(), true);
+  const c = app.wipedCopy();
+  assert.ok(c, 'копия есть');
+  assert.deepEqual([c.kind, c.stats.modes, c.stats.modeLog], ['wipe', 1, 1]);
+  assert.deepEqual(c.store.modes.map(m => m.name), ['Основной', 'Лето']);
+  assert.deepEqual(app.store.modes.map(m => m.id), ['main'], 'чистый лист — один основной');
+  assert.equal(app.restoreWiped(), true);
+  assert.deepEqual(app.store.modes.map(m => m.name), ['Основной', 'Лето'], '«Вернуть» вернуло режим');
+  assert.equal(app.activeMode(), r.id, 'и выбор');
+  assert.equal(mem[app.WIPE_KEY], undefined, 'нынешнее было пустым — копия ушла');
+
+  // обратный обмен: практика в копии, в рабочей — только новый режим
+  app.store = freshStore();
+  assert.equal(app.wipeAll(), true);
+  assert.equal(app.addMode('Школа').ok, true);
+  assert.equal(app.restoreWiped(), true);
+  const back = app.wipedCopy();
+  assert.ok(back, 'нынешнее с режимом легло в копию, а не пропало');
+  assert.deepEqual([back.kind, back.store.modes.map(m => m.name)], ['restore', ['Основной', 'Школа']]);
+  assert.equal(app.restoreWiped(), true);
+  assert.deepEqual(app.store.modes.map(m => m.name), ['Основной', 'Школа']);
+
+  // импорт идёт тем же keepPrev
+  app.store = app.emptyStore(4, 0.8);
+  assert.equal(app.renameMode('main', 'Будни').ok, true);
+  assert.deepEqual([st().modes, app.hasData(app.store)], [1, true], 'переименованный основной — слово владельца');
+  delete mem[app.WIPE_KEY];
+  assert.equal(app.keepPrev(app.store, 'import'), true);
+  assert.deepEqual([app.wipedCopy().kind, app.wipedCopy().store.modes[0].name], ['import', 'Будни']);
   clearLocalStorage();
 });

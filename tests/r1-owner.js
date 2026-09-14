@@ -38,15 +38,23 @@ const R1_OWNER = [
 /* Контрольные числа по дням недели, пн…вс: [действий в плане, нужно для зачёта 80%] */
 const R1_OWNER_COUNTS = [[21, 17], [20, 16], [21, 17], [20, 16], [21, 17], [12, 10], [12, 10]];
 
+/* Режим (задача Р2): расписание владельца живёт в режиме «Основной». Сборка
+   идёт операциями без явного режима — то есть в АКТИВНОМ, — и фикстура
+   проверяет, что активен основной, а блоки и действия легли в него. */
+const R1_MODE = 'main';
+
 function buildR1Owner(api, assert) {
+  assert.equal(api.modeOn(api.todayKey()), R1_MODE, 'активен основной режим');
   for (const b of R1_OWNER) {
     assert.equal(api.addGroup(b.name, b.caption, b.mask), true, 'блок ' + b.name);
+    assert.ok(api.findGroup(b.name, R1_MODE), 'блок в основном режиме: ' + b.name);
     const made = api.addActions(b.name, api.parseQuickLines(b.lines.join('\n')));
     assert.equal(made.length, b.lines.length, 'строк в блоке ' + b.name);
+    for (const it of made) assert.equal(it.mode, R1_MODE, 'действие в основном режиме: ' + it.name);
     for (const it of made) {
       if (b.own && b.own[it.name]) assert.equal(api.setSchedule(it, b.own[it.name]), true, 'свои дни ' + it.name);
     }
   }
 }
 
-module.exports = { R1_ALL, R1_OWNER, R1_OWNER_COUNTS, buildR1Owner };
+module.exports = { R1_ALL, R1_MODE, R1_OWNER, R1_OWNER_COUNTS, buildR1Owner };

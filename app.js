@@ -224,7 +224,14 @@ function timing(name, def) {
 /* ── Хранилище ─────────────────────────────────────────────── */
 
 const NS = 'minimum:data';
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 20;
+
+/* Основной режим (задача Р2): запись, которая есть всегда. До первого
+   отрезка журнала режимов и при пустом журнале действует он — ровно
+   прежнее поведение, выраженное данными. id постоянен и не переводится:
+   переименовать режим владелец может, сменить id — нет. */
+const MAIN_MODE = 'main';
+const MAIN_MODE_NAME = 'Основной';
 
 let store = null;
 let saveFailed = false; // хранилище недоступно — постоянный баннер над экраном
@@ -317,13 +324,20 @@ function programItems(today) {
     // «поля нет» каноническим не считается, а второго прогона migrate у
     // defaultStore нет
     if (it.type === 'daily' && it.area === 'min') it.groupLog = [];
+    // режим — тоже только у действия (задача Р2): программа принадлежит
+    // основному режиму; привычки, параметры и счётчик глобальны
+    if (it.type === 'daily' && it.area === 'min') it.mode = MAIN_MODE;
     return it;
   });
 }
 
-/* Блоки программы — в канонической форме v19: без подписи, дни «все семь»
-   (пустой список отрезков), не убраны. Фабрика одна на посев и defaultStore. */
-const programGroups = () => SEED_GROUPS.map(name => ({ name, caption: '', days: [], removedAt: null }));
+/* Блоки программы — в канонической форме v20: без подписи, дни «все семь»
+   (пустой список отрезков), не убраны, в основном режиме. Фабрика одна на
+   посев и defaultStore. */
+const programGroups = () => SEED_GROUPS.map(name => ({ name, caption: '', days: [], removedAt: null, mode: MAIN_MODE }));
+
+/* Список режимов свежего store — один основной (задача Р2) */
+const programModes = () => [{ id: MAIN_MODE, name: MAIN_MODE_NAME, removedAt: null }];
 
 /* День посева — по нему подсказка «одна новая привычка за раз» отличает
    программу от пунктов владельца (задача 22, п. 7.2). Пометить посевные
@@ -372,6 +386,10 @@ function defaultStore() {
     // порядок блоков на экранах (инвариант 13); блок из двух и более
     // активных пунктов сам по себе рисует линию — отдельного признака нет
     groups: programGroups(),
+    // режимы расписания (задача Р2): список и журнал активного режима
+    // отрезками. Пустой журнал — основной режим на всю жизнь
+    modes: programModes(),
+    modeLog: [],
     days: {},          // "YYYY-MM-DD" -> { itemId: true }
     weekLog: [],       // инкременты недельных счётчиков текущей календарной недели
     reviews: [],       // закрытые недели
@@ -522,6 +540,71 @@ function normGroupLog(list, item, today) {
   return out.length > 1 ? out : [];
 }
 
+/* v19 → v20 (задача Р2): список режимов из внешних данных.
+   Канон: объекты {id, name, removedAt}; id — непустая строка, имя — непустое
+   после trim, removedAt — ключ дня либо null. Основной режим есть всегда:
+   нет в данных — дописывается первым, есть — остаётся на своём месте.
+   Дубль id отбрасывается (ссылки и так ведут на первый); дубль ИМЕНИ —
+   тоже, но ссылки на его id переводятся на режим с тем же именем, а не в
+   основной: блоки и действия уходят туда, где владелец их и видел. Имя
+   основного режима занимается первым, раньше прочих. Прочее мусорное —
+   отбрасывается, как блок без имени; ссылки на него ведут в основной.
+   → { modes, resolve }: resolve(id) — id режима, в котором запись окажется.
+   Повторный прогон канона ничего не меняет. */
+function normModes(list) {
+  const valid = (Array.isArray(list) ? list : [])
+    .filter(x => x && typeof x === 'object' && !Array.isArray(x) &&
+      typeof x.id === 'string' && x.id && typeof x.name === 'string' && x.name.trim())
+    .map(x => ({ id: x.id, name: x.name.trim(), removedAt: isDayKey(x.removedAt) ? x.removedAt : null }));
+  let main = valid.find(x => x.id === MAIN_MODE);
+  if (!main) { main = { id: MAIN_MODE, name: MAIN_MODE_NAME, removedAt: null }; valid.unshift(main); }
+  const ids = new Set([MAIN_MODE]);
+  const names = new Map([[main.name, MAIN_MODE]]);
+  const remap = new Map();
+  const modes = [];
+  for (const x of valid) {
+    if (x === main) { modes.push(x); continue; }
+    if (ids.has(x.id)) continue;
+    if (names.has(x.name)) { if (!remap.has(x.id)) remap.set(x.id, names.get(x.name)); continue; }
+    ids.add(x.id);
+    names.set(x.name, x.id);
+    modes.push(x);
+  }
+  // known — то же, но неизвестный id остаётся как есть: отрезку журнала с
+  // неизвестным режимом место не в основном, а нигде (normModeLog его уронит)
+  const known = id => (typeof id === 'string' && ids.has(id)) ? id : (remap.has(id) ? remap.get(id) : id);
+  const resolve = id => {
+    const k = known(id);
+    return typeof k === 'string' && ids.has(k) ? k : MAIN_MODE;
+  };
+  return { modes, resolve, known };
+}
+
+/* Журнал активного режима: [{from, mode}] по возрастанию from — те же
+   отрезки, что расписание пункта и дни блока, и те же правила канона:
+   мусор и неизвестный режим роняются, один день — один отрезок (побеждает
+   последний), подряд одинаковые схлопнуты. Ведущие отрезки основного
+   режима отбрасываются: до первого отрезка и так действует основной, а
+   второго способа сказать одно и то же форма данных не заводит.
+   modes — список режимов или их id. Повторный прогон канона его не меняет. */
+function normModeLog(list, modes) {
+  const known = new Set((Array.isArray(modes) ? modes : [])
+    .map(m => (typeof m === 'string' ? m : (m && typeof m === 'object' ? m.id : null))));
+  const src = (Array.isArray(list) ? list : [])
+    .filter(x => x && typeof x === 'object' && !Array.isArray(x) && isDayKey(x.from) &&
+      typeof x.mode === 'string' && known.has(x.mode))
+    .map(x => ({ from: x.from, mode: x.mode }))
+    .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+  const out = [];
+  for (const seg of src) {
+    if (out.length && out[out.length - 1].from === seg.from) out.pop(); // один день — один отрезок
+    if (out.length && out[out.length - 1].mode === seg.mode) continue;  // тот же режим продолжается
+    if (!out.length && seg.mode === MAIN_MODE) continue;                // до первого и так основной
+    out.push(seg);
+  }
+  return out;
+}
+
 /* Время у пункта (задача 29/B) — ПОДПИСЬ, не механика: ни уведомлений, ни
    просрочки, ни сортировки, ни одного расчёта. Строка «ЧЧ:ММ» либо пустая. */
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -639,6 +722,13 @@ function migrate(s, opts) {
   // посев программы (задача 17): только пустой store и только один раз
   let seeded = false;
   if (!s.items.length && s.settings.seed17 !== true) { seedProgram(s, today); seeded = true; }
+  // v19 → v20 (задача Р2): режимы. Список — ДО пунктов и блоков: их поле mode
+  // проверяется по нему. Шаг аддитивен: файлу без режимов это «основной
+  // режим на всю жизнь» — ровно прежнее поведение; days{}, reviews[],
+  // schedule и groupLog не меняются ни на символ
+  const modesNorm = normModes(s.modes);
+  s.modes = modesNorm.modes;
+  const modeOf = modesNorm.resolve;
   const ids = new Set();
   for (const it of s.items) {
     if (typeof it.id !== 'string' || !it.id || ids.has(it.id)) it.id = uid();
@@ -688,6 +778,11 @@ function migrate(s, opts) {
     // и «все семь» в ней — нейтральный элемент ∧, то есть «как блок».
     if (it.type === 'daily' && it.area === 'min') it.groupLog = normGroupLog(it.groupLog, it, today);
     else delete it.groupLog;
+    // v19 → v20: режим — только у действия, и не меняется никогда. Без режима
+    // или с неизвестным — основной; привычки, параметры и недельный счётчик
+    // глобальны, поле им снимается (решение оркестратора Р2)
+    if (it.type === 'daily' && it.area === 'min') it.mode = modeOf(it.mode);
+    else delete it.mode;
     it.at = normTime(it.at); // подпись времени — у любого пункта
     if (it.type === 'daily' && it.area === 'habit') {
       // норма недели (инвариант 11): целое 1–7, невалид — к ближайшему
@@ -759,11 +854,22 @@ function migrate(s, opts) {
   // четырёх отметок стоил всех четырёх, а посторонний ключ в каждом дне
   // (правка файла руками) обнулял days{} без единого слова. День, в котором
   // после фильтрации не осталось ничего, по-прежнему не существует.
+  //
+  // v20 (задача Р2, аддитивно, схема не поднимается): false — пропуск «Не
+  // сегодня», и он законен только у ДЕЙСТВИЯ минимума. У известного пункта
+  // другого рода (привычка, счётчик, параметр) false отбрасывается: интерфейс
+  // его не создаёт, а оставшись, он запер бы круг привычки — пропущенному
+  // тап отказывает. Счёт потерь его видит (категория «пропуск»). У id,
+  // которого среди пунктов нет, false остаётся, как и отметка: чей он был,
+  // не узнать, а стирать факт наугад нельзя.
+  const notAction = new Set(s.items.filter(it => !(it.type === 'daily' && it.area === 'min')).map(it => it.id));
   if (!s.days || typeof s.days !== 'object' || Array.isArray(s.days)) s.days = {};
   for (const k of Object.keys(s.days)) {
     const day = s.days[k];
     if (!isDayKey(k) || !day || typeof day !== 'object' || Array.isArray(day)) { delete s.days[k]; continue; }
-    for (const id of Object.keys(day)) if (typeof day[id] !== 'boolean') delete day[id];
+    for (const id of Object.keys(day)) {
+      if (typeof day[id] !== 'boolean' || (day[id] === false && notAction.has(id))) delete day[id];
+    }
     if (!Object.keys(day).length) delete s.days[k];
   }
 
@@ -773,23 +879,43 @@ function migrate(s, opts) {
   // v18 → v19: блок несёт подпись, дни недели отрезками и день ухода.
   // Шаг аддитивен: старому блоку без полей это и есть «пустая подпись, все
   // семь дней, не убран» — ровно прежнее поведение, выраженное данными
+  // v19 → v20: блок принадлежит режиму, и имя уникально В ПРЕДЕЛАХ режима —
+  // одноимённые блоки разных режимов законны. Без режима или с неизвестным —
+  // основной; дубль имени внутри режима схлопывается в первый, как прежде
   if (!Array.isArray(s.groups)) s.groups = [];
   {
     const out = [];
-    const seen = new Set();
+    const seen = new Map(); // режим → имена его блоков
     for (const g of s.groups) {
       if (!g || typeof g !== 'object' || Array.isArray(g)) continue;
       const name = typeof g.name === 'string' ? g.name.trim() : '';
-      if (!name || seen.has(name)) continue;
-      seen.add(name);
+      const mode = modeOf(g.mode);
+      if (!seen.has(mode)) seen.set(mode, new Set());
+      if (!name || seen.get(mode).has(name)) continue;
+      seen.get(mode).add(name);
       out.push({
         name,
         caption: typeof g.caption === 'string' ? g.caption.trim() : '',
         days: normBlockDays(g.days),
-        removedAt: isDayKey(g.removedAt) ? g.removedAt : null
+        removedAt: isDayKey(g.removedAt) ? g.removedAt : null,
+        mode
       });
     }
     s.groups = out;
+  }
+
+  // v19 → v20: журнал активного режима. Ссылка на отброшенный дубль имени
+  // переводится туда же, куда блоки и действия (modeOf), и лишь затем канон.
+  // Режим, действующий сегодня, убранным быть не может: убрать активный
+  // интерфейс не даёт, принести такое может только импорт — и тогда режим
+  // возвращается, как блок, на который ссылается живой пункт
+  s.modeLog = normModeLog((Array.isArray(s.modeLog) ? s.modeLog : []).map(x =>
+    (x && typeof x === 'object' && !Array.isArray(x) && typeof x.mode === 'string'
+      ? { from: x.from, mode: modesNorm.known(x.mode) } : x)), s.modes);
+  {
+    const act = modeOn(today, s.modeLog);
+    const am = s.modes.find(x => x.id === act);
+    if (am && am.removedAt !== null) am.removedAt = null;
   }
 
   if (!Array.isArray(s.weekLog)) s.weekLog = [];
@@ -906,6 +1032,7 @@ function migrate(s, opts) {
         // вставка идёт после валидации пунктов — каноническая форма задаётся здесь
         schedule: [{ from: dateKeyShift(new Date(), s.settings.dayBoundary), mask: WEEK_ALL }], at: '',
         groupLog: [], // действие: журнал принадлежности блоку, пока пустой (v19)
+        mode: MAIN_MODE, // и режим (v20): у v1-данных режимов не было
         formula: null, ladder: null, ladderLog: []
       };
       const at = s.items.findIndex(i => i.name === 'Умыться');
@@ -947,14 +1074,17 @@ function migrate(s, opts) {
   // в items[]. Существующий store.groups не перезаписывается; items[], days{}
   // и reviews[] не изменяются — группа остаётся именем в пункте (инвариант 13)
   if (s.schemaVersion < 9) {
-    const seen = new Set(s.groups.map(g => g.name));
+    // v20: блок ищется в режиме. У действия — в его режиме; глобальному пункту
+    // (привычке, счётчику, параметру) блок годится с этим именем в любом
+    // режиме, а новый заводится в основном — у данных до v9 режимов не было
+    const has = (mode, name) => s.groups.some(g => g.name === name && (mode === null || g.mode === mode));
     for (const it of s.items) {
       const name = (it.group || '').trim();
-      if (!name || seen.has(name)) continue;
-      seen.add(name);
+      const action = it.type === 'daily' && it.area === 'min';
+      if (!name || has(action ? it.mode : null, name)) continue;
       // шаг идёт ПОСЛЕ пересборки списка — форма обязана быть канонической
       // сразу, второго прогона нормализации у досборки нет
-      s.groups.push({ name, caption: '', days: [], removedAt: null });
+      s.groups.push({ name, caption: '', days: [], removedAt: null, mode: action ? it.mode : MAIN_MODE });
     }
   }
 
@@ -964,9 +1094,25 @@ function migrate(s, opts) {
   // маска невидимого блока резала бы дни пункта, который интерфейс
   // показывает «без блока», — и владелец не нашёл бы, чем это снять.
   // Идемпотентно: после шага таких блоков нет.
+  // v20: у действия — блок его режима. Глобальный пункт уходит вместе с
+  // блоком, только когда живого блока с этим именем не остаётся ни в одном
+  // режиме (removeGroup), поэтому и возвращает он блок, только когда живого
+  // одноимённого нет нигде, — первый по порядку store.groups
   {
-    const liveNames = new Set(s.items.filter(it => !it.removedAt).map(it => (it.group || '').trim()));
-    for (const g of s.groups) if (g.removedAt !== null && liveNames.has(g.name)) g.removedAt = null;
+    const liveActions = new Set();
+    const liveGlobal = new Set();
+    for (const it of s.items) {
+      if (it.removedAt) continue;
+      const name = (it.group || '').trim();
+      if (it.type === 'daily' && it.area === 'min') liveActions.add(JSON.stringify([it.mode, name]));
+      else if (name) liveGlobal.add(name);
+    }
+    for (const g of s.groups) if (g.removedAt !== null && liveActions.has(JSON.stringify([g.mode, g.name]))) g.removedAt = null;
+    for (const name of liveGlobal) {
+      if (s.groups.some(g => g.name === name && g.removedAt === null)) continue;
+      const g = s.groups.find(x => x.name === name);
+      if (g) g.removedAt = null;
+    }
   }
 
   // v5 → v6: недельная норма привычек (normPerWeek = 7) — достраивается
@@ -1507,6 +1653,9 @@ function typeChangeRefusal(item, to) {
     return 'Тип не меняется: по счётчику уже есть записи';
   }
   if (item.type === 'daily' && isMarked(todayKey(), item.id)) return 'Тип не меняется: пункт сегодня отмечен';
+  // пропуск «Не сегодня» (задача Р2) — такой же сегодняшний факт: у счётчика
+  // дневных значений нет, и пропуск остался бы ничьим
+  if (item.type === 'daily' && isSkipped(todayKey(), item.id)) return 'Тип не меняется: у пункта сегодня «Не сегодня»';
   return null;
 }
 
@@ -1525,12 +1674,14 @@ function setItemType(item, to, goal) {
     item.goal = g;
     delete item.schedule;
     delete item.groupLog;
+    delete item.mode; // счётчик глобален для режимов (задача Р2)
     item.ladder = null;
   } else {
     item.type = 'daily';
     item.goal = null;
     item.schedule = [{ from: item.addedAt, mask: WEEK_ALL }];
     item.groupLog = [];
+    item.mode = activeMode(); // действие рождается в активном режиме (задача Р2)
   }
   return true;
 }
@@ -1538,10 +1689,17 @@ function setItemType(item, to, goal) {
 /* Эффективная маска пункта в дне — ОДНО правило на всё приложение.
    Блок ищется среди ВСЕХ, включая убранные: прошлое действия, чей блок
    потом убран, считается днями того блока, какими они были. */
+/* Задача Р2: действие существует в днях СВОЕГО режима. В день, когда
+   действовал другой режим, эффективных дней у него нет вовсе — маска
+   пуста, и dueOn, weekMaskDays, planWeekCount получают это правило даром,
+   одним местом. Имя блока разрешается в блок режима самого действия. */
+const WEEK_NONE = '0000000';
+
 function effectiveMaskOn(item, dayKey) {
   const own = scheduleOn(item, dayKey);
   if (!(item.type === 'daily' && item.area === 'min')) return own;
-  const g = findGroup(groupOn(item, dayKey));
+  if (itemMode(item) !== modeOn(dayKey)) return WEEK_NONE;
+  const g = findGroup(groupOn(item, dayKey), itemMode(item));
   return g ? andMask(own, blockMaskOn(g, dayKey)) : own;
 }
 
@@ -1549,18 +1707,22 @@ function effectiveMaskOn(item, dayKey) {
    effectiveMaskOn(...)[день недели], но без сборки строки: это самый
    горячий путь приложения — через него серия и рекорд проходят каждый
    пункт каждого дня эпохи. Результат обязан совпадать, это закреплено
-   тестом. */
+   тестом. Режим дня — двоичным поиском по журналу (modeOn), не проходом. */
 function inEffectiveDays(item, dayKey) {
   const wd = weekdayOf(dayKey);
   if (scheduleOn(item, dayKey)[wd] !== '1') return false;
   if (!(item.type === 'daily' && item.area === 'min')) return true;
-  const g = findGroup(groupOn(item, dayKey));
+  if (itemMode(item) !== modeOn(dayKey)) return false;
+  const g = findGroup(groupOn(item, dayKey), itemMode(item));
   return !g || blockMaskOn(g, dayKey)[wd] === '1';
 }
 
 /* Применимость ДНЯ: пункт в этот день жил И день недели входит в его
    ЭФФЕКТИВНЫЕ дни того дня. Единственная содержательная точка прошлого —
-   minDayItems, ровно как было с livedOn (инвариант 12). */
+   minDayItems, ровно как было с livedOn (инвариант 12). У действия в
+   эффективные дни входит и режим (задача Р2): день чужого режима — не его
+   день, и переключение сегодня вчерашнего не трогает — вчера читается
+   режимом вчера. */
 function dueOn(item, dayKey) {
   return livedOn(item, dayKey) && inEffectiveDays(item, dayKey);
 }
@@ -1595,6 +1757,19 @@ function weekPlan(item, keys) {
     if (isMarked(k, item.id)) done++;
   }
   return { planned, done };
+}
+
+/* Пропуски «Не сегодня» (задача Р2) в днях плана keys — число «пропусков K»
+   сетки разбора. Тем же фильтром, что weekPlan: пропуск в дне, который потом
+   ушёл из плана, в счёт не идёт, и «пропусков» не бывает больше дней плана.
+   Отдельной функцией, а не третьим полем weekPlan: пропуск не меняет ни
+   плана, ни отметок — это третье, независимое число строки. */
+function weekSkips(item, keys) {
+  let n = 0;
+  for (const k of (Array.isArray(keys) ? keys : [])) {
+    if (isSkipped(k, item.id) && dueOn(item, k)) n++;
+  }
+  return n;
 }
 
 /* Смена расписания — отрезок с сегодняшнего дня. Повторная смена в тот же
@@ -1742,6 +1917,8 @@ function restoreItemCore(id) {
   // журнал принадлежности — тоже прежнему отрезку: новая запись начинает
   // жизнь в нынешнем блоке, и истории переноса у неё нет (канон — [])
   if (it.type === 'daily' && it.area === 'min') copy.groupLog = [];
+  // режим — тот же: действие принадлежит режиму навсегда (задача Р2)
+  if (it.type === 'daily' && it.area === 'min') copy.mode = itemMode(it);
   copy.at = it.at || '';
   if (it.type === 'daily' && it.area === 'habit') copy.normPerWeek = it.normPerWeek || 7;
   if (it.type === 'param') {
@@ -1761,7 +1938,7 @@ function restoreItemCore(id) {
    убранного блока вернутся вместе с ним. Неизвестный блок ничего не режет. */
 function returnsWithoutDays(item) {
   if (!item || item.type !== 'daily' || item.area !== 'min') return false;
-  const g = findGroup(groupNameOf(item));
+  const g = findGroup(groupNameOf(item), itemMode(item)); // блок режима самого действия
   return maskDays(andMask(scheduleNow(item), g ? blockMaskNow(g) : WEEK_ALL)) === 0;
 }
 
@@ -1799,8 +1976,29 @@ function returnsWithoutDays(item) {
 function laterSegmentOf(item) {
   if (!item || live(item) || !item.removedAt) return null;
   const g = groupNameOf(item);
-  const same = store.items.filter(y => y.name === item.name && y.type === item.type &&
-    y.area === item.area && groupNameOf(y) === g);
+  // у действия — ещё и тот же режим (задача Р2): одноимённое дело в том же
+  // по имени блоке другого режима — соседнее, а не продолжение
+  const m = isAction(item) ? itemMode(item) : null;
+  return successorAmong(store.items.filter(y => y.name === item.name && y.type === item.type &&
+    y.area === item.area && groupNameOf(y) === g && (m === null || itemMode(y) === m)), item);
+}
+
+/* Преемник упражнения (задача Р2, п. 5) — то же правило, что у пункта:
+   возврат позже дня ухода заводит новую запись (restoreExercise), и
+   «Вернуть» у прежней завело бы второй живой экземпляр — два одинаковых
+   поля на листе «Тренировка». У упражнения нет ни типа, ни области, ни
+   блока: преемника узнают по имени и по addedAt строго позже removedAt;
+   пара одна на запись — одноимённые упражнения законны. */
+function laterExerciseOf(ex) {
+  if (!ex || live(ex) || !ex.removedAt) return null;
+  return successorAmong(store.exercises.filter(y => y.name === ex.name), ex);
+}
+
+/* Общая часть правила преемника: same — записи одного дела в порядке
+   своего списка (item входит в них), пары ставятся жадно — см. выше.
+   Прошлое правило не двигает: оно только прячет прежнюю запись из
+   «Убранных» и не даёт вернуть её вторым экземпляром. */
+function successorAmong(same, item) {
   const at = new Map(same.map((y, i) => [y, i]));
   // ближе — выше по списку и вплотную; запись ниже преемника — после всех выше
   const far = (x, y) => (at.get(x) < at.get(y) ? at.get(y) - at.get(x) : same.length + at.get(x));
@@ -1844,6 +2042,7 @@ function restoreExercise(id) {
   const at = store.exercises.findIndex(x => x.id === id);
   const ex = at < 0 ? null : store.exercises[at];
   if (!ex || live(ex)) return null;
+  if (laterExerciseOf(ex)) return null; // уже продолжено — второй экземпляр был бы дублем (Р2, п. 5)
   const t = todayKey();
   if (ex.removedAt === t) {
     ex.removedAt = null;
@@ -1862,11 +2061,27 @@ function restoreExercise(id) {
   return null;
 }
 
+/* Значение дня у пункта — ТРИ состояния одним ключом (задача Р2, «Не
+   сегодня»): `true` — отметка, `false` — пропуск, ключа нет — не отмечено.
+   Кодирование выбрано так, чтобы ни одна прежняя проверка истинности
+   отметки не поменяла смысла: isMarked, everMarked, marksInSystem,
+   itemWeekCount, planWeekCount, weekPlan, closeWeek и счёт отметок
+   dataCounts (`=== true`) читают false как «не отмечено» без правки.
+   Пропуск — не отметка: пороги планки его не знают (инвариант 4), «Отметки»
+   «Прогресса» тоже. Отдельно его читают только знаменатель дня
+   (minDayMarks) и сетка разбора. */
 function isMarked(dayKey, itemId) {
   return !!(store.days[dayKey] && store.days[dayKey][itemId]);
 }
 
+function isSkipped(dayKey, itemId) {
+  return !!store.days[dayKey] && store.days[dayKey][itemId] === false;
+}
+
+/* Круг пропущенного пункта неактивен: снятие пропуска — «Вернуть», а не тап
+   по кругу. Отказ возвращает false и не заводит пустого дня. */
 function toggleMark(dayKey, itemId) {
+  if (isSkipped(dayKey, itemId)) return false;
   const day = store.days[dayKey] || (store.days[dayKey] = {});
   if (day[itemId]) {
     delete day[itemId];
@@ -1875,6 +2090,45 @@ function toggleMark(dayKey, itemId) {
     day[itemId] = true;
   }
   save();
+  return true;
+}
+
+/* «Не сегодня» (задача Р2): пропуск — решение владельца о СЕГОДНЯШНЕМ дне,
+   а не отметка и не забытая отметка. Только живое действие минимума,
+   запланированное сегодня и ещё не отмеченное: у привычки своя недельная
+   норма с разрешёнными пропусками (инвариант 11), у счётчика и параметра
+   дневных значений нет, а вчера и раньше из интерфейса правится только
+   установкой отметки через точку (инвариант 7). Одна запись, откат при
+   отказе хранилища — в памяти не остаётся того, чего нет на диске. */
+function skipToday(itemId) {
+  const item = store.items.find(i => i.id === itemId);
+  const t = todayKey();
+  if (!isAction(item) || !dueNow(item, t) || isMarked(t, itemId) || isSkipped(t, itemId)) return false;
+  const fresh = !store.days[t];
+  const day = store.days[t] || (store.days[t] = {});
+  day[itemId] = false;
+  if (save()) return true;
+  delete day[itemId];
+  if (fresh) delete store.days[t];
+  return false;
+}
+
+/* «Вернуть»: снимает сегодняшний пропуск — пункт снова «не отмечен». Только
+   сегодня: вчерашний пропуск из интерфейса не снимается (глубже сегодня
+   данные правятся только установкой отметки за вчера, и пропуск ей
+   отказывает). Не требует, чтобы пункт по-прежнему стоял в плане: снять
+   собственное решение владелец вправе всегда. */
+function unskipToday(itemId) {
+  const t = todayKey();
+  if (!isAction(store.items.find(i => i.id === itemId)) || !isSkipped(t, itemId)) return false;
+  const day = store.days[t];
+  delete day[itemId];
+  const emptied = !Object.keys(day).length;
+  if (emptied) delete store.days[t];
+  if (save()) return true;
+  store.days[t] = day;
+  day[itemId] = false;
+  return false;
 }
 
 /* Отмечался ли пункт хоть раз — не позже дня upto, если он задан.
@@ -1907,6 +2161,9 @@ function missedYesterday(item, tKey) {
   // Без маски пункт «только по воскресеньям» показывал бы укор шесть дней
   // из семи, вечно.
   if (!dueOn(item, y) || isMarked(y, item.id)) return false;
+  // вчерашний пропуск — решение владельца, а не забытая отметка (задача Р2):
+  // укора за него нет, и «отметить» ему не предлагается
+  if (isSkipped(y, item.id)) return false;
   return everMarked(item, y);
 }
 
@@ -1921,6 +2178,9 @@ function markYesterday(itemId) {
   // а в days{} она осталась бы навсегда и считалась бы механиками
   if (!dueOn(item, y)) return false;
   if (isMarked(y, item.id)) return false;
+  // пропуск вчера — решение, а не забытая отметка: переписать его отметкой
+  // задним числом значило бы править прошлое глубже, чем разрешает инвариант 7
+  if (isSkipped(y, item.id)) return false;
   const day = store.days[y] || (store.days[y] = {});
   day[item.id] = true;
   save();
@@ -2402,28 +2662,221 @@ function closedWeeks(n) {
 
 const groupNameOf = it => (it.group || '').trim();
 
-/* Поиск среди ВСЕХ блоков, живых и убранных: имя уникально среди всех, и
-   прошлое действия, чей блок убран, читает дни того блока */
-function findGroup(name) {
-  const n = String(name ?? '').trim();
-  return store.groups.find(g => g.name === n) || null;
+/* ── Режимы (задача Р2) ─────────────────────────────────────────
+   Режим — набор блоков и действий: «Школа», «Каникулы». Активный режим
+   хранится ОТРЕЗКАМИ журнала store.modeLog = [{from, mode}] — по той же
+   причине, что расписание пункта и дни блока: режим, положенный одним
+   значением, сегодняшним переключением переписал бы прошлые дни. День
+   читается режимом, действовавшим В ТОТ ДЕНЬ; до первого отрезка и при
+   пустом журнале — основной.
+
+   Блок и действие (daily min, в блоке и без) принадлежат ровно одному
+   режиму: поле mode ставится при создании и не меняется. Привычки,
+   параметры и недельный счётчик глобальны — поля не несут и ссылаются на
+   блок только именем. Имя блока уникально В ПРЕДЕЛАХ режима. */
+
+const isAction = it => !!it && it.type === 'daily' && it.area === 'min';
+
+/* Режим записи. «Поля нет» каноническим не считается (migrate его ставит),
+   но читается основным — как пустой список отрезков читается «все семь»:
+   запись, собранная руками без поля, не выпадает из всех дней. */
+const itemMode = it => (it && typeof it.mode === 'string' && it.mode ? it.mode : MAIN_MODE);
+const blockMode = g => (g && typeof g.mode === 'string' && g.mode ? g.mode : MAIN_MODE);
+
+/* Режим, действовавший в дне: последний отрезок с from ≤ dayKey, двоичным
+   поиском — через эту функцию серия и рекорд проходят каждый день эпохи,
+   и проход по сотням отрезков на каждый день был бы квадратом. log — для
+   migrate, у которой store ещё не назначен. */
+function modeOn(dayKey, log) {
+  const segs = Array.isArray(log) ? log : (store && Array.isArray(store.modeLog) ? store.modeLog : []);
+  let lo = 0, hi = segs.length - 1, at = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (segs[mid].from <= dayKey) { at = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return at < 0 ? MAIN_MODE : segs[at].mode;
 }
 
-const liveGroups = () => store.groups.filter(live);
+const activeMode = () => modeOn(todayKey());
 
-/* Занято ли имя. Блок ищется ПО ИМЕНИ, поэтому занятым считается не только
-   имя блока (живого или убранного), но и имя, оставшееся в пунктах —
-   в item.group или в журнале принадлежности, — если это не сам блок
-   except. Переименование давнего блока в такое «осиротевшее» имя (импорт,
-   «(нет в списке)») задним числом применило бы его дни к прошлому чужих
-   пунктов. Пустое имя — не имя: отказ по пустоте у вызывающего. */
-function nameTaken(name, except) {
+const modeList = () => (Array.isArray(store.modes) ? store.modes : []);
+const findMode = id => modeList().find(m => m.id === id) || null;
+const liveModes = () => modeList().filter(live);
+
+/* Запись в области режима: действие — только своего, глобальный пункт —
+   любого (он ссылается на блок именем) */
+const belongsToMode = (it, mode) => !isAction(it) || itemMode(it) === mode;
+
+/* Имя режима свободно среди ВСЕХ режимов, включая убранные: убранный режим
+   возвращается, и два одноимённых в выборе было бы нечем различить */
+function modeNameTaken(name, exceptId) {
+  const n = String(name ?? '').trim();
+  return modeList().some(m => m.id !== exceptId && m.name === n);
+}
+
+/* Новый режим — в конец списка, не активным: выбор — отдельное решение
+   («Выбрать»). copyOf — id режима-источника: копия берёт его ЖИВЫЕ блоки
+   (подпись, дни на сегодня одним отрезком, тот же порядок) и ЖИВЫЕ
+   действия — и в блоках, и без блока — новыми записями с сегодняшнего дня:
+   новые id, своя маска на сегодня, журнал принадлежности пуст, история —
+   одна стартовая запись при числе. Прошлого у копии нет. Привычки,
+   параметры и недельные счётчики не копируются: они глобальны и в новом
+   режиме и так есть. Копия сразу каноническая — migrate от неё ничего не
+   меняет. Одна запись; отказ — откат всего.
+   → {ok: true, id} | {ok: false, reason}: 'empty', 'taken', 'missing'
+   (источника нет), 'storage'. */
+function addMode(name, opts) {
+  const n = String(name ?? '').trim();
+  if (!n) return { ok: false, reason: 'empty' };
+  if (modeNameTaken(n)) return { ok: false, reason: 'taken' };
+  const copyOf = opts && opts.copyOf !== undefined && opts.copyOf !== null ? opts.copyOf : null;
+  if (copyOf !== null && !findMode(copyOf)) return { ok: false, reason: 'missing' };
+  if (!Array.isArray(store.modes)) store.modes = programModes();
+  const id = uid();
+  const t = todayKey();
+  const mode = { id, name: n, removedAt: null };
+  const blocks = [];
+  const copies = [];
+  if (copyOf !== null) {
+    for (const g of store.groups) {
+      if (!live(g) || blockMode(g) !== copyOf) continue;
+      const m = blockMaskNow(g);
+      blocks.push({
+        name: g.name,
+        caption: typeof g.caption === 'string' ? g.caption : '',
+        days: m !== WEEK_ALL ? [{ from: t, mask: m }] : [],
+        removedAt: null,
+        mode: id
+      });
+    }
+    for (const src of store.items) {
+      if (!live(src) || !isAction(src) || itemMode(src) !== copyOf) continue;
+      copies.push(actionCopy(src, src.group, id, t));
+    }
+  }
+  store.modes.push(mode);
+  store.groups.push(...blocks);
+  store.items.push(...copies);
+  if (save()) return { ok: true, id };
+  store.modes.splice(store.modes.indexOf(mode), 1);
+  store.groups.splice(store.groups.length - blocks.length, blocks.length);
+  store.items.splice(store.items.length - copies.length, copies.length);
+  return { ok: false, reason: 'storage' };
+}
+
+/* Копия действия новой записью с сегодняшнего дня — общая часть копии
+   режима и копии блока в другой режим. Своя маска — на сегодня, прошлого
+   нет: история — одна стартовая запись при числе, журнал принадлежности
+   пуст. Поля перечислены: забытое терялось бы молча. */
+function actionCopy(src, group, mode, t) {
+  return {
+    id: uid(), name: src.name, value: src.value, unit: src.unit, type: 'daily', area: 'min',
+    goal: null, note: src.note, group, removedAt: null, addedAt: t, at: src.at || '',
+    raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null,
+    history: typeof src.value === 'number' ? [{ date: t, value: src.value }] : [],
+    formula: null, ladder: null, ladderLog: [],
+    schedule: [{ from: t, mask: scheduleNow(src) }], groupLog: [], mode
+  };
+}
+
+/* Переименование режима одной записью. Пустое и занятое — отказ.
+   → {ok: true} | {ok: false, reason}: 'missing', 'empty', 'taken', 'storage' */
+function renameMode(id, name) {
+  const m = findMode(id);
+  if (!m) return { ok: false, reason: 'missing' };
+  const n = String(name ?? '').trim();
+  if (!n) return { ok: false, reason: 'empty' };
+  if (modeNameTaken(n, id)) return { ok: false, reason: 'taken' };
+  const was = m.name;
+  m.name = n;
+  if (save()) return { ok: true };
+  m.name = was;
+  return { ok: false, reason: 'storage' };
+}
+
+/* Уход режима — из выбора, с сегодняшнего дня. Режим с историей не
+   удаляется, а убирается: прошлые дни читаются режимом того дня, и
+   отрезки журнала, блоки и действия не трогаются вовсе — ни один прошлый
+   день не сдвигается. Активный режим убрать нельзя: сегодняшний день
+   остался бы без режима, который можно выбрать.
+   → {ok: true} | {ok: false, reason}: 'missing', 'removed', 'active', 'storage' */
+function removeMode(id) {
+  const m = findMode(id);
+  if (!m) return { ok: false, reason: 'missing' };
+  if (!live(m)) return { ok: false, reason: 'removed' };
+  if (activeMode() === id) return { ok: false, reason: 'active' };
+  m.removedAt = todayKey();
+  if (save()) return { ok: true };
+  m.removedAt = null;
+  return { ok: false, reason: 'storage' };
+}
+
+/* → {ok: true} | {ok: false, reason}: 'missing', 'live', 'storage' */
+function restoreMode(id) {
+  const m = findMode(id);
+  if (!m) return { ok: false, reason: 'missing' };
+  if (live(m)) return { ok: false, reason: 'live' };
+  const was = m.removedAt;
+  m.removedAt = null;
+  if (save()) return { ok: true };
+  m.removedAt = was;
+  return { ok: false, reason: 'storage' };
+}
+
+/* Выбор активного режима — отрезок с сегодняшнего дня, правила setSchedule
+   (инвариант 12): хвост from ≥ сегодня снимается (повторный выбор в тот же
+   день заменяет, отрезок «из будущего» не встанет перед новым), возврат к
+   прежнему режиму схлопывает. Прежние отрезки не трогаются никогда:
+   переключение сегодня не меняет ни вчера, ни цепь, ни серию, ни рекорд.
+   Выбрать можно только живой режим. Одна запись; отказ — откат журнала.
+   → {ok: true} | {ok: false, reason}: 'missing', 'removed', 'storage' */
+function setActiveMode(id) {
+  const m = findMode(id);
+  if (!m) return { ok: false, reason: 'missing' };
+  if (!live(m)) return { ok: false, reason: 'removed' };
+  if (!Array.isArray(store.modeLog)) store.modeLog = [];
+  const log = store.modeLog;
+  const was = log.slice();
+  const t = todayKey();
+  while (log.length && log[log.length - 1].from >= t) log.pop();
+  const prev = log.length ? log[log.length - 1].mode : MAIN_MODE;
+  if (prev !== id) log.push({ from: t, mode: id });
+  if (save()) return { ok: true };
+  log.length = 0;
+  log.push(...was);
+  return { ok: false, reason: 'storage' };
+}
+
+/* Поиск блока В РЕЖИМЕ, среди живых и убранных: имя уникально в пределах
+   режима, и прошлое действия, чей блок убран, читает дни того блока. Режим
+   не назван — активный: так ищут формы и списки, которые показывают его. */
+function findGroup(name, mode) {
+  const n = String(name ?? '').trim();
+  const m = mode === undefined ? activeMode() : mode;
+  return store.groups.find(g => g.name === n && blockMode(g) === m) || null;
+}
+
+/* Живые блоки режима (по умолчанию — активного) в порядке store.groups */
+const liveGroups = mode => {
+  const m = mode === undefined ? activeMode() : mode;
+  return store.groups.filter(g => live(g) && blockMode(g) === m);
+};
+
+/* Занято ли имя В РЕЖИМЕ. Блок ищется ПО ИМЕНИ, поэтому занятым считается
+   не только имя блока режима (живого или убранного), но и имя, оставшееся
+   в действиях режима — в item.group или в журнале принадлежности, — если
+   это не сам блок except. Переименование давнего блока в такое
+   «осиротевшее» имя (импорт, «(нет в списке)») задним числом применило бы
+   его дни к прошлому чужих действий. Глобальные пункты имя не занимают:
+   дни блока их не режут (задача Р2). Пустое имя — не имя. */
+function nameTaken(name, except, mode) {
   const n = String(name ?? '').trim();
   if (!n) return false;
   if (except !== undefined && except !== null && n === String(except).trim()) return false;
-  if (store.groups.some(g => g.name === n)) return true;
-  return store.items.some(it => groupNameOf(it) === n ||
-    (Array.isArray(it.groupLog) && it.groupLog.some(e => e && e.group === n)));
+  const m = mode === undefined ? activeMode() : mode;
+  if (store.groups.some(g => g.name === n && blockMode(g) === m)) return true;
+  return store.items.some(it => isAction(it) && itemMode(it) === m && (groupNameOf(it) === n ||
+    (Array.isArray(it.groupLog) && it.groupLog.some(e => e && e.group === n))));
 }
 
 /* Новый блок — в конец списка. Занятое среди всех блоков имя — отказ.
@@ -2435,35 +2888,40 @@ function nameTaken(name, except) {
    updateGroup не создаёт (п. 1.3): отказ, как у правки (Р1/рецензия).
    Вызов addGroup(name) без подписи и дней остаётся прежним: «все семь» —
    нейтральный элемент ∧ и ни одного дня не отнимает. */
-function addGroup(name, caption, mask) {
+function addGroup(name, caption, mask, mode) {
   const n = String(name ?? '').trim();
-  if (!n || findGroup(n)) return false;
+  const md = mode === undefined ? activeMode() : mode; // новый блок — в активном режиме (Р2)
+  if (!n || findGroup(n, md)) return false;
   const m = mask === undefined ? WEEK_ALL : mask;
   if (!isMask(m) || maskDays(m) === 0) return false; // пустая маска — не дни
-  if (zeroDaysIn(n, m).length) return false;
+  if (zeroDaysIn(n, m, md).length) return false;
   store.groups.push({
     name: n,
     caption: String(caption ?? '').trim(),
     days: m === WEEK_ALL ? [] : [{ from: todayKey(), mask: m }],
-    removedAt: null
+    removedAt: null,
+    mode: md
   });
   save();
   return true;
 }
 
-/* Индексы живых блоков в store.groups — соседи по перестановке. Убранный
-   блок в списке не стоит и соседом не считается, а своё место в массиве
-   сохраняет: ровно как siblingIndexes у пунктов (инвариант 17). */
-function liveGroupIndexes() {
+/* Индексы живых блоков режима в store.groups — соседи по перестановке.
+   Убранный блок и блок другого режима в списке не стоят и соседями не
+   считаются, а своё место в массиве сохраняют: ровно как siblingIndexes у
+   пунктов (инвариант 17). */
+function liveGroupIndexes(mode) {
+  const m = mode === undefined ? activeMode() : mode;
   const out = [];
-  store.groups.forEach((g, i) => { if (live(g)) out.push(i); });
+  store.groups.forEach((g, i) => { if (live(g) && blockMode(g) === m) out.push(i); });
   return out;
 }
 
-function moveGroup(name, dir) {
-  const i = store.groups.findIndex(g => g.name === String(name ?? '').trim());
+function moveGroup(name, dir, mode) {
+  const m = mode === undefined ? activeMode() : mode;
+  const i = store.groups.findIndex(g => g.name === String(name ?? '').trim() && blockMode(g) === m);
   if (i < 0) return false;
-  const idxs = liveGroupIndexes();
+  const idxs = liveGroupIndexes(m);
   const at = idxs.indexOf(i);
   if (at < 0) return false; // убранный блок не двигается: его строки в списке нет
   const j = idxs[at + (dir === 'up' ? -1 : 1)];
@@ -2482,32 +2940,50 @@ function moveGroup(name, dir) {
    дни задним числом. */
 function renameGroupCore(g, from, to) {
   g.name = to;
+  const m = blockMode(g);
+  // Глобальные пункты (привычки, параметры, счётчики) ссылаются на блок
+  // только именем, а одноимённый блок может жить и в другом режиме (Р2).
+  // Имя остаётся прежним у того пункта, которого ДЕРЖИТ одноимённый блок:
+  // живой — любого пункта; убранный — только убранного с ним в один день,
+  // то есть того, кого вернёт его возврат (restoreSetOf). Убранный блок
+  // живого пункта не держит (Р2/рецензия): прежде «живого или убранного»
+  // оставляло живую привычку при имени, у которого нет ни одного живого
+  // блока, — на экранах она выпадала из блока, где только что стояла, а
+  // следующий старт молча оживлял убранный блок (migrate, инвариант 13)
+  const heldByNamesake = it => store.groups.some(x => x !== g && x.name === from &&
+    (live(x) || (!live(it) && x.removedAt === it.removedAt)));
   for (const it of store.items) {
-    if (groupNameOf(it) === from) it.group = to;
-    if (Array.isArray(it.groupLog)) for (const e of it.groupLog) if (e.group === from) e.group = to;
+    if (isAction(it)) {
+      if (itemMode(it) !== m) continue; // действия чужого режима — при своём блоке
+      if (groupNameOf(it) === from) it.group = to;
+      if (Array.isArray(it.groupLog)) for (const e of it.groupLog) if (e.group === from) e.group = to;
+    } else if (groupNameOf(it) === from && !heldByNamesake(it)) {
+      it.group = to;
+    }
   }
 }
 
 /* Переименование атомарно. Пустое имя и занятое (nameTaken) не проходят. */
-function renameGroup(oldName, newName) {
+function renameGroup(oldName, newName, mode) {
   const from = String(oldName ?? '').trim();
   const to = String(newName ?? '').trim();
-  const g = findGroup(from);
+  const g = findGroup(from, mode);
   if (!g || !to) return false;
-  if (to !== from && nameTaken(to, from)) return false; // имена уникальны
+  if (to !== from && nameTaken(to, from, blockMode(g))) return false; // имена уникальны в режиме
   if (to !== from) renameGroupCore(g, from, to);
   save();
   return true;
 }
 
 /* Действия блока, у которых при маске блока mask не останется ни одного
-   дня: живые daily min с пустым ∧ нынешней своей маски и mask. Такое
-   состояние интерфейс создавать не даёт — пустая эффективная маска
+   дня: живые daily min режима с пустым ∧ нынешней своей маски и mask.
+   Такое состояние интерфейс создавать не даёт — пустая эффективная маска
    неотличима от убранного пункта, а убирать умеет «Убрать». */
-function zeroDaysIn(groupName, mask) {
+function zeroDaysIn(groupName, mask, mode) {
   const n = String(groupName ?? '').trim();
+  const m = mode === undefined ? activeMode() : mode;
   return store.items
-    .filter(it => live(it) && it.type === 'daily' && it.area === 'min' && groupNameOf(it) === n &&
+    .filter(it => live(it) && isAction(it) && itemMode(it) === m && groupNameOf(it) === n &&
       maskDays(andMask(scheduleNow(it), mask)) === 0)
     .map(it => it.name);
 }
@@ -2519,23 +2995,24 @@ function zeroDaysIn(groupName, mask) {
    (маска пуста или невалидна), 'zero' (у действий names не останется
    дней), 'storage'. Дни не менялись — нуль, пришедший импортом, не отказ:
    владелец правил не их. */
-function updateGroup(oldName, patch) {
+function updateGroup(oldName, patch, mode) {
   const from = String(oldName ?? '').trim();
-  const g = findGroup(from);
+  const g = findGroup(from, mode);
   if (!g) return { ok: false, reason: 'missing' };
+  const md = blockMode(g); // все проверки — в режиме самого блока (Р2)
   const p = (patch && typeof patch === 'object') ? patch : {};
   const to = p.name === undefined ? from : String(p.name ?? '').trim();
   if (!to) return { ok: false, reason: 'empty' };
   if (to !== from) {
-    const other = findGroup(to);
+    const other = findGroup(to, md);
     if (other && !live(other)) return { ok: false, reason: 'removed' };
-    if (nameTaken(to, from)) return { ok: false, reason: 'taken' };
+    if (nameTaken(to, from, md)) return { ok: false, reason: 'taken' };
   }
   const nowMask = blockMaskNow(g);
   const mask = p.mask === undefined ? nowMask : p.mask;
   if (!isMask(mask) || maskDays(mask) === 0) return { ok: false, reason: 'nodays' };
   if (mask !== nowMask) {
-    const names = zeroDaysIn(from, mask);
+    const names = zeroDaysIn(from, mask, md);
     if (names.length) return { ok: false, reason: 'zero', names };
   }
   const caption = p.caption === undefined
@@ -2565,8 +3042,16 @@ function updateGroup(oldName, patch) {
 
 /* Пункт не может молча войти в УБРАННЫЙ блок: интерфейс показал бы его
    «без блока», а маска невидимого блока резала бы его дни. null — можно. */
-function groupJoinRefusal(name) {
-  const g = findGroup(name);
+/* Живой одноимённый блок в ДРУГОМ месте store — в другом режиме (Р2).
+   Одно правило на уход блока (глобальные пункты уходят, только если такого
+   нет) и на слова его последствия в форме: названное между тапами обязано
+   совпадать с тем, что сделает второй тап (Р2/рецензия). */
+function hasLiveNamesake(g) {
+  return store.groups.some(x => x !== g && live(x) && x.name === g.name);
+}
+
+function groupJoinRefusal(name, mode) {
+  const g = findGroup(name, mode);
   return g && !live(g) ? `Блок «${g.name}» убран — вернуть можно в «Убранных»` : null;
 }
 
@@ -2574,12 +3059,19 @@ function groupJoinRefusal(name) {
    пунктами блока (обеих областей, всех типов): блок, ушедший из виду,
    не оставляет на экранах пунктов без заголовка. Прошлое не двигается:
    дни блока и отрезки жизни пунктов читают вчера как вчера. Одна запись;
-   отказ — откат всех полей. */
-function removeGroup(name) {
-  const g = findGroup(name);
+   отказ — откат всех полей.
+   С режимами (Р2): действия — только режима блока. Глобальные пункты
+   (привычки, параметры, счётчики) ссылаются на блок именем и уходят,
+   только если живого блока с этим именем не остаётся НИ В ОДНОМ режиме:
+   иначе уход блока одного режима увёл бы их из-под одноимённого другого. */
+function removeGroup(name, mode) {
+  const g = findGroup(name, mode);
   if (!g || !live(g)) return false;
   const t = todayKey();
-  const touched = store.items.filter(it => live(it) && groupNameOf(it) === g.name);
+  const md = blockMode(g);
+  const namesake = hasLiveNamesake(g);
+  const touched = store.items.filter(it => live(it) && groupNameOf(it) === g.name &&
+    (isAction(it) ? itemMode(it) === md : !namesake));
   g.removedAt = t;
   for (const it of touched) it.removedAt = t;
   if (save()) return true;
@@ -2604,12 +3096,22 @@ function removeGroup(name) {
    поэтому в пару берёт именно её (laterSegmentOf). Судьба каждого пункта
    та же, что по store на входе операции: вернётся всякий, у кого на входе
    не было пары. */
-function restoreGroup(name) {
-  const g = findGroup(name);
+/* Пункты, ушедшие вместе с блоком: день ухода совпал с днём ухода блока.
+   Действия — только режима блока; глобальный пункт — если ушёл в тот же
+   день (его уводит уход последнего живого одноимённого блока, Р2).
+   Одно правило на возврат блока и на строку «Вернулись с днями блока». */
+function restoreSetOf(g, when) {
+  const md = blockMode(g);
+  const day = when === undefined ? g.removedAt : when;
+  return store.items.filter(it => groupNameOf(it) === g.name && it.removedAt === day && belongsToMode(it, md));
+}
+
+function restoreGroup(name, mode) {
+  const g = findGroup(name, mode);
   if (!g || live(g)) return false;
   const when = g.removedAt;
   g.removedAt = null;
-  const back = store.items.filter(it => groupNameOf(it) === g.name && it.removedAt === when).map(it => it.id);
+  const back = restoreSetOf(g, when).map(it => it.id);
   const undos = [];
   for (const id of back) {
     const r = restoreItemCore(id);
@@ -2628,22 +3130,26 @@ function restoreGroup(name) {
    записями с сегодняшнего дня, без истории прошлого; привычки и параметры
    не копируются: «действия» — пункты минимума. Копия уже в канонической
    форме — migrate от неё ничего не меняет. → имя копии | null (отказ). */
-function duplicateGroup(name) {
-  const g = findGroup(name);
+function duplicateGroup(name, mode) {
+  const g = findGroup(name, mode);
   if (!g) return null;
+  const md = blockMode(g); // копия — в том же режиме, имя свободно в нём (Р2)
   let nm = `${g.name} (копия)`;
-  for (let k = 2; nameTaken(nm); k++) nm = `${g.name} (копия ${k})`;
+  for (let k = 2; nameTaken(nm, undefined, md); k++) nm = `${g.name} (копия ${k})`;
   const t = todayKey();
   const m = blockMaskNow(g);
   const block = {
     name: nm,
     caption: typeof g.caption === 'string' ? g.caption : '',
     days: m !== WEEK_ALL ? [{ from: t, mask: m }] : [],
-    removedAt: null
+    removedAt: null,
+    mode: md
   };
+  // действия режима блока и недельные счётчики с его именем (счётчик
+  // глобален и стоит в карточке одноимённого блока активного режима)
   const copies = store.items
     .filter(it => live(it) && it.area === 'min' && (it.type === 'daily' || it.type === 'weekly') &&
-      groupNameOf(it) === g.name)
+      groupNameOf(it) === g.name && belongsToMode(it, md))
     .map(src => {
       const c = {
         id: uid(), name: src.name, value: src.value, unit: src.unit, type: src.type, area: 'min',
@@ -2652,11 +3158,51 @@ function duplicateGroup(name) {
         history: typeof src.value === 'number' ? [{ date: t, value: src.value }] : [],
         formula: null, ladder: null, ladderLog: []
       };
-      // расписание и журнал — только у ежедневного (инвариант 10)
-      if (src.type === 'daily') { c.schedule = [{ from: t, mask: scheduleNow(src) }]; c.groupLog = []; }
+      // расписание, журнал и режим — только у ежедневного (инвариант 10, Р2)
+      if (src.type === 'daily') { c.schedule = [{ from: t, mask: scheduleNow(src) }]; c.groupLog = []; c.mode = md; }
       return c;
     });
   store.groups.splice(store.groups.indexOf(g) + 1, 0, block);
+  store.items.push(...copies);
+  if (save()) return nm;
+  store.groups.splice(store.groups.indexOf(block), 1);
+  store.items.splice(store.items.length - copies.length, copies.length);
+  return null;
+}
+
+/* Копия блока В ДРУГОЙ РЕЖИМ (задача Р2) — по правилам duplicateGroup:
+   дни на сегодня одним отрезком, живые действия новыми записями без
+   прошлого. Отличия: имя свободно в целевом режиме — остаётся тем же, занято
+   — «‹имя› (копия)», «(копия 2)»… по nameTaken цели; блок встаёт В КОНЕЦ
+   блоков целевого режима в store.groups; недельные счётчики не копируются —
+   межрежимная копия берёт только действия, как копия режима. Источник —
+   блок режима fromMode (по умолчанию активного); цель — живой режим, не
+   тот же. Одна запись; отказ — откат. → имя копии | null (отказ). */
+function duplicateGroupTo(name, targetMode, fromMode) {
+  const g = findGroup(name, fromMode);
+  const target = findMode(targetMode);
+  if (!g || !target || !live(target) || target.id === blockMode(g)) return null;
+  const md = target.id;
+  let nm = g.name;
+  if (nameTaken(nm, undefined, md)) {
+    nm = `${g.name} (копия)`;
+    for (let k = 2; nameTaken(nm, undefined, md); k++) nm = `${g.name} (копия ${k})`;
+  }
+  const t = todayKey();
+  const m = blockMaskNow(g);
+  const block = {
+    name: nm,
+    caption: typeof g.caption === 'string' ? g.caption : '',
+    days: m !== WEEK_ALL ? [{ from: t, mask: m }] : [],
+    removedAt: null,
+    mode: md
+  };
+  const copies = store.items
+    .filter(it => live(it) && isAction(it) && itemMode(it) === blockMode(g) && groupNameOf(it) === g.name)
+    .map(src => actionCopy(src, nm, md, t));
+  let at = -1;
+  store.groups.forEach((x, i) => { if (blockMode(x) === md) at = i; });
+  store.groups.splice(at < 0 ? store.groups.length : at + 1, 0, block);
   store.items.push(...copies);
   if (save()) return nm;
   store.groups.splice(store.groups.indexOf(block), 1);
@@ -2674,24 +3220,33 @@ function duplicateGroup(name) {
 /* Раскладка дневного экрана: сначала ЖИВЫЕ блоки в порядке store.groups,
    затем пункты без блока, с неизвестным или с убранным блоком — одной
    секцией без заголовка */
-function groupedItems(items) {
+/* С режимами (Р2) — блоки режима mode (по умолчанию активного). Действие
+   чужого режима под одноимённый блок не встаёт: у его режима свой блок, и
+   идёт оно в секцию без заголовка; глобальный пункт встаёт под блок по
+   имени. */
+function groupedItems(items, mode) {
+  const m = mode === undefined ? activeMode() : mode;
   const out = [];
-  const known = new Set();
+  const taken = new Set();
   for (const g of store.groups) {
-    if (!live(g)) continue;
-    known.add(g.name);
-    const inGroup = items.filter(it => groupNameOf(it) === g.name);
+    if (!live(g) || blockMode(g) !== m) continue;
+    const inGroup = items.filter(it => groupNameOf(it) === g.name && belongsToMode(it, m));
+    for (const it of inGroup) taken.add(it);
     if (inGroup.length) out.push({ group: g, items: inGroup });
   }
-  const loose = items.filter(it => !known.has(groupNameOf(it)));
+  const loose = items.filter(it => !taken.has(it));
   if (loose.length) out.push({ group: null, items: loose });
   return out;
 }
 
 /* ── Быстрое добавление («Расписание 1/3») ─────────────────────
-   Строки владельца → действия. Разделитель подписи — ПЕРВОЕ « · » (точка
-   U+00B7 с пробелами по бокам): имя слева, подпись справа. «/» разделителем
-   не является — в именах он встречается («Подтягивания / отжимания»).
+   Строки владельца → действия. Разделитель подписи — ПЕРВОЕ вхождение
+   любого из четырёх знаков с пробельными символами по бокам: « · » (точка
+   U+00B7), « — » (U+2014), « – » (U+2013) и « - » (дефис; задача Р2, п. 0:
+   владелец набирает подпись тире, а iOS сама меняет «--» на «—»). Имя
+   слева, подпись справа. Без пробельных по бокам знак — часть имени:
+   «Кросс-фит», «10–15 минут», «a·b». «/» разделителем не является вовсе —
+   в именах он встречается и с пробелами («Подтягивания / отжимания»).
    Пустые строки пропускаются, повторы не склеиваются: две одинаковые
    строки — два действия, так их и набрали. */
 function parseQuickLines(text) {
@@ -2699,7 +3254,7 @@ function parseQuickLines(text) {
   for (const raw of String(text ?? '').split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    const m = /^(.*?)\s+·(?:\s+(.*))?$/.exec(line);
+    const m = /^(.*?)\s+[·—–-](?:\s+(.*))?$/.exec(line);
     if (m) out.push({ name: m[1].trim(), note: (m[2] || '').trim() });
     else out.push({ name: line, note: '' });
   }
@@ -2709,16 +3264,17 @@ function parseQuickLines(text) {
 /* Действия в блок groupName ('' — «Без блока»), в конец items[], одной
    записью; отказ — откат и []. Каждое — ежедневное, «как блок», в
    канонической форме. */
-function addActions(groupName, lines) {
+function addActions(groupName, lines, mode) {
   const list = (Array.isArray(lines) ? lines : [])
     .filter(l => l && typeof l.name === 'string' && l.name.trim());
   if (!list.length) return [];
   const t = todayKey();
   const group = String(groupName ?? '').trim();
+  const md = mode === undefined ? activeMode() : mode; // действие рождается в активном режиме (Р2)
   const made = list.map(l => ({
     id: uid(), name: l.name.trim(), value: null, unit: '', type: 'daily', area: 'min',
     goal: null, note: typeof l.note === 'string' ? l.note.trim() : '', group, removedAt: null,
-    addedAt: t, at: '', schedule: [{ from: t, mask: WEEK_ALL }], groupLog: [],
+    addedAt: t, at: '', schedule: [{ from: t, mask: WEEK_ALL }], groupLog: [], mode: md,
     raiseAfter: 0, raiseAfterWeek: null, lowerAfterWeek: null, history: [],
     formula: null, ladder: null, ladderLog: []
   }));
@@ -2732,13 +3288,20 @@ function addActions(groupName, lines) {
    (задача 16F). Блок пункт меняет полем «Блок» в форме правки, а не
    стрелками и не перетаскиванием: порядок и принадлежность — разные
    решения. Возвращает индексы в store.items по возрастанию. */
+/* С режимами (Р2) соседи — ещё и одной области режима: действие — среди
+   действий своего режима и недельных счётчиков карточки; счётчик, глобальный
+   для режимов, стоит в карточке одноимённого блока АКТИВНОГО режима и
+   соседствует с его действиями. Привычки и параметры — как прежде. */
 function siblingIndexes(item) {
   const g = groupNameOf(item);
+  const am = activeMode();
+  const scope = x => (isAction(x) ? itemMode(x) : (x.area === 'min' ? am : null));
+  const own = scope(item);
   const out = [];
   store.items.forEach((x, i) => {
     // убранный пункт в списке не стоит и соседом не считается: стрелка
     // перепрыгивает его, а его собственное место в items[] не меняется
-    if (live(x) && x.area === item.area && groupNameOf(x) === g) out.push(i);
+    if (live(x) && x.area === item.area && groupNameOf(x) === g && scope(x) === own) out.push(i);
   });
   return out;
 }
@@ -2787,10 +3350,11 @@ function reorderItem(id, to) {
 
 /* Перетаскивание блока: to — позиция среди ЖИВЫХ блоков. Убранные своё
    место в store.groups сохраняют, как убранные пункты в items[]. */
-function reorderGroup(name, to) {
-  const g = store.groups.find(x => x.name === name);
+function reorderGroup(name, to, mode) {
+  const m = mode === undefined ? activeMode() : mode;
+  const g = store.groups.find(x => x.name === name && blockMode(x) === m);
   if (!g || !live(g)) return false;
-  const idxs = liveGroupIndexes();
+  const idxs = liveGroupIndexes(m);
   const list = idxs.map(i => store.groups[i]);
   const from = list.indexOf(g);
   if (from < 0 || to < 0 || to >= list.length || to === from) return false;
@@ -2842,9 +3406,19 @@ function minDayItems(dayKey) {
 
 /* Сколько таких пунктов отмечено: 0 — день пуст, меньше всех —
    частичный, все — закрыт. Один проход для серии и для цепи дней. */
+/* С задачи Р2 чисел четыре. planned — запланированные в этот день (по
+   расписанию, режиму и отрезку жизни), skipped — пропущенные среди них,
+   total = planned − skipped — ЗНАМЕНАТЕЛЬ дня («N из M», «день закрыт»,
+   доля), done — отмеченные. Пропуск выпадает из знаменателя, но
+   нейтральным день не делает: нейтральность решает planned (dayScore). */
 function minDayMarks(dayKey) {
   const items = minDayItems(dayKey);
-  return { done: items.filter(i => isMarked(dayKey, i.id)).length, total: items.length };
+  let done = 0, skipped = 0;
+  for (const i of items) {
+    if (isMarked(dayKey, i.id)) done++;
+    else if (isSkipped(dayKey, i.id)) skipped++;
+  }
+  return { done, total: items.length - skipped, skipped, planned: items.length };
 }
 
 /* «День закрыт» — отмечены ВСЕ применимые пункты. Понятие принадлежит
@@ -2855,6 +3429,27 @@ function minDayMarks(dayKey) {
 function minDayClosed(dayKey) {
   const m = minDayMarks(dayKey);
   return m.total > 0 && m.done === m.total;
+}
+
+/* Счёт блока «Сегодня» для свёртки (задача Р2, п. 4): items — действия
+   блока, запланированные в этот день (секция groupedItems). Блок ВЫПОЛНЕН,
+   когда каждое из них отмечено или пропущено и их хотя бы одно. Правило
+   знаменателя то же, что у дня: пропущенное из «N из M» выпадает, поэтому
+   отмеченные выполненного блока и есть его знаменатель — «N из N».
+
+   В отличие от «день закрыт», сплошные пропуски блок выполненным делают:
+   свёртка — не оценка, а уборка решённого с глаз, и решено здесь всё.
+   Строка при этом говорит правду числом — «0 из 0 · пропусков K». Пустой
+   список выполненным не бывает: сворачивать нечего, и такой секции на
+   экране нет. Чистая функция от days{}: ui не читает, развёртку владельца
+   решает интерфейс. */
+function blockTally(items, dayKey) {
+  let done = 0, skipped = 0;
+  for (const i of items) {
+    if (isMarked(dayKey, i.id)) done++;
+    else if (isSkipped(dayKey, i.id)) skipped++;
+  }
+  return { done, skipped, full: items.length > 0 && done + skipped === items.length };
 }
 
 /* ── Доля дня и порог зачёта (задача 17) ───────────────────────
@@ -2875,9 +3470,15 @@ function dayThreshold() {
 
 /* Доля отмеченного среди применимых пунктов дня. Пунктов не было —
    null: день выпадает из счёта и серию не обрывает. */
+/* Пропуски (задача Р2) из доли выпадают, но НЕЙТРАЛЬНЫМ день делает только
+   пустой план: запланировано ≥ 1 и всё пропущено — доля 0, день не зачтён
+   и серию рвёт (или тратит амнистию) по общему правилу. Иначе «Не сегодня»
+   у всех дел давало бы серию без единой отметки — сквозной день, который
+   владелец назначает себе сам. */
 function dayScore(dayKey) {
   const m = minDayMarks(dayKey);
-  return m.total > 0 ? m.done / m.total : null;
+  if (!m.planned) return null;
+  return m.total > 0 ? m.done / m.total : 0;
 }
 
 /* Сравнение доли с порогом идёт с допуском: 0,1 и деления вроде 4/5
@@ -2897,7 +3498,8 @@ function dayNeed(total) {
    Пунктов нет — подписи нет, но узел остаётся: его нечем было бы
    создать, когда первый пункт включат обратно. */
 function thresholdNote() {
-  const total = minDayItems(todayKey()).length;
+  // знаменатель — тот же, что у планки дня: пропущенные сегодня не в счёте (Р2)
+  const total = minDayMarks(todayKey()).total;
   return total ? `День зачтён, если отмечено не меньше ${dayNeed(total)} из ${total}.` : '';
 }
 
@@ -3120,8 +3722,15 @@ function closeWeek() {
   for (const it of store.items) {
     if (it.type !== 'daily') continue;
     const marks = keys.map(k => isMarked(k, it.id));
-    if (!live(it) && !marks.some(Boolean)) continue; // убранные без отметок в окне не попадают в срез
-    perItem[it.id] = { name: it.name, marks, count: marks.filter(Boolean).length };
+    // пропуски (задача Р2) — отдельным рядом: срез неизменяем, и отметкой
+    // пропуск в нём не читается; count остаётся числом отметок
+    const skips = keys.map(k => isSkipped(k, it.id));
+    // убранные без отметок и пропусков в окне не попадают в срез
+    if (!live(it) && !marks.some(Boolean) && !skips.some(Boolean)) continue;
+    perItem[it.id] = {
+      name: it.name, marks, count: marks.filter(Boolean).length,
+      skips, skipCount: skips.filter(Boolean).length
+    };
   }
   const weekEnd = keys[6];
   const trainings = {};
@@ -3164,7 +3773,14 @@ function closeWeek() {
 const WIPE_KEY = NS + ':wiped';
 const CORRUPT_KEY = NS + ':corrupt';
 
-/* Числа для строки предупреждения и для строки возврата */
+/* Числа для строки предупреждения и для строки возврата.
+
+   Режимы — данные владельца (Р2/рецензия): store, где кроме заведённого
+   режима и журнала выбора нет ничего, прежде считался пустым, и чистка,
+   импорт и «Вернуть» стирали режимы без копии — необратимо. Считаются
+   режимы СВЕРХ стартового основного (он есть в любом store, и пустой
+   store от него содержательным не становится; переименованный основной —
+   уже слово владельца) и отрезки журнала выбора. */
 function wipeStats(s) {
   return {
     items: s.items.length,
@@ -3174,7 +3790,10 @@ function wipeStats(s) {
     ladders: s.items.filter(i => i.ladder).length,
     exercises: s.exercises.length,
     sessions: s.sessions.length,
-    notes: s.notes.length
+    notes: s.notes.length,
+    modes: (Array.isArray(s.modes) ? s.modes : [])
+      .filter(m => !(m && m.id === MAIN_MODE && m.name === MAIN_MODE_NAME)).length,
+    modeLog: Array.isArray(s.modeLog) ? s.modeLog.length : 0
   };
 }
 
@@ -3249,7 +3868,7 @@ const CORRUPT_SRC = {
   mirror: {
     key: MIRROR_CORRUPT_KEY,
     title: 'Резервная копия оказалась нечитаемой',
-    why: 'Приложение не смогло её прочитать и отложило содержимое сюда, ничего не стирая. Пока она лежит, новая копия не ведётся: «Убрать» освободит место под неё.',
+    why: 'Приложение не смогло её прочитать и отложило содержимое сюда, ничего не стирая. Пока она лежит, новая копия не ведётся: «Стереть нечитаемое» освободит место под неё.',
     file: 'minimum-копия-нечитаемая-'
   }
 };
@@ -3281,7 +3900,7 @@ function emptyStore(boundary, threshold) {
   const today = dateKeyShift(new Date(), b);
   return {
     schemaVersion: SCHEMA_VERSION,
-    items: [], groups: [], days: {}, weekLog: [], reviews: [],
+    items: [], groups: [], modes: programModes(), modeLog: [], days: {}, weekLog: [], reviews: [],
     pendingRaises: [], pendingLowers: [], exercises: [], sessions: [], notes: [],
     paramDecided: {},
     draftOneChange: '',
@@ -3426,11 +4045,14 @@ function exportJSON() {
 function dataCounts(s) {
   const len = v => (Array.isArray(v) ? v.length : 0);
   const days = (s && s.days && typeof s.days === 'object' && !Array.isArray(s.days)) ? s.days : {};
-  let marks = 0;
+  let marks = 0, skips = 0;
   for (const k of Object.keys(days)) {
     const d = days[k];
     if (d && typeof d === 'object' && !Array.isArray(d)) {
-      for (const id of Object.keys(d)) if (d[id] === true) marks++;
+      for (const id of Object.keys(d)) {
+        if (d[id] === true) marks++;
+        else if (d[id] === false) skips++; // пропуск «Не сегодня» (задача Р2) — своя категория
+      }
     }
   }
   // Категории пересчитаны по тому, что migrate ДЕЙСТВИТЕЛЬНО роняет
@@ -3444,7 +4066,7 @@ function dataCounts(s) {
   const params = (s && s.paramDecided && typeof s.paramDecided === 'object' && !Array.isArray(s.paramDecided))
     ? Object.keys(s.paramDecided).length : 0;
   return {
-    items: len(s && s.items), days: Object.keys(days).length, marks,
+    items: len(s && s.items), days: Object.keys(days).length, marks, skips,
     notes: len(s && s.notes), reviews: len(s && s.reviews),
     exercises: len(s && s.exercises), sessions: len(s && s.sessions),
     groups: len(s && s.groups),
@@ -3465,6 +4087,11 @@ function dataCounts(s) {
     // скаляры, категорий не получают, как note и at у пункта.
     blockDays: sum(s && s.groups, x => x.days),
     groupLog: sum(s && s.items, x => x.groupLog),
+    // задача Р2: режимы и журнал активного режима — список, из которого
+    // normModes роняет мусор и дубли, и отрезки, из которых normModeLog
+    // роняет битые, неизвестные и схлопнутые
+    modes: len(s && s.modes),
+    modeLog: len(s && s.modeLog),
     entries: sum(s && s.sessions, x => x.entries),
     params
   };
@@ -3474,6 +4101,7 @@ const COUNT_WORDS = [
   ['items', 'пункт', 'пункта', 'пунктов'],
   ['days', 'день', 'дня', 'дней'],
   ['marks', 'отметка', 'отметки', 'отметок'],
+  ['skips', 'пропуск', 'пропуска', 'пропусков'],
   ['notes', 'заметка', 'заметки', 'заметок'],
   ['reviews', 'разбор', 'разбора', 'разборов'],
   ['exercises', 'упражнение', 'упражнения', 'упражнений'],
@@ -3484,6 +4112,8 @@ const COUNT_WORDS = [
   ['schedule', 'отрезок расписания', 'отрезка расписания', 'отрезков расписания'],
   ['blockDays', 'отрезок дней блока', 'отрезка дней блока', 'отрезков дней блока'],
   ['groupLog', 'запись о блоке', 'записи о блоке', 'записей о блоке'],
+  ['modes', 'режим', 'режима', 'режимов'],
+  ['modeLog', 'отрезок режима', 'отрезка режима', 'отрезков режима'],
   ['entries', 'значение тренировки', 'значения тренировки', 'значений тренировки'],
   ['params', 'решение по параметру', 'решения по параметру', 'решений по параметру']
 ];
@@ -3596,6 +4226,13 @@ const ui = {
   addHint: false,
   raiseEdit: {},   // itemId -> true, когда открыт ввод своего значения
   missOpen: {},    // itemId -> true, когда показана подпись «вчера — пропуск»
+  // Развёрнутые владельцем выполненные блоки «Сегодня» (задача Р2, п. 4):
+  // { day, names: { имя блока: true } } | null. Состояние ЭКРАНА на день, а
+  // не хранилище: в store не пишется, смена логического дня его снимает
+  // (day сверяется при чтении, syncDay обнуляет), смена режима и замещение
+  // данных — тоже (resetSettingsView): одноимённый блок другого режима или
+  // других данных — другой блок. Ключ — имя блока активного режима.
+  todayUnfold: null,
   justClosed: false,
   // Поле addArea ('min' | 'habit') снято («Расписание 1/3», п. 2.4): форма
   // добавления осталась у одних привычек и параметров, действия заводятся
@@ -3653,6 +4290,13 @@ const ui = {
   blockFold: {},
   // быстрое добавление открыто в блоке с этим именем ('' — «Без блока»)
   quickFor: null,
+  // Режимы (задача Р2): раскрыт ли список под строкой «Режим: ‹имя›» — не
+  // форма, а раскрытие, как свёртка карточки; и две формы в нём —
+  // переименование режима (id) и «Новый режим». Обе в механизме «одна
+  // форма за раз» (openSettingsForm) и черновиков по ключу (currentFormKey)
+  modesOpen: false,
+  modeRename: null,
+  modeAdd: false,
   // свёртка «Показать неделю» в разборе (задача 16C): null — владелец её
   // в этом разборе не трогал, состояние берётся по умолчанию (задача 24)
   weekOpen: null,
@@ -3700,6 +4344,12 @@ function syncDay() {
   if (ui.renderedDayKey === null || todayKey() === ui.renderedDayKey) return false;
   ui.missOpen = {};
   ui.raiseEdit = {};
+  ui.todayUnfold = null; // развёртка блоков — состояние экрана на ДЕНЬ (Р2, п. 4)
+  // Сменой дня мог смениться и режим (задача Р2): отрезок журнала, начатый
+  // «завтра», приносит только импорт. «Настройки» держат о прежнем режиме
+  // формы, черновики и свёртки по ИМЕНИ блока, а одноимённый блок нового
+  // режима — другой блок. Сброс — тот же, что у «Выбрать»
+  if (modeOn(ui.renderedDayKey) !== activeMode()) resetSettingsView();
   ui.renderedDayKey = todayKey(); // фиксируем новый день и для не-«Сегодня» вкладок
   renderAll();
   return true;
@@ -3956,6 +4606,168 @@ function playDayClose(dayline, label) {
   }, DAY_CLOSE_MS + MOTION_TAIL_MS);
 }
 
+/* ── Свёртка выполненного блока «Сегодня» (задача Р2, п. 4) ─────
+   Свёрнутость — СОСТОЯНИЕ, и печатает его рендер (groupSections): при
+   загрузке экрана и любой полной перерисовке выполненный блок уже свёрнут,
+   и ничего не движется. Движение — только ОТКЛИК на отметку или пропуск,
+   сделавшие блок выполненным: строки блока схлопываются по высоте, затем
+   экран перерисовывается, и на месте заголовка встаёт свёрнутая строка.
+   Схлопываются строки, а не заголовок: имя блока остаётся на месте, и блок
+   читается как «сложился в свою строку», а не «исчез и появился другим».
+
+   Классы-триггеры (.folding) навешивает только motionFold — по образцу
+   motionLeave. Отличий два. transitionend фильтруется по узлу: переходы
+   детей (заливка круга, возврат сдвинутой свайпом строки) всплывают сюда
+   же и обрывали бы схлопывание раньше срока. И перерисовка не делается,
+   пока играет сцена закрытия дня: сцена главнее, и свернёт её конец.
+
+   Сцена закрытия дня и свёртка одним тапом: играет ТОЛЬКО сцена, а блок
+   сворачивается перерисовкой после её окончания (DAY_CLOSE_MS), без своей
+   анимации — двух одновременных откликов на одно действие не бывает.
+   Сцена — единственный заметный отклик приложения (CLAUDE.md, «Движение»),
+   и схлопывание рядом с ней спорило бы с ней за глаз.
+
+   Задержек нет: схлопывание начинается на t = 0 (задержка законна только
+   внутри сцены), а отложенная перерисовка — не движение, а смена
+   состояния после конца сцены. Reduced-motion — ранний выход: перерисовка
+   мгновенно, конечное состояние то же. */
+let foldTimer = null;
+
+function unfoldedToday(name) {
+  const u = ui.todayUnfold;
+  return !!(u && u.day === todayKey() && u.names[name] === true);
+}
+
+function unfoldToday(name) {
+  const t = todayKey();
+  if (!ui.todayUnfold || ui.todayUnfold.day !== t) ui.todayUnfold = { day: t, names: {} };
+  ui.todayUnfold.names[name] = true;
+}
+
+function unfoldForget(name) {
+  if (ui.todayUnfold) delete ui.todayUnfold.names[name];
+}
+
+/* Строки блока на экране: узел сразу за заголовком — .chain у блока из
+   двух и более пунктов, сама строка у блока из одного (groupSections).
+   Ищется по заголовку, а не по разметке строки: пометок блока в строке нет,
+   и заводить их ради поиска значило бы менять разметку обоих экранов. */
+function blockRowsEl(scr, name) {
+  const head = [...scr.querySelectorAll('.list > .g-label')]
+    .find(l => l.firstElementChild && l.firstElementChild.textContent === name);
+  const n = head && head.nextElementSibling;
+  return n && (n.classList.contains('chain') || n.classList.contains('rowwrap')) ? n : null;
+}
+
+/* Имя блока, чьей строке принадлежит узел; вне блока — null. Пункт без
+   блока стоит в секции без заголовка — перед ним строка или .chain, а не
+   .g-label */
+function blockNameOfNode(node) {
+  const wrap = node && node.closest ? node.closest('.list .rowwrap') : null;
+  if (!wrap) return null;
+  const body = wrap.parentElement && wrap.parentElement.classList.contains('chain') ? wrap.parentElement : wrap;
+  const head = body.previousElementSibling;
+  return head && head.classList.contains('g-label') && head.firstElementChild ? head.firstElementChild.textContent : null;
+}
+
+function motionFold(node, done) {
+  if (!node || prefersReducedMotion()) { done(); return; }
+  node.style.maxHeight = node.scrollHeight + 'px';
+  void node.offsetHeight; // рефлоу: стартовая высота применяется до перехода
+  node.classList.add('folding');
+  node.style.maxHeight = '0px';
+  let fired = false;
+  const fin = e => {
+    if (e && e.target !== node) return; // переход ребёнка всплыл — не наш
+    if (fired) return;
+    fired = true;
+    node.removeEventListener('transitionend', fin);
+    if (node.isConnected) done(); // перерисованный уже без узла экран свёрнут сам
+  };
+  node.addEventListener('transitionend', fin);
+  setTimeout(fin, MOTION_MS + MOTION_TAIL_MS);
+}
+
+/* Перерисовка, сворачивающая блок. Фокус не теряется: был на узле, который
+   пережил перерисовку (тот же data-act и data-id), — возвращается ему; был в
+   строках свернувшегося блока — встаёт на его свёрнутую строку, то есть
+   туда, где эти строки были. Скрытый экран не рисуется: показ вкладки или
+   закрытие листа перерисует «Сегодня» сам. Сменившийся логический день —
+   полная сверка (инвариант 8), а не одна вкладка. */
+function foldRender() {
+  clearTimeout(foldTimer);
+  foldTimer = null;
+  if (syncDay()) return;
+  const scr = el('scr-today');
+  if (scr.hidden) return;
+  const a = document.activeElement;
+  const src = a && a !== document.body && scr.contains(a)
+    ? { act: a.dataset ? a.dataset.act : '', id: a.dataset ? a.dataset.id || '' : '', block: blockNameOfNode(a) }
+    : null;
+  renderToday();
+  if (!src) return;
+  const same = src.act
+    ? [...scr.querySelectorAll(`[data-act="${src.act}"]`)].find(x => (x.dataset.id || '') === src.id)
+    : null;
+  const fold = src.block !== null
+    ? [...scr.querySelectorAll('[data-act="block-unfold"]')].find(x => x.dataset.name === src.block)
+    : null;
+  const target = same || fold;
+  if (target) target.focus({ preventScroll: true });
+}
+
+function foldAfterScene() {
+  clearTimeout(foldTimer);
+  if (prefersReducedMotion()) { foldRender(); return; }
+  foldTimer = setTimeout(foldRender, DAY_CLOSE_MS + MOTION_TAIL_MS);
+}
+
+/* Отклик горячего пути: отметка, пропуск или «Вернуть» у пункта id уже
+   записаны и показаны точечно. scene — этим же действием закрылся день.
+
+   Блок сворачивается, когда действие сделало его выполненным. Флаг
+   развёртки при этом снимается: владелец развернул выполненный блок, снял
+   в нём отметку (блок остался развёрнутым — флаг жив) и отметил снова —
+   блок снова выполнен и сворачивается. Любое действие внутри выполненного
+   блока делает его невыполненным (отмечать нечего, пропускать нечего), так
+   что «стал выполненным» и «выполнен после действия» здесь одно и то же. */
+function todayFoldAfter(id, scene) {
+  const scr = el('scr-today');
+  const t = todayKey();
+  const secs = groupedItems(dueDaily('min', t)).filter(s => s.group);
+  const sec = secs.find(s => s.items.some(i => i.id === id));
+  let node = null;
+  if (sec && blockTally(sec.items, t).full) {
+    unfoldForget(sec.group.name);
+    node = blockRowsEl(scr, sec.group.name);
+  }
+  if (scene) {
+    // Сцена главнее: своей анимации у свёртки нет. Перерисовка после сцены
+    // сворачивает ВСЕ блоки, чьи строки ещё на экране, — и этот, и тот, чьё
+    // схлопывание сцена застала на полпути (оно перерисовку уступает сцене)
+    const owed = secs.some(s => blockTally(s.items, t).full && !unfoldedToday(s.group.name) && blockRowsEl(scr, s.group.name));
+    if (owed) foldAfterScene();
+    return;
+  }
+  if (!node) return; // пункт вне блоков, или блок не выполнен — не сворачивается
+  motionFold(node, () => {
+    if (scr.querySelector('.dayline.closing')) return; // сцена свернёт сама по окончании
+    foldRender();
+  });
+}
+
+/* Тап по свёрнутой строке: блок разворачивается до конца дня. Фокус — на
+   первый круг блока: строка-кнопка исчезла, и её место заняли строки, с
+   которыми и пришли что-то делать. У блока, где всё пропущено, круги
+   неактивны — фокус на первое «Вернуть». */
+function focusUnfolded(name) {
+  const rows = blockRowsEl(el('scr-today'), name);
+  if (!rows) return;
+  const target = rows.querySelector('input[data-act="mark"]:not(:disabled)') ||
+    rows.querySelector('.skipbtn:not([hidden])');
+  if (target) target.focus({ preventScroll: true });
+}
+
 /* Четыре вкладки плюс ДВА листа поверх них: разбор недели и тренировка.
    Третьим был лист детали пункта; он существовал ради формулы и лестницы
    и ушёл вместе с ними (задача 28.D). Разбор с таб-бара ушёл (задача 16B) —
@@ -4007,19 +4819,26 @@ function renderToday() {
   // применимость ДНЯ, а не «есть сейчас» (задача 29/B): пункт вне
   // маски сегодняшнего дня не идёт ни в список, ни в знаменатель планки
   const items = dueDaily('min', t);
-  const done = items.filter(i => isMarked(t, i.id)).length;
-  const total = items.length;
-  const pct = total ? Math.round(done / total * 100) : 0;
-  const closed = total > 0 && done === total;
+  const { done, total, pct, closed } = todayCounts(items, t);
 
   // строка дня — ТРЕТЬЕЙ в шапке: над планкой и над списком. Ниже она
   // физически читалась бы как комментарий к сделанному (задача 28.E/B, п. 2.1).
   // Ни кавычек, ни курсива, ни акцента, ни aria-live, ни своей анимации:
   // это тихая справка о дате, а не объявление и не оценка
+  // Имя активного режима (задача Р2) — рядом с датой, приглушённо и только
+  // когда выбирать есть из чего: при одном живом режиме разметки нет вовсе,
+  // и шапка та же, что до режимов. Дата и имя — одна строка шапки (.hdate),
+  // поэтому строка дня остаётся третьей. Имя — слово владельца: esc, без
+  // кавычек и капители; «режим» перед ним — только для чтения с экрана
+  const modes = liveModes();
+  const am = modes.length > 1 ? findMode(activeMode()) : null;
+  const date = am
+    ? `<div class="hdate"><h1>${esc(fmtDay(t))}</h1><p class="hmode"><span class="sr-only">режим </span>${esc(am.name)}</p></div>`
+    : `<h1>${esc(fmtDay(t))}</h1>`;
   let h = `
     <header class="page">
       <p class="overline">${esc(fmtWeekday(t))}</p>
-      <h1>${esc(fmtDay(t))}</h1>
+      ${date}
       <p class="dline">${esc(dayLine(t))}</p>
     </header>`;
 
@@ -4028,16 +4847,23 @@ function renderToday() {
   }
 
   // пустой список — как на «Привычках»: планка дня без пунктов ничего не
-  // измеряет, поэтому её нет вовсе (задача 16.1, состояние после чистки)
-  if (total) {
+  // измеряет, поэтому её нет вовсе (задача 16.1, состояние после чистки).
+  // Список и планка стоят по ЗАПЛАНИРОВАННЫМ (items), а не по знаменателю:
+  // всё пропущено — строки остаются на месте (вернуть можно только из них),
+  // планка пуста и честно говорит «0 из 0» (задача Р2). Строки блока, где
+  // пропущено всё, свёрнуты в его строку («0 из 0 · пропусков K», п. 4) —
+  // и возвращаются её развёрткой, а не пропадают
+  if (items.length) {
     h += `
     <div class="dayline">
       <div class="bar"><i style="width:${pct}%"><b class="sheen" aria-hidden="true"></b></i></div>
       <p class="bar-note${closed ? ' ok' : ''}" aria-live="polite">${closed ? 'День закрыт' : `<b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
     </div>`;
     h += `<div class="list">` + groupSections(items, t, false) + `</div>`;
-  } else if (liveDaily().some(i => i.area === 'min')) {
+  } else if (liveDaily().some(i => i.area === 'min' && itemMode(i) === modeOn(t))) {
     // Действия есть, но ни одно не стоит в этом дне («Расписание 1/3», п. 2.1):
+    // считаются действия активного режима (Р2) — «Настройки» показывают его,
+    // и строка «пока нет» звала бы туда, где действий действительно нет
     // будний блок в субботу. «Пунктов пока нет» здесь было бы неправдой и
     // звало бы заводить то, что уже заведено. Строка называет факт дня —
     // ни оценки, ни призыва, и планки тоже нет: измерять нечего.
@@ -4090,6 +4916,16 @@ function renderToday() {
 function groupSections(items, t, habit) {
   let h = '';
   for (const sec of groupedItems(items)) {
+    // Выполненный блок «Сегодня» — одной строкой (задача Р2, п. 4). Только
+    // блок и только на «Сегодня»: пункты без блока не сворачиваются, а на
+    // «Привычках» «все отмечены» нормой не является (та же причина, по
+    // которой там нет сцены). Рендер печатает свёрнутое СОСТОЯНИЕ — без
+    // единого класса-триггера: при загрузке экрана и любой перерисовке
+    // выполненный блок уже свёрнут и ничего не проигрывает
+    if (sec.group && !habit) {
+      const b = blockTally(sec.items, t);
+      if (b.full && !unfoldedToday(sec.group.name)) { h += foldRow(sec.group, b); continue; }
+    }
     if (sec.group) {
       const cap = (sec.group.caption || '').trim();
       h += `<p class="g-label"><span>${esc(sec.group.name)}</span>${cap ? `<span class="g-cap">${esc(cap)}</span>` : ''}</p>`;
@@ -4100,6 +4936,30 @@ function groupSections(items, t, habit) {
     if (chained) h += `</div>`;
   }
   return h;
+}
+
+/* Свёрнутый блок «Сегодня» (задача Р2, п. 4): имя и подпись блока, справа
+   счёт — «✓ N из N» без пропусков, «N из N · пропусков K» с ними. N —
+   отмеченные: у выполненного блока это и есть знаменатель (blockTally).
+   ✓ — текстовый знак U+2713, не эмодзи и не награда: он говорит о блоке
+   «решён», а не о человеке, и скрыт от AT — там то же говорит «отмечено».
+
+   Строка — кнопка, одна цель — одно действие: тап разворачивает блок до
+   конца дня. aria-expanded="false" объявляет, что за ней свёрнуто; а
+   aria-controls нет намеренно — строк блока в DOM нет, пока он свёрнут, и
+   указывать было бы не на что (задача 26, п. 8.1). Имя для AT — словами,
+   без знака: «Утро, 7:00: отмечено 5 из 5, пропусков 1». */
+function foldRow(g, b) {
+  const cap = (g.caption || '').trim();
+  const n = b.done;
+  const k = b.skipped;
+  const count = k
+    ? `${n}&nbsp;из&nbsp;${n} · пропусков&nbsp;${k}`
+    : `<span aria-hidden="true">&#10003;</span>&nbsp;${n}&nbsp;из&nbsp;${n}`;
+  const label = `${g.name}${cap ? ', ' + cap : ''}: отмечено ${n} из ${n}${k ? ', пропусков ' + k : ''}`;
+  return `<button type="button" class="bfold" data-act="block-unfold" data-name="${esc(g.name)}" aria-expanded="false" aria-label="${esc(label)}">` +
+    `<span class="bf-name">${esc(g.name)}</span>${cap ? `<span class="g-cap">${esc(cap)}</span>` : ''}` +
+    `<span class="bf-count">${count}</span></button>`;
 }
 
 /* Строка ежедневного пункта: чекбокс, точка-маркер, ретро-отметка —
@@ -4126,8 +4986,28 @@ function rowNote(it) {
   return [it.at, it.note].map(x => (x || '').trim()).filter(Boolean).join(' · ');
 }
 
+/* Кнопка под строкой действия «Сегодня» (задача Р2): «Не сегодня» у
+   неотмеченного, «Вернуть» у пропущенного, у отмеченного — скрыта. Стоит в
+   разметке ВСЕГДА, а не рождается жестом: свайп её только выдвигает, а
+   клавиатура доходит до неё обычным Tab — фокус выдвигает её сам (CSS). Узел
+   один на все три состояния, поэтому точечный путь меняет атрибуты, а не
+   пересоздаёт его, и фокус на ней переживает тап. */
+const SKIP_WORD = { skip: ['Не сегодня', 'не сегодня'], unskip: ['Вернуть', 'вернуть'] };
+
+function skipBtnAttrs(it, on, skip) {
+  const act = skip ? 'unskip' : 'skip';
+  return { act, text: SKIP_WORD[act][0], label: `${SKIP_WORD[act][1]}: «${it.name}»`, hidden: on };
+}
+
+function skipBtn(it, on, skip) {
+  const a = skipBtnAttrs(it, on, skip);
+  return `<button type="button" class="btn skipbtn" data-act="${a.act}" data-id="${esc(it.id)}" aria-label="${esc(a.label)}"${a.hidden ? ' hidden' : ''}>${a.text}</button>`;
+}
+
 function dailyRow(it, t, habit, chain) {
   const on = isMarked(t, it.id);
+  // пропуск — только у действия «Сегодня»; у привычки строка его не знает
+  const skip = !habit && isSkipped(t, it.id);
   const miss = missedYesterday(it, t);
   const vu = valUnit(it);
   const streak = habit ? habitStreak(it) : 0; // при нуле справка скрыта
@@ -4138,11 +5018,15 @@ function dailyRow(it, t, habit, chain) {
   const segs = chain
     ? `<span class="cseg up" aria-hidden="true"></span><span class="cseg down" aria-hidden="true"></span>`
     : '';
+  // Строка действия «Сегодня» сдвигается свайпом (.swipe): жест выдвигает
+  // кнопку «Не сегодня» / «Вернуть» из-под строки. Пропущенная строка (.skip)
+  // стоит на месте — зачёркнута, приглушена, круг неактивен (disabled):
+  // снять пропуск — «Вернуть», а не тап по кругу
   return `
-      <div class="rowwrap${habit ? ' hrow' : ''}">
+      <div class="rowwrap${habit ? ' hrow' : ' swipe'}${skip ? ' skip' : ''}">
         ${segs}
         <label class="row check${on ? ' on' : ''}">
-          <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}>
+          <input type="checkbox" data-act="mark" data-id="${esc(it.id)}"${on ? ' checked' : ''}${skip ? ' disabled' : ''}>
           <span class="box" aria-hidden="true"></span>
           <span class="txt">
             <span class="tname">${esc(it.name)}${vu ? ` <span class="val">${esc(vu)}</span>` : ''}${streak ? ` <span class="streak">серия ${streak} нед</span>` : ''}</span>
@@ -4151,7 +5035,7 @@ function dailyRow(it, t, habit, chain) {
         </label>
         ${miss ? `<button type="button" class="dot" data-act="miss-note" data-id="${esc(it.id)}" aria-expanded="${ui.missOpen[it.id] ? 'true' : 'false'}" aria-controls="miss-${esc(it.id)}" aria-label="вчера — пропуск"><i></i></button>` : ''}
         ${miss ? `<p class="miss-note" id="miss-${esc(it.id)}"${ui.missOpen[it.id] ? '' : ' hidden'}>вчера — пропуск<button type="button" class="undo" data-act="mark-yesterday" data-id="${esc(it.id)}" aria-label="отметить вчера: «${esc(it.name)}»">отметить</button></p>` : ''}
-        ${habit ? habitWeekRow(it, t) : ''}
+        ${habit ? habitWeekRow(it, t) : skipBtn(it, on, skip)}
       </div>`;
 }
 
@@ -4204,6 +5088,11 @@ function renderHabits() {
       <p class="bar-note${allDone ? ' ok' : ''}" aria-live="polite">${allDone ? 'Все отмечены' : `сегодня <b>${done}</b>&nbsp;из&nbsp;${total}`}</p>
     </div>
     <div class="list">` + groupSections(habits, t, true) + `</div>`;
+  } else if (liveDaily().some(i => i.area === 'habit')) {
+    // Привычки есть, но ни одна не стоит в этом дне (задача Р2, п. 5) — тем же
+    // правилом, что «Сегодня»: «пока нет» было бы неправдой и звало бы заводить
+    // заведённое. Без планки — измерять нечего.
+    h += `<p class="muted">На сегодня привычек в расписании нет.</p>`;
   } else {
     h += `<p class="muted">Привычек пока нет — добавить можно в Настройках → Привычки.</p>`;
   }
@@ -4379,9 +5268,12 @@ function pcard(title, body) {
 function dayBar() {
   const t = todayKey();
   const m = minDayMarks(t);
-  if (!m.total) return ''; // нечего измерять — полосы нет, как и на «Сегодня»
-  const pct = Math.round(m.done / m.total * 100);
-  const closed = m.done === m.total;
+  // нечего измерять — полосы нет, как и на «Сегодня»: решает ПЛАН, а не
+  // знаменатель. Всё пропущено (задача Р2) — полоса пуста, «0 из 0», и
+  // «День закрыт» не печатается: закрывать было что, закрыто не было
+  if (!m.planned) return '';
+  const pct = m.total ? Math.round(m.done / m.total * 100) : 0;
+  const closed = m.total > 0 && m.done === m.total;
   return `
     <div class="dbar" aria-hidden="true"><i style="width:${pct}%"></i></div>
     <p class="muted dbar-note">${closed ? 'День закрыт' : `${m.done} из ${m.total} сегодня`}</p>`;
@@ -4513,13 +5405,24 @@ function renderTrain() {
    подпись пересчитывает сам renderSettings. Узел #thr-note остаётся —
    его печатает разметка секции. */
 
+/* Числа планки «Сегодня» — одной функцией для рендера и точечного пути
+   (сторож сравнивает их вывод). Пропущенные (задача Р2) выпадают из
+   знаменателя тем же правилом, что в minDayMarks: «N из M» и «День закрыт»
+   считают только непропущенные. */
+function todayCounts(items, t) {
+  let done = 0, skipped = 0;
+  for (const i of items) {
+    if (isMarked(t, i.id)) done++;
+    else if (isSkipped(t, i.id)) skipped++;
+  }
+  const total = items.length - skipped;
+  return { done, total, pct: total ? Math.round(done / total * 100) : 0, closed: total > 0 && done === total };
+}
+
 function updateDayline() {
   const t = todayKey();
   const items = dueDaily('min', t); // то же правило, что в renderToday: сторож сравнивает их вывод
-  const done = items.filter(i => isMarked(t, i.id)).length;
-  const total = items.length;
-  const pct = total ? Math.round(done / total * 100) : 0;
-  const closed = total > 0 && done === total;
+  const { done, total, pct, closed } = todayCounts(items, t);
   const bar = document.querySelector('#scr-today .bar i');
   if (bar) bar.style.width = pct + '%';
   const note = document.querySelector('#scr-today .bar-note');
@@ -4568,6 +5471,12 @@ function updateTodayMark(input) {
   const scr = input.closest('section.screen');
   if (scr && scr.id === 'scr-habits') { updateHabitsDayline(); updateHabitWeekRow(input); }
   else {
+    // у отмеченного «Не сегодня» не предлагается (задача Р2): кнопка остаётся
+    // в разметке и прячется — рендер печатает её так же
+    const wrap = input.closest('.rowwrap');
+    const btn = wrap && wrap.querySelector('.skipbtn');
+    if (btn) btn.hidden = on;
+    if (wrap) swipeClose(wrap);
     updateDayline();
     // Сцена — только на «Сегодня» и только когда день закрылся ИМЕННО этим
     // тапом (задача 28.E/C, п. 2.2). На «Привычках» её нет: при норме
@@ -4575,10 +5484,48 @@ function updateTodayMark(input) {
     // в сторону ежедневности там, где конституция специально разрешила
     // пропуски. Недельному счётчику — тоже нет: это завело бы вторую валюту
     // на том же экране.
-    if (on && minDayClosed(todayKey())) {
-      playDayClose(scr && scr.querySelector('.dayline'), label);
-    }
+    const scene = on && minDayClosed(todayKey());
+    if (scene) playDayClose(scr && scr.querySelector('.dayline'), label);
+    // свёртка выполненного блока (задача Р2, п. 4) — последней: её
+    // перерисовка при reduced-motion пересоздаёт узлы, которые трогали выше
+    todayFoldAfter(input.dataset.id, scene);
   }
+}
+
+/* Точечный путь «Не сегодня» / «Вернуть» (задача Р2) — как у отметки:
+   строка, кнопка и планка дня меняются на месте, и разметка обязана совпасть
+   с перерисовкой (сторож). Узлы не пересоздаются: фокус, пришедший на кнопку
+   с клавиатуры, остаётся на ней, и она читается уже как «Вернуть».
+
+   Сцена закрытия дня — если день закрылся ЭТИМ пропуском: последний
+   неотмеченный пункт ушёл из знаменателя, а все прочие отмечены. Сцена —
+   отклик на действие, закрывшее день, и какое действие это было, ей всё
+   равно. Кольца от круга при этом нет: круг пропущенного неактивен, и
+   кольцо от него читалось бы отметкой, которой не было, — играют планка и
+   фраза. Все пропущены — знаменатель пуст, день не закрыт, сцены нет.
+   «Вернуть» закрыть день не может: знаменатель растёт, отметок не прибавилось. */
+function updateTodaySkip(id) {
+  const scr = el('scr-today');
+  const input = [...scr.querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
+  const wrap = input && input.closest('.rowwrap');
+  const btn = wrap && wrap.querySelector('.skipbtn');
+  const it = store.items.find(i => i.id === id);
+  if (!btn || !it) { renderToday(); return; }
+  const t = todayKey();
+  const skip = isSkipped(t, id);
+  const on = isMarked(t, id);
+  swipeClose(wrap);
+  wrap.classList.toggle('skip', skip);
+  input.disabled = skip;
+  const a = skipBtnAttrs(it, on, skip);
+  btn.dataset.act = a.act;
+  btn.textContent = a.text;
+  btn.setAttribute('aria-label', a.label);
+  btn.hidden = a.hidden;
+  updateDayline();
+  const scene = skip && minDayClosed(t);
+  if (scene) playDayClose(scr.querySelector('.dayline'), null);
+  todayFoldAfter(id, scene); // пропуск последнего в блоке сворачивает его, как отметка (Р2, п. 4)
 }
 
 /* Дневные экраны: перерисовка и контейнер по активной вкладке */
@@ -4676,8 +5623,14 @@ function renderReview() {
   }
 
   const keys = windowKeys();
-  const inWeek = it => live(it) || keys.some(k => isMarked(k, it.id));
-  const minItems = store.items.filter(it => it.type === 'daily' && it.area === 'min' && inWeek(it));
+  // убранный пункт стоит в сетке, если в окне у него есть факт — отметка или
+  // пропуск (задача Р2: тем же правилом, что срез closeWeek)
+  const inWeek = it => live(it) || keys.some(k => isMarked(k, it.id) || isSkipped(k, it.id));
+  // действия — живые активного режима и живые, стоявшие в плане разбираемой
+  // недели (её режимом мог быть другой, Р2); убранные — по отметкам, как прежде
+  const am = activeMode();
+  const minItems = store.items.filter(it => it.type === 'daily' && it.area === 'min' &&
+    (live(it) ? (itemMode(it) === am || keys.some(k => dueOn(it, k))) : inWeek(it)));
   const habitItems = store.items.filter(it => it.type === 'daily' && it.area === 'habit' && inWeek(it));
 
   h += `<p class="muted">Неделя ${esc(fmtShort(keys[0]))} — ${esc(fmtShort(keys[6]))}</p>`;
@@ -4712,16 +5665,31 @@ function renderReview() {
         if (!p.planned) sr = ', не запланировано';
         else {
           sr = `, отмечено ${p.done} из ${p.planned}`;
-          if (p.planned < 7) {
-            plan = `<span class="g-plan" aria-hidden="true">запланировано ${p.planned}&nbsp;${plural(p.planned, 'день', 'дня', 'дней')}</span>`;
+          // «пропусков K» (задача Р2) — рядом с «запланировано D дней», той
+          // же приглушённой подписью и тем же правилом: число — в sr-only,
+          // подпись от AT скрыта. Пропуск в знаменатель не входит и
+          // недобором не зовётся: план остаётся планом, пропуск — решением
+          const k = weekSkips(it, keys);
+          const parts = [];
+          if (p.planned < 7) parts.push(`запланировано ${p.planned}&nbsp;${plural(p.planned, 'день', 'дня', 'дней')}`);
+          if (k) {
+            parts.push(`пропусков&nbsp;${k}`);
+            // и КАКИЕ дни (Р2/рецензия, п. 3 постановки: у ячейки пропуска —
+            // «пропуск» для AT). Ячейки сетки скрыты от AT целиком, как и
+            // отметки, поэтому пропуск называется в том же sr-only строки:
+            // «пропусков 1: пятница». Дни — те же, что посчитаны в K
+            sr += `, пропусков ${k}: ${keys.filter(d => isSkipped(d, it.id) && dueOn(it, d)).map(d => DAY_NAME[weekdayOf(d)]).join(', ')}`;
           }
+          if (parts.length) plan = `<span class="g-plan" aria-hidden="true">${parts.join(' · ')}</span>`;
         }
       } else {
         sr = `, отмечено ${keys.filter(k => isMarked(k, it.id)).length} из 7`;
       }
       g += `<span class="g-name">${esc(it.name)}${plan}<span class="sr-only">${sr}</span></span>`;
+      // ячейка пропуска — круг с чертой (.skip): только у действий, у привычки
+      // пропуска не бывает. Как и отметки, круги показывают факт, а не план
       g += `<span class="g-vis" aria-hidden="true">` +
-        keys.map(k => `<i class="c${isMarked(k, it.id) ? ' on' : ''}"></i>`).join('') + `</span>`;
+        keys.map(k => `<i class="c${isMarked(k, it.id) ? ' on' : ''}${it.area === 'min' && isSkipped(k, it.id) ? ' skip' : ''}"></i>`).join('') + `</span>`;
     }
     return g + `</div>`;
   };
@@ -4956,6 +5924,12 @@ function currentFormKey() {
   if (ui.groupRename !== null) return 'group:' + ui.groupRename;
   if (ui.exAddOpen) return 'ex+new';
   if (ui.exEditingId !== null) return 'ex:' + ui.exEditingId;
+  // формы режима (задача Р2): переименование — по id режима, добавление — тем
+  // же разделителем «+», что у прочих форм добавления. Приставка «mode»
+  // своя: ни с «group:» + имя, ни с «ex:» + id, ни с «quick:» + имя ключи не
+  // совпадут ни при каком имени и id
+  if (ui.modeAdd) return 'mode+new';
+  if (ui.modeRename !== null) return 'mode:' + ui.modeRename;
   return null;
 }
 
@@ -4966,13 +5940,14 @@ function currentFormKey() {
    или id — «new» (Р1/ревью).
    Быстрое добавление (data-form="quick") своего вида не требует: общая
    ветка даёт 'quick:' + имя блока, у «Без блока» — 'quick:'. */
-const FORM_KIND = { 'group-edit': 'group', 'ex-edit': 'ex' };
+const FORM_KIND = { 'group-edit': 'group', 'ex-edit': 'ex', 'mode-rename': 'mode' };
 
 function domFormKey(form) {
   const f = form.dataset.form;
   if (f === 'add') return 'add';
   if (f === 'group-add') return 'group+new';
   if (f === 'ex-add') return 'ex+new';
+  if (f === 'mode-add') return 'mode+new';
   return (FORM_KIND[f] || f) + ':' + (form.dataset.id || '');
 }
 
@@ -5067,6 +6042,8 @@ function settingsFormsClosed() {
   ui.quickFor = null;
   ui.exEditingId = null;
   ui.exAddOpen = false;
+  ui.modeRename = null; // формы режима (задача Р2) — те же правила
+  ui.modeAdd = false;
   // производные состояния открытой формы принадлежат ей, не экрану. Маска
   // дней пункта прежде здесь не гасла: выбранные в одной форме дни
   // переезжали в форму соседнего пункта. Теперь они лежат в черновике своей
@@ -5102,6 +6079,15 @@ function resetSettingsView() {
   ui.goneNote = null;
   ui.goneGroup = null;
   ui.blockFold = {};
+  // и раскрытый список режимов (Р2/рецензия): он показывал режимы ПРЕЖНИХ
+  // данных, и после импорта или чистки оставался раскрытым над чужими.
+  // Формы списка гасит settingsFormsClosed выше
+  ui.modesOpen = false;
+  // Развёртка блоков «Сегодня» (задача Р2, п. 4) — не «Настройки», но повод
+  // тот же: все вызывающие меняют, КАКИЕ блоки стоят за именами (замещение
+  // данных, выбор режима, день с другим режимом). Развёрнутое «Утро» прежних
+  // данных или прежнего режима не должно разворачивать чужое «Утро»
+  ui.todayUnfold = null;
 }
 
 /* Переименование блока уносит с собой черновики, привязанные к его ИМЕНИ
@@ -5166,7 +6152,7 @@ function restoreOpenForm() {
    ДЛИННАЯ — блок «Убранные» внизу своей области. Пустым не рисуется.
 
    Род слова разный: пункт и блок убраны, упражнение убрано. */
-const GONE_WORD = { item: 'убран', ex: 'убрано', group: 'убран' };
+const GONE_WORD = { item: 'убран', ex: 'убрано', group: 'убран', mode: 'убран' };
 
 /* Что произойдёт — названо МЕЖДУ тапами и названо нейтрально: последствие,
    без тревоги и без уговоров. Числа «во что превратится серия» здесь нет и
@@ -5178,7 +6164,14 @@ const GONE_WORD = { item: 'убран', ex: 'убрано', group: 'убран' 
 const REMOVE_WHAT = {
   item: 'Пункт уйдёт из списков. Отметки и прошлые дни останутся как есть.',
   ex: 'Упражнение уйдёт из списков. Записанные тренировки и история нагрузки останутся как есть.',
-  group: 'Блок уйдёт из списков вместе с действиями и привычками. Отметки и прошлые дни останутся как есть.'
+  group: 'Блок уйдёт из списков вместе с действиями и привычками. Отметки и прошлые дни останутся как есть.',
+  // одноимённый блок жив в другом режиме — привычки, параметры и недельные
+  // счётчики остаются при нём (removeGroup, Р2), и прежние слова обещали бы
+  // уход, которого второй тап не сделает (Р2/рецензия)
+  groupNamesake: 'Блок уйдёт из списков вместе со своими действиями. Привычки и недельные счётчики останутся: блок с этим именем есть в другом режиме. Отметки и прошлые дни останутся как есть.',
+  // режим (задача Р2): блоки и действия режима никуда не уходят — уходит
+  // только строка выбора; прошлые дни читаются режимом того дня
+  mode: 'Режим уйдёт из выбора. Прошлые дни и отметки останутся как есть.'
 };
 
 /* Отказы формы блока — по причине, которую назвала доменная операция
@@ -5189,6 +6182,15 @@ const GROUP_REFUSAL = {
   empty: 'Название не заполнено',
   taken: 'Это имя уже занято',
   nodays: 'Нужен хотя бы один день недели',
+  storage: 'Не сохранено: хранилище недоступно'
+};
+
+/* Отказы форм режима (задача Р2) — по причине, названной операцией
+   (addMode, renameMode). Пустое имя звучит той же фразой, что у блока */
+const MODE_REFUSAL = {
+  empty: GROUP_REFUSAL.empty,
+  taken: 'Режим с таким именем уже есть',
+  missing: 'Не сохранено: режима больше нет',
   storage: 'Не сохранено: хранилище недоступно'
 };
 
@@ -5259,9 +6261,11 @@ function goneRow(x, kind, attr) {
    «Расписания» стоят над убранными действиями.
    Прежний отрезок пункта, у которого уже есть преемник (laterSegmentOf),
    здесь тоже не стоит: его дело уже вернулось и живёт строкой выше, а
-   «Вернуть» завело бы дубль (Р1/рецензия). */
+   «Вернуть» завело бы дубль (Р1/рецензия). У упражнения — то же правило
+   (laterExerciseOf, задача Р2, п. 5). */
 function goneBlock(list, kind, lead) {
-  const gone = list.filter(x => !live(x) && ui.goneNote !== x.id && !(kind === 'item' && laterSegmentOf(x)));
+  const succ = kind === 'item' ? laterSegmentOf : laterExerciseOf;
+  const gone = list.filter(x => !live(x) && ui.goneNote !== x.id && !succ(x));
   const rows = (lead || '') + gone.map(x => goneRow(x, kind, `data-id="${esc(x.id)}"`)).join('');
   if (!rows) return '';
   return `<h2>Убранные</h2><div class="list">${rows}</div>`;
@@ -5347,14 +6351,16 @@ function quickTail(name) {
     : `<button class="btn wide" data-act="quick-open" data-name="${esc(name)}">Добавить действия</button>`);
 }
 
-/* Быстрое добавление: по действию в строке, подпись — после « · ». Поле —
+/* Быстрое добавление: по действию в строке, подпись — после « · » или
+   тире с пробелами (« — », « – », « - »; подсказка называет два самых
+   набираемых, парсер принимает все четыре). Поле —
    textarea с кеглем 16px (iOS не масштабирует при фокусе, общее правило
    .field textarea). Разбор строк — parseQuickLines, запись — addActions. */
 function quickForm(name) {
   return `
         <div class="card form" data-form="quick" data-id="${esc(name)}">
           <label class="field"><span>Действия — по одному в строке</span><textarea id="q-lines" rows="5" placeholder="Кровать&#10;Развитие · 10 мин"></textarea></label>
-          <p class="muted">После « · » — подпись.</p>
+          <p class="muted">Подпись — после « · » или « - ».</p>
           <div class="btns">
             <button class="btn primary" data-act="quick-save" data-name="${esc(name)}">Добавить</button>
             <button class="btn quiet" data-act="quick-cancel">Отмена</button>
@@ -5366,6 +6372,17 @@ function quickForm(name) {
    уход — вторым тапом, последствие ПОД кнопкой (правило 28.D, п. 9.3).
    Каждое действие в своём ряду — как «Убрать» у пункта: надпись
    «Подтвердить: убрать блок» не переносит соседей и не сдвигает кнопку. */
+/* «Дублировать блок» получает вариант «в режим …» (задача Р2) — по кнопке
+   на каждый ЖИВОЙ режим, кроме режима самого блока, и только когда такие
+   есть: при одном режиме ряд прежний. Кнопки, а не выбор с отдельным
+   «Дублировать»: копия ничего не стирает и делается одним тапом, как
+   «Дублировать блок». Ряд тот же — это варианты одного действия. */
+function dupTargets(g) {
+  return liveModes().filter(m => m.id !== blockMode(g)).map(m =>
+    `<button class="btn quiet" data-act="group-dup-to" data-name="${esc(g.name)}" data-mode="${esc(m.id)}"` +
+    ` aria-label="дублировать блок «${esc(g.name)}» в режим «${esc(m.name)}»">в режим «${esc(m.name)}»</button>`).join('');
+}
+
 function blockForm(g) {
   const nm = g.name;
   const mask = ui.blockDays !== null ? ui.blockDays : blockMaskNow(g);
@@ -5380,12 +6397,12 @@ function blockForm(g) {
           <button class="btn quiet" data-act="group-cancel">Отмена</button>
         </div>
         <div class="btns">
-          <button class="btn quiet" data-act="group-dup" data-name="${esc(nm)}">Дублировать блок</button>
+          <button class="btn quiet" data-act="group-dup" data-name="${esc(nm)}">Дублировать блок</button>${dupTargets(g)}
         </div>
         <div class="btns">
           <button class="btn quiet" data-act="group-remove" data-name="${esc(nm)}">${armed ? 'Подтвердить: убрать блок' : 'Убрать блок'}</button>
         </div>
-        ${armed ? `<p class="muted">${REMOVE_WHAT.group}</p>` : ''}
+        ${armed ? `<p class="muted">${hasLiveNamesake(g) ? REMOVE_WHAT.groupNamesake : REMOVE_WHAT.group}</p>` : ''}
       </div>`;
 }
 
@@ -5412,7 +6429,8 @@ function blockCard(g, i, pos, count) {
   const cap = (g.caption || '').trim();
   const folded = !!ui.blockFold[nm];
   const mask = blockMaskNow(g);
-  const items = store.items.filter(it => it.area === 'min' && groupNameOf(it) === nm);
+  // действия режима блока и глобальные счётчики с его именем (Р2)
+  const items = store.items.filter(it => it.area === 'min' && groupNameOf(it) === nm && belongsToMode(it, blockMode(g)));
   return `
     <div class="bcard drag-row" data-drag="group" data-drag-id="${esc(nm)}">
       <div class="row item bhead">
@@ -5435,14 +6453,120 @@ function blockCard(g, i, pos, count) {
     </div>`;
 }
 
+/* Убранный пункт стоит в «Убранных», только если его блок НЕ убран: ушедшие
+   вместе с блоком возвращаются вместе с ним, двух дорог к одной записи не
+   бывает. С режимами (задача Р2) «его блок» у действия и у глобального пункта
+   разный. Действие ищет блок своего режима. Привычка, параметр и недельный
+   счётчик ссылаются на блок только именем, и имя это может жить в нескольких
+   режимах: строка стоит, если одноимённый блок жив хоть в одном (его уход не
+   увёл пункт — removeGroup уводит глобальные только с последним живым), или
+   если блока с таким именем нет нигде. Блок убран во ВСЕХ режимах — строки нет:
+   вернуть такой пункт в одиночку значило бы оставить живую ссылку на убранный
+   блок, и следующий старт молча оживил бы блок (migrate), а владелец видел бы
+   блок, которого не возвращал. Дорога назад — возврат блока. */
+function goneBesideBlock(it) {
+  const name = groupNameOf(it);
+  if (isAction(it)) {
+    const g = findGroup(name, itemMode(it));
+    return !g || live(g);
+  }
+  const same = store.groups.filter(g => g.name === name);
+  return !same.length || same.some(live);
+}
+
+/* ── Переключатель режима (задача Р2) ─────────────────────────
+   Первая строка «Расписания»: «Режим: ‹имя› ⌄». Тап раскрывает список —
+   не форму, а раскрытие, как свёртка карточки: тело всегда в разметке и
+   скрыто атрибутом hidden, поэтому aria-controls указывает на живой узел.
+
+   В списке живые режимы в порядке store.modes, выбранный отмечен
+   (aria-current и тихая мета «выбран»). У каждого — «Переименовать»; у
+   невыбранного ещё «Выбрать» (один тап) и «Убрать» (вторым тапом, своим
+   рядом, последствие ПОД кнопкой — правило задачи 28.D, п. 9.3). Выбранный
+   режим не убирается: сегодняшний день остался бы без режима. Ниже —
+   убранные режимы строками «Убранных» с «Вернуть» и последним «Новый режим».
+
+   Подтверждение выбора печатается под строкой режима (ключ 'modes'): список
+   после выбора закрывается, и карточки ниже — уже нового режима. */
+function modeSelector(am) {
+  const cur = findMode(am);
+  const open = !!ui.modesOpen;
+  const rows = liveModes().map(m => modeRow(m, m.id === am)).join('');
+  const gone = modeList().filter(m => !live(m))
+    .map(m => goneRow(m, 'mode', `data-id="${esc(m.id)}"`)).join('');
+  const add = ui.modeAdd ? modeAddForm(cur) : `<button class="btn wide" data-act="mode-add-open">Новый режим</button>`;
+  return `
+    <div class="modes">
+      <button class="itxt mhead fold" data-act="mode-list" aria-expanded="${open ? 'true' : 'false'}" aria-controls="mode-list">
+        <span class="tname">Режим: ${esc(cur ? cur.name : MAIN_MODE_NAME)}</span><span class="chev" aria-hidden="true">&rsaquo;</span>
+      </button>
+      ${flashAt('modes')}
+      <div class="mlist" id="mode-list"${open ? '' : ' hidden'}>
+        ${rows}${gone}
+        ${add}
+      </div>
+    </div>`;
+}
+
+function modeRow(m, active) {
+  const armed = ui.removeConfirm === 'mode:' + m.id;
+  const pick = active ? ''
+    : `<span class="ictl"><button class="btn" data-act="mode-pick" data-id="${esc(m.id)}" aria-label="выбрать режим «${esc(m.name)}»">Выбрать</button></span>`;
+  return `
+        <div class="mrow"${active ? ' aria-current="true"' : ''}>
+          <div class="row item">
+            <span class="gtxt"><span class="tname">${esc(m.name)}</span>${active ? '<span class="meta">выбран</span>' : ''}</span>
+            ${pick}
+          </div>
+          ${ui.modeRename === m.id ? modeRenameForm(m) : `<div class="btns">
+            <button class="btn quiet" data-act="mode-rename-open" data-id="${esc(m.id)}" aria-label="переименовать режим «${esc(m.name)}»">Переименовать</button>
+          </div>`}
+          ${active ? '' : `<div class="btns">
+            <button class="btn quiet" data-act="mode-remove" data-id="${esc(m.id)}" aria-label="${armed ? 'подтвердить: убрать' : 'убрать'} режим «${esc(m.name)}»">${armed ? 'Подтвердить: убрать' : 'Убрать'}</button>
+          </div>`}
+          ${armed ? `<p class="muted">${REMOVE_WHAT.mode}</p>` : ''}
+          ${flashAt('mode:' + m.id)}
+        </div>`;
+}
+
+function modeRenameForm(m) {
+  return `<div class="card form" data-form="mode-rename" data-id="${esc(m.id)}">
+            <label class="field"><span>Название режима</span><input type="text" id="m-name" value="${esc(m.name)}"></label>
+            <div class="btns">
+              <button class="btn primary" data-act="mode-rename-save" data-id="${esc(m.id)}">Сохранить</button>
+              <button class="btn quiet" data-act="mode-rename-cancel">Отмена</button>
+            </div>
+          </div>`;
+}
+
+/* «Новый режим»: имя и два способа завести — копией выбранного или пустым.
+   Кнопки заводят сразу, без переключателя «копия / пустой»: производного
+   состояния у формы нет, черновик — одно поле. Подсказка — в форме, где
+   подсказкам и место: что берёт копия и что общее для всех режимов. */
+function modeAddForm(cur) {
+  return `<div class="card form" data-form="mode-add">
+          <label class="field"><span>Название режима</span><input type="text" id="m-add" placeholder="Например: Каникулы"></label>
+          <p class="muted">Копия берёт блоки и действия режима «${esc(cur ? cur.name : MAIN_MODE_NAME)}» с сегодняшнего дня. Привычки общие для всех режимов.</p>
+          <div class="btns">
+            <button class="btn primary" data-act="mode-add-copy">Копия текущего</button>
+            <button class="btn" data-act="mode-add-empty">Пустой</button>
+            <button class="btn quiet" data-act="mode-add-cancel">Отмена</button>
+          </div>
+        </div>`;
+}
+
 /* Секция «Расписание»: карточки блоков в порядке store.groups, «Без
    блока», «Добавить блок», «Убранные», затем граница дня и зачёт дня —
    обе настройки про то, как считается день действий. */
 function scheduleSection() {
-  const lives = liveGroups();
+  // блоки и действия АКТИВНОГО режима (задача Р2): переключатель режима
+  // стоит первой строкой над карточками, и карточки ниже — его
+  const am = activeMode();
+  const lives = liveGroups(am);
   const liveNames = new Set(lives.map(g => g.name));
-  let h = `<div class="blocks">`;
+  let h = modeSelector(am) + `<div class="blocks">`;
   store.groups.forEach((g, i) => {
+    if (blockMode(g) !== am) return;
     if (!live(g)) {
       if (ui.goneGroup === g.name) h += groupGoneNote(g);
       return;
@@ -5459,7 +6583,7 @@ function scheduleSection() {
   // откроется. Без этого условия перерисовка карточку не рисовала, форма
   // не появлялась, а ui.quickFor оставался — «призрачная» форма всплывала
   // потом сама, при первом же поводе нарисовать карточку (Р1/рецензия)
-  const loose = store.items.filter(it => it.area === 'min' && !liveNames.has(groupNameOf(it)));
+  const loose = store.items.filter(it => it.area === 'min' && belongsToMode(it, am) && !liveNames.has(groupNameOf(it)));
   if (!lives.length || loose.some(live) || loose.some(it => ui.goneNote === it.id) || ui.quickFor === '') {
     h += `
     <div class="bcard loose">
@@ -5477,13 +6601,9 @@ function scheduleSection() {
   // короткий путь) и убранные действия, чей блок НЕ убран: ушедшие вместе
   // с блоком возвращаются вместе с ним, двух дорог к ним не бывает
   const goneGroups = store.groups
-    .filter(g => !live(g) && ui.goneGroup !== g.name)
+    .filter(g => blockMode(g) === am && !live(g) && ui.goneGroup !== g.name)
     .map(g => goneRow(g, 'group', `data-name="${esc(g.name)}"`)).join('');
-  const goneItems = store.items.filter(it => {
-    if (it.area !== 'min') return false;
-    const g = findGroup(groupNameOf(it));
-    return !g || live(g);
-  });
+  const goneItems = store.items.filter(it => it.area === 'min' && belongsToMode(it, am) && goneBesideBlock(it));
   h += goneBlock(goneItems, 'item', goneGroups);
   h += `</div>`;
 
@@ -5543,27 +6663,33 @@ function habitRow(it) {
 /* Секция «Привычки»: привычки и параметры по ЖИВЫМ блокам в порядке
    store.groups, затем без блока. Заголовок — только имя: дни блока
    привычку не ограничивают (п. 1.2), и сводка дней здесь солгала бы. */
+/* С режимами (задача Р2) привычки и параметры глобальны, а блок у них —
+   только имя. Заголовки — сначала живые блоки АКТИВНОГО режима в их порядке,
+   затем прочие имена живых блоков других режимов, встречающиеся у привычек, в
+   порядке store.groups. Смена режима меняет порядок заголовков, но привычка не
+   пропадает и не переезжает в «Без блока»: её блок жив, пусть и в другом
+   режиме. «Без блока» — пустое имя и имя, у которого живого блока нет нигде
+   (импорт), как было. Убранные — правилом goneBesideBlock, по всем режимам. */
 function habitsSection() {
   const habits = store.items.filter(i => i.area === 'habit');
   const rowsOf = list => list.map(it => (live(it) ? habitRow(it) : (ui.goneNote === it.id ? goneNote(it, 'item') : ''))).join('');
-  const liveNames = new Set(liveGroups().map(g => g.name));
+  const known = new Set();
   let h = '';
-  for (const g of liveGroups()) {
+  for (const g of liveGroups().concat(store.groups.filter(live))) {
+    if (known.has(g.name)) continue; // имя одно на заголовок, в каком бы режиме ни жил блок
+    known.add(g.name);
     const rows = rowsOf(habits.filter(it => groupNameOf(it) === g.name));
     if (rows) h += `<p class="g-label">${esc(g.name)}</p><div class="list">${rows}</div>`;
   }
   // без блока — последними. Заголовок «Без блока» нужен, только если выше
   // стоят блоки: иначе строки читались бы продолжением последнего из них
-  const looseRows = rowsOf(habits.filter(it => !liveNames.has(groupNameOf(it))));
+  const looseRows = rowsOf(habits.filter(it => !known.has(groupNameOf(it))));
   if (looseRows) h += (h ? `<p class="g-label">Без блока</p>` : '') + `<div class="list">${looseRows}</div>`;
   h += ui.addOpen
     ? addForm()
     : `<button class="btn wide" data-act="add-open" data-area="habit">Добавить привычку</button>`;
   // убранные привычки, чей блок не убран: ушедшие с блоком вернутся с ним
-  h += goneBlock(habits.filter(it => {
-    const g = findGroup(groupNameOf(it));
-    return !g || live(g);
-  }), 'item');
+  h += goneBlock(habits.filter(goneBesideBlock), 'item');
   return h;
 }
 
@@ -5666,6 +6792,10 @@ function restoreLine() {
     `${d} ${plural(d, 'день', 'дня', 'дней')} отметок`
   ];
   if (q) parts.push(`${q} ${plural(q, 'запись', 'записи', 'записей')}`);
+  // и режимы — по той же причине: копия из одних режимов не должна читаться
+  // пустой (Р2/рецензия). Прежние копии поля не несут — числа нет, строки нет
+  const md = Number(st.modes) || 0;
+  if (md) parts.push(`${md} ${plural(md, 'режим', 'режима', 'режимов')}`);
   return `
     <div class="restore">
       <p class="muted">В копии — состояние ${whence}${when ? ', ' + esc(when) : ''} · ${parts.join(', ')}</p>
@@ -5753,12 +6883,17 @@ function wipeBlock() {
     `${s.exercises} ${plural(s.exercises, 'упражнение', 'упражнения', 'упражнений')}`,
     `${s.sessions} ${plural(s.sessions, 'тренировка', 'тренировки', 'тренировок')}`,
     `${s.notes} ${plural(s.notes, 'заметка', 'заметки', 'заметок')}`
-  ].join(', ');
+  ];
+  // режимы — только когда они есть (Р2/рецензия): «0 режимов» у владельца,
+  // который режимов не заводил, называло бы то, чего нет даже в интерфейсе.
+  // Слова — те же, что в строке потерь импорта (dataCounts): словарь один
+  if (s.modes) line.push(`${s.modes} ${plural(s.modes, 'режим', 'режима', 'режимов')}`);
+  if (s.modeLog) line.push(`${s.modeLog} ${plural(s.modeLog, 'отрезок режима', 'отрезка режима', 'отрезков режима')}`);
   return `
     <div class="danger">
       <p class="lead">Начать с чистого листа</p>
       ${ui.wipeFailed ? `<p class="muted" role="status">Чистка не выполнена — данные не изменены</p>` : ''}
-      <p class="muted">Будут стёрты: ${line}.</p>
+      <p class="muted">Будут стёрты: ${line.join(', ')}.</p>
       ${mirrorReady ? '' : (mirrorOffer
         ? `<p class="muted">Резервная копия ждёт решения выше — чистка её не сбросит и не тронет.</p>`
         : `<p class="muted">Резервная копия сейчас недоступна, и стереть её нечем. Она останется от прежнего состояния, и приложение предложит её при следующем запуске — подменить данные само оно не станет.</p>`)}
@@ -6432,9 +7567,152 @@ function dragStop() {
   drag = null;
 }
 
+/* ── Свайп «Не сегодня» (задача Р2) ────────────────────────────
+   Pointer Events без библиотек, только строки действий «Сегодня» (.swipe).
+   Жест — сдвиг строки влево, открывающий кнопку под ней; сама запись
+   делается ТАПОМ по кнопке, а не жестом: промахнувшийся палец ничего не
+   пишет, и путь с клавиатуры тот же самый.
+
+   Блокировка направления: пока палец не ушёл дальше SWIPE_SLOP, жест не
+   решён; ушёл вбок сильнее, чем вниз, — строка захвачена, иначе это скролл,
+   и строка отпускается навсегда до следующего касания. Скролл страницы
+   остаётся браузеру: `touch-action: pan-y` отдаёт ему вертикаль, а горизонталь
+   приходит сюда pointermove'ами.
+
+   Порог — SWIPE_SHARE ширины строки: дальше — строка остаётся открытой, ближе
+   — возвращается. Во время жеста строка идёт за пальцем без перехода
+   (.swiping), отпускание доезжает переходом в окне движения; при
+   reduced-motion переход гасит глобальный блок, и конечное положение
+   достигается мгновенно. Двигается только transform — layout не трогается.
+
+   Открытое состояние (.open) — не данные и не ui: рендер его не печатает,
+   перерисовка закрывает строку, любое касание вне её кнопки — тоже. */
+const SWIPE_SLOP = 8;       // px до решения, жест это или скролл (как DRAG_SLOP)
+const SWIPE_SHARE = 0.4;    // доля ширины строки, после которой строка остаётся открытой
+
+let swipe = null;
+let swipeSuppressRow = null; // строка, клик по которой после жеста не переключает отметку
+let swipeClickTimer = null;
+
+/* Закрыть строку: снять сдвиг и открытое состояние. style снимается целиком,
+   а не свойством: пустой атрибут style="" разошёлся бы с перерисовкой */
+function swipeClose(row) {
+  if (!row) return;
+  row.classList.remove('open', 'swiping');
+  row.removeAttribute('style');
+}
+
+function swipeDown(e) {
+  if (swipe || (typeof e.button === 'number' && e.button > 0)) return;
+  const tgt = e.target && e.target.closest ? e.target : null;
+  const row = tgt ? tgt.closest('#scr-today .rowwrap.swipe') : null;
+  // касание вне открытой строки (или по её содержимому, но не по кнопке)
+  // закрывает её; клик по содержимому при этом глушится — тап по открытой
+  // строке значит «закрыть», а не «отметить»
+  const open = [...document.querySelectorAll('#scr-today .rowwrap.swipe.open')];
+  const onBtn = tgt && tgt.closest('.skipbtn');
+  let closed = false;
+  for (const r of open) {
+    if (onBtn && r.contains(onBtn)) continue;
+    swipeClose(r);
+    if (r === row) closed = true;
+  }
+  if (closed) { suppressUntilRelease(row); return; }
+  if (!row || onBtn || tgt.closest('.dot, .miss-note')) return;
+  const btn = row.querySelector('.skipbtn');
+  if (!btn || btn.hidden) return; // у отмеченной строки жеста нет
+  swipe = { row, x: e.clientX, y: e.clientY, active: false, dx: 0, w: row.getBoundingClientRect().width || 0 };
+  document.addEventListener('pointermove', swipeMove, { passive: false });
+  document.addEventListener('pointerup', swipeUp);
+  document.addEventListener('pointercancel', swipeCancel);
+}
+
+function swipeMove(e) {
+  if (!swipe) return;
+  const dx = e.clientX - swipe.x;
+  const dy = e.clientY - swipe.y;
+  if (!swipe.active) {
+    if (Math.abs(dx) <= SWIPE_SLOP && Math.abs(dy) <= SWIPE_SLOP) return; // жест ещё не решён
+    if (Math.abs(dx) > Math.abs(dy)) {
+      swipe.active = true;
+      swipe.row.classList.add('swiping');
+    } else { swipeEnd(); return; } // вертикаль — скролл: строка отпущена
+  }
+  e.preventDefault();
+  // только влево: вправо строка дальше покоя не едет, влево — не дальше своей ширины
+  swipe.dx = Math.min(0, Math.max(-(swipe.w || Infinity), dx));
+  swipe.row.style.setProperty('--sx', swipe.dx + 'px');
+}
+
+function swipeUp() {
+  if (!swipe) return;
+  const { row, active, dx, w } = swipe;
+  swipeEnd();
+  if (!active) return; // тап без жеста — обычный клик, его не трогаем
+  suppressSwipeClick(row);
+  const keep = w > 0 && -dx >= w * SWIPE_SHARE;
+  swipeClose(row);
+  if (keep) row.classList.add('open');
+}
+
+/* pointercancel: браузер забрал жест себе (скролл) — строка возвращается */
+function swipeCancel() {
+  if (!swipe) return;
+  const { row } = swipe;
+  swipeEnd();
+  swipeClose(row);
+}
+
+function swipeEnd() {
+  document.removeEventListener('pointermove', swipeMove);
+  document.removeEventListener('pointerup', swipeUp);
+  document.removeEventListener('pointercancel', swipeCancel);
+  swipe = null;
+}
+
+/* Клик приходит сразу за отпусканием мыши; после жеста пальцем его не бывает
+   вовсе. Поэтому глушится не «следующий клик», а клик ПО СОДЕРЖИМОМУ ЭТОЙ
+   строки: тап по выдвинутой кнопке сразу после жеста — законное нажатие, и
+   чужой тап не глотается. Страховочный таймер снимает память сам. */
+function suppressSwipeClick(row) {
+  swipeSuppressRow = row;
+  clearTimeout(swipeClickTimer);
+  swipeClickTimer = setTimeout(() => { swipeSuppressRow = null; }, DRAG_CLICK_MS);
+}
+
+/* Тап по содержимому открытой строки: клик придёт после ОТПУСКАНИЯ, а
+   держать палец или кнопку мыши владелец может сколько угодно. Память
+   ставится сразу, а страховочный таймер взводится только отпусканием
+   (Р2/рецензия): прежде он шёл от касания, и нажатие дольше DRAG_CLICK_MS
+   закрывало строку И отмечало пункт — тап по открытой строке значит
+   «закрыть». До отпускания таймера нет вовсе: память снимет сам клик. */
+let swipeRelease = null;
+function suppressUntilRelease(row) {
+  swipeSuppressRow = row;
+  clearTimeout(swipeClickTimer);
+  if (swipeRelease) swipeRelease(false);
+  const done = arm => {
+    document.removeEventListener('pointerup', up);
+    document.removeEventListener('pointercancel', up);
+    swipeRelease = null;
+    if (arm) suppressSwipeClick(row);
+  };
+  const up = () => done(true);
+  swipeRelease = done;
+  document.addEventListener('pointerup', up);
+  document.addEventListener('pointercancel', up);
+}
+
 function onClick(e) {
   // клик, родившийся из перетаскивания, форму не открывает
   if (dragSuppressClick) { dragSuppressClick = false; return; }
+  // клик, родившийся из свайпа, не переключает отметку: label переключил бы
+  // чекбокс своим действием по умолчанию, поэтому оно отменяется явно
+  if (swipeSuppressRow) {
+    const r = swipeSuppressRow;
+    swipeSuppressRow = null;
+    if (r.contains(e.target) && !e.target.closest('.skipbtn')) { e.preventDefault(); return; }
+  }
   const b = e.target.closest('[data-act]');
   if (!b) return;
   if (syncDay()) return; // stale-экран: действие не применяется (инвариант 8)
@@ -6499,6 +7777,28 @@ function onClick(e) {
       renderDayScreen(); // структурный путь: точка исчезает
       const cb = [...dayScreenEl().querySelectorAll('input[data-act="mark"]')].find(i => i.dataset.id === id);
       if (cb) cb.focus();
+      break;
+    }
+
+    // «Не сегодня» и «Вернуть» (задача Р2): горячий путь, как у отметки.
+    // Отказ домена (день сменился под открытой строкой, пункт уже отмечен,
+    // хранилище не записало) — перерисовка: экран сверяется с данными
+    case 'skip':
+    case 'unskip': {
+      const ok = act === 'skip' ? skipToday(id) : unskipToday(id);
+      if (ok) updateTodaySkip(id);
+      else renderToday();
+      break;
+    }
+
+    // Свёрнутый выполненный блок разворачивается до конца дня (задача Р2,
+    // п. 4): состояние экрана, в хранилище не пишется. Структурное
+    // изменение — перерисовка, строки блока рождаются заново, фокус — на них
+    case 'block-unfold': {
+      const name = b.dataset.name || '';
+      unfoldToday(name);
+      renderToday();
+      focusUnfolded(name);
       break;
     }
 
@@ -6730,6 +8030,8 @@ function onClick(e) {
       dropOpenDraft(); // сохранённое не должно вернуться черновиком
       // свёртка — по имени, и переименование уносит её с собой
       if (r.name !== from && ui.blockFold[from]) { ui.blockFold[r.name] = true; delete ui.blockFold[from]; }
+      // и развёртка блока на «Сегодня» (задача Р2, п. 4) — тем же ключом
+      if (r.name !== from && unfoldedToday(from)) { unfoldForget(from); unfoldToday(r.name); }
       // и черновики, привязанные к имени, — тоже (Р1/рецензия)
       if (r.name !== from) renameDrafts(from, r.name);
       ui.groupRename = null; ui.blockDays = null; ui.removeConfirm = null;
@@ -6788,6 +8090,136 @@ function onClick(e) {
       break;
     }
 
+    // Копия блока в ДРУГОЙ режим (задача Р2) — те же правила формы, что у
+    // «Дублировать блок»: одним тапом, форма источника закрывается снимком,
+    // подтверждение — у шапки источника. Копии на экране не видно (карточки —
+    // выбранного режима), поэтому строка называет режим, куда она легла.
+    // null — не всегда отказ хранилища: режим мог уйти (кнопка устарела)
+    case 'group-dup-to': {
+      const src = b.dataset.name;
+      const target = findMode(b.dataset.mode);
+      const nm = duplicateGroupTo(src, b.dataset.mode);
+      if (nm === null) {
+        if (!lastSaveOk()) refuse(b, 'Не скопировано: хранилище недоступно');
+        else renderSettings();
+        break;
+      }
+      snapshotOpenForm();
+      settingsFormsClosed();
+      flashOk('group:' + src, `Копия создана в режиме «${target.name}»: «${nm}»`);
+      keepInPlace(b, renderSettings);
+      break;
+    }
+
+    /* ── Режимы (задача Р2) ───────────────────────────────────────
+       Раскрытие списка — не форма: формы экрана оно не трогает. Закрытие
+       списка закрывает формы, которые в нём стоят (снимком, как переход в
+       соседнюю форму): скрытая открытая форма была бы призраком — ключ
+       черновика указывал бы на то, чего владелец не видит. */
+    case 'mode-list': {
+      const open = !ui.modesOpen;
+      if (!open && (ui.modeRename !== null || ui.modeAdd)) { snapshotOpenForm(); settingsFormsClosed(); }
+      if (!open && String(ui.removeConfirm).startsWith('mode:')) ui.removeConfirm = null;
+      ui.modesOpen = open;
+      renderSettings();
+      const head = el('scr-settings').querySelector('[data-act="mode-list"]');
+      if (head) head.focus();
+      break;
+    }
+
+    // Выбор — один тап, отрезок журнала с сегодняшнего дня (setActiveMode).
+    // Карточки ниже становятся карточками другого режима, а «Настройки»
+    // держали о прежнем формы, черновики, свёртки и короткие пути назад по
+    // ИМЕНИ блока: одноимённый блок нового режима — другой блок, и всё это
+    // снимается (resetSettingsView). Список закрывается, подтверждение —
+    // под строкой режима, у которой он и открывался
+    case 'mode-pick': {
+      const r = setActiveMode(id);
+      if (!r.ok) {
+        if (r.reason === 'storage') refuse(b, 'Не выбрано: хранилище недоступно');
+        else renderSettings(); // режим ушёл или исчез — кнопка устарела
+        break;
+      }
+      resetSettingsView();
+      ui.modesOpen = false;
+      flashOk('modes', `Режим: ${findMode(id).name} — с сегодняшнего дня`);
+      keepInPlace(b, renderSettings);
+      break;
+    }
+
+    // «Переименовать» уступает место форме в строке режима — закрывает её
+    // «Отмена», «Сохранить» или переход в соседнюю форму
+    case 'mode-rename-open': openSettingsForm(() => { ui.modeRename = id; }); break;
+    case 'mode-rename-cancel': dropOpenDraft(); ui.modeRename = null; renderSettings(); break;
+    case 'mode-rename-save': {
+      const inp = el('m-name');
+      const r = renameMode(id, inp ? inp.value : '');
+      if (!r.ok) {
+        refuse(b, MODE_REFUSAL[r.reason] || MODE_REFUSAL.storage);
+        if (inp && (r.reason === 'empty' || r.reason === 'taken')) inp.focus();
+        break;
+      }
+      dropOpenDraft();
+      ui.modeRename = null;
+      flashWrite('mode:' + id); // запись проверена renameMode: здесь всегда «Сохранено»
+      keepInPlace(b, renderSettings);
+      break;
+    }
+
+    case 'mode-add-open': openSettingsForm(() => { ui.modeAdd = true; }); break;
+    case 'mode-add-cancel': dropOpenDraft(); ui.modeAdd = false; renderSettings(); break;
+    // Новый режим — не выбранным: выбор — отдельное решение. Подтверждение
+    // у его строки в списке, то есть у пальца: строка встаёт над формой
+    case 'mode-add-copy':
+    case 'mode-add-empty': {
+      const inp = el('m-add');
+      const copy = act === 'mode-add-copy';
+      const r = addMode(inp ? inp.value : '', copy ? { copyOf: activeMode() } : undefined);
+      if (!r.ok) {
+        refuse(b, MODE_REFUSAL[r.reason] || MODE_REFUSAL.storage);
+        if (inp && (r.reason === 'empty' || r.reason === 'taken')) inp.focus();
+        break;
+      }
+      dropOpenDraft();
+      ui.modeAdd = false;
+      const made = findMode(r.id).name;
+      flashOk('mode:' + r.id, copy ? `Копия создана: «${made}»` : `Режим создан: «${made}»`);
+      keepInPlace(b, renderSettings);
+      break;
+    }
+
+    // Уход режима — вторым тапом, как уход блока; последствие ПОД кнопкой.
+    // Строка уходит в конец списка к убранным, её «Вернуть» и есть короткий
+    // путь назад — туда и фокус
+    case 'mode-remove': {
+      const key = 'mode:' + id;
+      if (ui.removeConfirm !== key) { ui.removeConfirm = key; renderSettings(); break; }
+      ui.removeConfirm = null;
+      const r = removeMode(id);
+      if (!r.ok) {
+        if (r.reason === 'storage') refuse(b, 'Не убрано: хранилище недоступно');
+        else renderSettings(); // выбран или уже убран — кнопка устарела
+        break;
+      }
+      if (ui.modeRename === id) { dropOpenDraft(); ui.modeRename = null; } // форма ушла вместе со строкой
+      const back = () => [...el('scr-settings').querySelectorAll('[data-act="mode-restore"]')].find(x => x.dataset.id === id) || null;
+      keepInPlace(b, renderSettings, back);
+      const u = back();
+      if (u) u.focus();
+      break;
+    }
+    case 'mode-restore': {
+      const r = restoreMode(id);
+      if (!r.ok) {
+        if (r.reason === 'storage') refuse(b, 'Не возвращено: хранилище недоступно');
+        else renderSettings();
+        break;
+      }
+      flashWrite('mode:' + id);
+      keepInPlace(b, renderSettings);
+      break;
+    }
+
     /* Уход блока — вторым тапом, как уход пункта (A.3.2): первый взводит и
        печатает последствие ПОД кнопкой, второй уводит блок вместе с его
        действиями и привычками и оставляет на месте карточки короткий путь
@@ -6818,10 +8250,18 @@ function onClick(e) {
     case 'group-restore': {
       const nm = b.dataset.name;
       const g = findGroup(nm);
-      const asBlock = g ? store.items
-        .filter(it => groupNameOf(it) === g.name && it.removedAt === g.removedAt && !laterSegmentOf(it) && returnsWithoutDays(it))
+      const asBlock = g ? restoreSetOf(g)
+        .filter(it => !laterSegmentOf(it) && returnsWithoutDays(it))
         .map(it => it.name) : [];
-      if (!restoreGroup(nm)) { refuse(b, 'Не возвращено: хранилище недоступно'); break; }
+      // false — не всегда отказ хранилища: блок мог уже вернуться (кнопка
+      // устарела). Отказ называется только по факту записи — тем же
+      // правилом, что у item-restore (задача Р2, п. 5); иначе перерисовка
+      // снимает устаревшую строку
+      if (!restoreGroup(nm)) {
+        if (!lastSaveOk()) refuse(b, 'Не возвращено: хранилище недоступно');
+        else renderSettings();
+        break;
+      }
       delete ui.blockFold[nm];
       if (asBlock.length) flashOk('group:' + nm, `${plural(asBlock.length, 'Вернулось', 'Вернулись', 'Вернулись')} с днями блока: ${asBlock.join(', ')} — свои дни в них не попадали`);
       else flashWrite('group:' + nm);
@@ -6941,7 +8381,7 @@ function onClick(e) {
       const asBlock = kind === 'item' && returnsWithoutDays(store.items.find(x => x.id === id));
       const made = kind === 'item' ? restoreItem(id) : restoreExercise(id);
       // null — не всегда отказ хранилища: запись могла уже вернуться или
-      // получить пару-преемника (laterSegmentOf), и тогда кнопка просто
+      // получить пару-преемника (laterSegmentOf / laterExerciseOf), и тогда кнопка просто
       // устарела. Отказ хранилища называется только по факту записи
       // (Р1/ревью), иначе экран перерисовывается и устаревшая строка уходит
       if (!made && !lastSaveOk()) { refuse(b, 'Не возвращено: хранилище недоступно'); break; }
@@ -7449,6 +8889,7 @@ async function init() {
   document.addEventListener('change', onChange);
   document.addEventListener('input', onInput);
   document.addEventListener('pointerdown', dragDown); // перетаскивание (задача 16F)
+  document.addEventListener('pointerdown', swipeDown); // свайп «Не сегодня» (задача Р2)
   document.querySelectorAll('#tabs button').forEach(b =>
     b.addEventListener('click', () => {
       ui.importNote = null;
@@ -7511,7 +8952,7 @@ if (typeof module !== 'undefined' && module.exports) {
     habitWeekCount, habitStreakFrom, habitStreak,
     moveItem, canMoveItem, reorderItem, reorderGroup, reorderExercise,
     // уход и возврат (инвариант 12, задача 28.E/A)
-    live, livedOn, removeItem, restoreItem, removeExercise, restoreExercise,
+    live, livedOn, removeItem, restoreItem, removeExercise, restoreExercise, laterExerciseOf, successorAmong,
     // расписание пункта (задача 29/B, инвариант 12): отрезки, действовавшая
     // маска, применимость дня, пороги планки как доли от дней маски
     weekdayOf, WEEK_ALL, isMask, maskDays, normSchedule, normTime,
@@ -7541,6 +8982,21 @@ if (typeof module !== 'undefined' && module.exports) {
     scheduleCore, returnsWithoutDays, planWeekCount, laterSegmentOf,
     // форма правки действия: своя маска внутри дней блока, тип в день заведения
     mergeOwnMask, canChangeType, typeChangeRefusal, setItemType,
+    // режимы (задача Р2): журнал активного режима отрезками, режим записи,
+    // операции над режимами одной записью, копия блока в другой режим
+    MAIN_MODE, MAIN_MODE_NAME, WEEK_NONE, normModes, normModeLog, modeOn, activeMode,
+    isAction, itemMode, blockMode, findMode, liveModes, belongsToMode, modeNameTaken,
+    addMode, renameMode, removeMode, restoreMode, setActiveMode, duplicateGroupTo,
+    restoreSetOf, actionCopy, programModes,
+    // «Убранные» по блоку: действие — блоком своего режима, глобальный пункт — всех (Р2, этап 3)
+    goneBesideBlock,
+    // живой одноимённый блок другого режима — уход блока и слова его последствия (Р2/рецензия)
+    hasLiveNamesake,
+    // «Не сегодня» (задача Р2, этап 4): пропуск — false в days{}, только
+    // сегодня, только у действия минимума; число пропусков сетки разбора
+    isSkipped, skipToday, unskipToday, weekSkips,
+    // свёртка выполненного блока «Сегодня» (задача Р2, этап 5): счёт блока
+    blockTally,
     // прогресс (инвариант 14)
     minDayItems, minDayMarks, minDayClosed, daysInSystem, dayStreak,
     chainWeeks, marksInSystem, riseSeries, risePath,

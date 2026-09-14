@@ -27,8 +27,12 @@ function dayKey(date) {
   const p = n => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
 }
+/* n ЛОГИЧЕСКИХ дней назад: календарная арифметика от сегодняшнего ключа, а
+   не n·24 реальных часа — в неделю перевода стрелок те давали n ± 1 день
+   (замер задачи Р2, п. 5: 02.11.2026 в 03:30 местного America/Toronto
+   daysAgo(1) совпадал с сегодняшним днём, и падали десять тестов) */
 function daysAgo(n) {
-  return dayKey(new Date(Date.now() - n * 86400000));
+  return addKey(dayKey(new Date()), -n);
 }
 
 /* Календарная арифметика ключей — та же, что keyToDate/addDays в app.js */
@@ -634,7 +638,9 @@ test('недельный счётчик обновляется точечно, �
 test('stale-guard: клик после смены дня не пишет отметку, экран перерисовывается', async () => {
   const { document, window } = await boot();
   const h1before = document.querySelector('#scr-today h1').textContent;
-  shiftWindowDate(window, 24 * 3600000);
+  // назавтра ЛОГИЧЕСКИ, а не через 24 реальных часа: в день перевода стрелок
+  // сутки сдвига оставляли тот же логический день (задача Р2, п. 5)
+  shiftWindowDays(window, 1);
 
   document.querySelector('input[data-act="mark"]').click();
 
@@ -647,7 +653,7 @@ test('stale-guard: клик после смены дня не пишет отм�
 test('visibilitychange после смены дня обновляет экран', async () => {
   const { document, window } = await boot();
   const before = document.querySelector('#scr-today h1').textContent;
-  shiftWindowDate(window, 24 * 3600000);
+  shiftWindowDays(window, 1); // логический день, не 24 часа (Р2, п. 5)
   document.dispatchEvent(new window.Event('visibilitychange'));
   assert.notEqual(document.querySelector('#scr-today h1').textContent, before);
 });
@@ -745,7 +751,7 @@ test('открытая форма переживает перестановку 
 test('фокус-событие окна после смены дня обновляет экран', async () => {
   const { document, window } = await boot();
   const before = document.querySelector('#scr-today h1').textContent;
-  shiftWindowDate(window, 24 * 3600000);
+  shiftWindowDays(window, 1); // логический день, не 24 часа (Р2, п. 5)
   window.dispatchEvent(new window.Event('focus'));
   assert.notEqual(document.querySelector('#scr-today h1').textContent, before);
 });
@@ -771,15 +777,16 @@ test('З23/5: таймер границы дня зовёт syncDay и пере�
   const tick = 20;
   await armFastTimer(window, tick);
 
-  // первое срабатывание: день сменился — таймер обязан позвать syncDay
-  shiftWindowDate(window, 24 * 3600000);
+  // первое срабатывание: день сменился — таймер обязан позвать syncDay.
+  // Сдвиг — на логический день, а не на 24 часа (Р2, п. 5)
+  shiftWindowDays(window, 1);
   await wait(tick + T.DAY_TIMER_SLACK_MS + 60);
   const day1 = document.querySelector('#scr-today h1').textContent;
   assert.notEqual(day1, day0, 'таймер позвал syncDay: экран показывает новый день');
 
   // второе: таймер обязан быть взведён заново — иначе смена дня при
   // открытом приложении сработает ровно один раз за запуск
-  shiftWindowDate(window, 48 * 3600000);
+  shiftWindowDays(window, 2);
   await wait(tick + T.DAY_TIMER_SLACK_MS + 60);
   const day2 = document.querySelector('#scr-today h1').textContent;
   assert.notEqual(day2, day1, 'таймер перевзвёлся: вторая смена дня тоже поймана');
@@ -1078,7 +1085,10 @@ test('смена недели в открытом приложении: счёт
   document.querySelector('[data-act="train-save"]').click();     // и запись
   assert.equal(document.querySelector('.wnum b').textContent, '1');
 
-  shiftWindowDate(window, 7 * 86400000); // ровно неделя вперёд
+  // ровно неделя вперёд — семь ЛОГИЧЕСКИХ дней: 168 реальных часов в неделю
+  // перевода стрелок давали шесть, и в понедельник 04:00–05:00 местного
+  // счётчик не обнулялся (Р2, п. 5; замер при TZ=America/Toronto, 26.10.2026)
+  shiftWindowDays(window, 7);
   document.dispatchEvent(new window.Event('visibilitychange')); // механизм инварианта 8
 
   assert.equal(document.querySelector('.wnum b').textContent, '0'); // счётчик обнулился сменой недели
@@ -2143,8 +2153,9 @@ test('поле «Блок»: select из заведённых, «+ Новый б
   const s = saved();
   assert.equal(s.items.find(i => i.id === 'c1').group, 'Ритуал');
   assert.deepEqual(s.groups.map(g => g.name), ['Вечер', 'Утро', 'Ритуал']);
-  // v19: блок, заведённый из формы пункта, — в канонической форме
-  assert.deepEqual(s.groups[2], { name: 'Ритуал', caption: '', days: [], removedAt: null });
+  // v19: блок, заведённый из формы пункта, — в канонической форме;
+  // v20 (Р2): и в активном режиме — здесь основном
+  assert.deepEqual(s.groups[2], { name: 'Ритуал', caption: '', days: [], removedAt: null, mode: 'main' });
 
   // выбор из списка — обычная смена блока
   openEdit('Свет');
@@ -3117,10 +3128,14 @@ test('чистка: экспорт отдаёт пустой store, импорт
 
 test('пустая эпоха: пять экранов после чистки рендерятся без исключений', async () => {
   const { document, window } = await boot({ seed: trainSeed() });
+  // чистка в понедельник ставит эпоху на СЕГОДНЯ — та уже не пустая, и тест
+  // падал каждый логический понедельник (замер задачи Р2, п. 5). Предмет —
+  // эпоха впереди, поэтому чистка идёт в среду
+  await moveToWeekday(window, document, 2);
   wipeThroughUi(document);
   const store = JSON.parse(window.localStorage.getItem(NS));
-  // эпоха начинается в понедельник, то есть сегодня или позже
-  assert.ok(store.settings.calendarSince >= daysAgo(0));
+  // эпоха начинается в ближайший понедельник — позже сегодняшнего дня
+  assert.ok(store.settings.calendarSince > window.todayKey());
 
   const map = {
     today: 'scr-today', habits: 'scr-habits', progress: 'scr-progress',
@@ -3810,7 +3825,9 @@ test('C.6.7: импорт сбрасывает форму и черновик п
   // форма принадлежала прежним данным — её и черновика больше нет
   document.querySelector('#tabs button[data-tab="settings"]').click();
   assert.equal(document.getElementById('e-name'), null, 'форма правки закрыта импортом');
-  const rows = document.querySelectorAll('#scr-settings .row.item');
+  // строки ПУНКТОВ — те, что открывают правку: с задачи Р2 в «Расписании»
+  // стоит и строка списка режимов (.row.item без правки пункта)
+  const rows = document.querySelectorAll('#scr-settings .row.item [data-act="edit-open"]');
   assert.equal(rows.length, 1, 'в списке только пункт из файла');
 
   // и черновик не всплывает при следующем открытии формы
@@ -3843,12 +3860,13 @@ const openDetail = (document) => {
    поэтому хелперы не введены — но сторож нужен и без них: он ловит любую
    будущую правку шаблонов форм, случайную или в ходе такого рефакторинга.
 
-   Снимок — outerHTML всех одиннадцати форм (число сверяется ассертом
+   Снимок — outerHTML всех четырнадцати форм (число сверяется ассертом
    ниже; в комментарии стояло «девяти» при двенадцати формах — счёт отстал
    на пять, задача 26, п. 7.1; две формы заметок ушли с экраном, задача
    28.C; две формы формулы и форма лестницы — с листом детали, задача 28.D,
    и число снова сошлось на девяти, но уже других; «Расписание 1/3», этап C,
-   добавило два вида правки действия — «свои дни» и день заведения).
+   добавило два вида правки действия — «свои дни» и день заведения; задача
+   Р2 — две формы режима и форму блока с «в режим …»).
    Дат в формах нет, идентификаторы в сиде фиксированы,
    поэтому снимок стабилен от запуска к запуску.
    Пересобрать после осознанной правки разметки:
@@ -3981,11 +3999,36 @@ test('З20/C.5: разметка форм совпадает со снимком
   grab('ex-add');
   document.querySelector('[data-act="ex-add-cancel"]').click();
 
+  // Формы режима (задача Р2) — в раскрытом списке режимов «Расписания»:
+  // переименование и «Новый режим». Форма блока при втором живом режиме
+  // получает «в режим …» — это третий вид, снятый отдельно; id второго режима
+  // закреплён, иначе data-mode плавал бы от прогона к прогону
+  document.querySelector('[data-act="mode-list"]').click();
+  document.querySelector('[data-act="mode-rename-open"]').click();
+  grab('mode-rename');
+  document.querySelector('[data-act="mode-rename-cancel"]').click();
+  document.querySelector('[data-act="mode-add-open"]').click();
+  grab('mode-add');
+  document.querySelector('[data-act="mode-add-cancel"]').click();
+  const win = document.defaultView;
+  assert.equal(win.addMode('Каникулы').ok, true);
+  win.eval('store').modes[1].id = 'fx-mode';
+  win.save();
+  settings();
+  document.querySelector('[data-act="group-open"]').click();
+  grab('group-edit-modes');
+  document.querySelector('[data-act="group-cancel"]').click();
+
   // Форм листа детали здесь больше нет: две формулы и лестница ушли
   // вместе с листом (задача 28.D). Добавление минимума ушло, быстрое
   // добавление пришло — счёт прежний; правка действия прибавила два вида
-  // («Расписание 1/3», этап C) — одиннадцать. Снимок пересобран.
-  assert.equal(Object.keys(got).length, 11, 'сняты все формы');
+  // («Расписание 1/3», этап C) — одиннадцать; режимы (Р2) — ещё три:
+  // две формы режима и форма блока с «в режим …». Снимок пересобран.
+  assert.equal(Object.keys(got).length, 14, 'сняты все формы');
+  assert.ok(!got['group-edit'].includes('group-dup-to') && got['group-edit-modes'].includes('data-act="group-dup-to" data-name="Утро" data-mode="fx-mode"'),
+    'один режим — «Дублировать блок» прежний; два — с «в режим «Каникулы»»');
+  assert.ok(got['mode-rename'].includes('id="m-name" value="Основной"') && got['mode-add'].includes('data-act="mode-add-copy"'),
+    'формы режима — переименование и новый режим');
   assert.ok(got['group-edit'].includes('data-act="days-preset"'), 'форма блока — с днями и пресетами');
   assert.ok(got['group-add'].includes('data-act="day-toggle"'), 'форма добавления блока — тоже');
   // виды правки действия — действительно разные, а не три копии одного
@@ -4284,8 +4327,9 @@ test('З22/7.2: подсказка «одно новое дело за раз» 
   assert.equal(document.querySelector('#scr-settings .hint'), null, 'посев подсказку не вызывает');
   document.querySelector('[data-act="add-cancel"]').click();
 
-  // пункт владельца, заведённый на следующий день, — вызывает
-  shiftWindowDate(window, 86400000);
+  // пункт владельца, заведённый на следующий день, — вызывает. Следующий
+  // ЛОГИЧЕСКИЙ день: 24 часа в день перевода стрелок его не давали (Р2, п. 5)
+  shiftWindowDays(window, 1);
   document.dispatchEvent(new window.Event('visibilitychange'));
   addHabit().click();
   document.getElementById('f-name').value = 'Своё';
@@ -4325,7 +4369,7 @@ test('З22/7.2: стёртый store — первый пункт владель�
   assert.equal(JSON.parse(window.localStorage.getItem(NS)).items.length, 1);
 
   // три дня спустя владелец заводит вторую — подсказка обязана показаться
-  shiftWindowDate(window, 3 * 86400000);
+  shiftWindowDays(window, 3); // логические дни, не 72 часа (Р2, п. 5)
   document.dispatchEvent(new window.Event('visibilitychange'));
   document.querySelector('[data-act="add-open"][data-area="habit"]').click();
   assert.match(document.querySelector('#scr-settings .hint').textContent,
@@ -4449,6 +4493,18 @@ function assertSame(t, what) {
     `  перерисовка: ...${t.full.slice(Math.max(0, at - 90), at + 90)}...`);
 }
 
+/* Выполненный блок «Сегодня» свёрнут (задача Р2, п. 4): тесты, которым после
+   закрытия блока нужны его строки, разворачивают его путём владельца —
+   тапом по свёрнутой строке. Хелпер — объявлением функции: он поднимается,
+   и тесты выше по файлу видят его так же, как ниже. */
+function unfoldBlock(document, name) {
+  const b = [...document.querySelectorAll('#scr-today [data-act="block-unfold"]')].find(x => x.dataset.name === name);
+  assert.ok(b, 'свёрнутая строка блока «' + name + '»');
+  b.click();
+  assert.equal([...document.querySelectorAll('#scr-today [data-act="block-unfold"]')].some(x => x.dataset.name === name), false,
+    'блок «' + name + '» развёрнут');
+}
+
 /* Сид, в котором видны все точечные пути сразу: минимум с недельным
    пунктом (счётчик тренировок), привычка с нормой 4 (полоса недели и
    «X из N»), порог зачёта 0,8 (подпись в «Пунктах»). */
@@ -4517,7 +4573,9 @@ test('З23/6: отметка на «Сегодня» — экран после �
   assert.equal(document.querySelector('#scr-today .dayline.closing'), null, 'и след её снят');
   assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт');
 
-  // снятие — обратный путь, отдельная ветка планки
+  // снятие — обратный путь, отдельная ветка планки. Блок «Утро» после сцены
+  // свёрнут (задача Р2, п. 4) — строки возвращает тап по свёрнутой строке
+  unfoldBlock(document, 'Утро');
   document.querySelectorAll('#scr-today input[data-act="mark"]')[1].click();
   assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'снятие отметки');
 });
@@ -5986,8 +6044,10 @@ test('З26/5.5: ячейка цепи крупнее — доля краски �
    28.D): тач-цели больше нет, а её правило :active снято из styles.css.
    Сторож двусторонний — селектор, оставшийся в списке без цели на экранах,
    валит второй тест ниже. */
+/* .bfold — свёрнутый выполненный блок «Сегодня» (задача Р2, п. 4): строка
+   во всю ширину, не .btn, и отклик у неё общего правила :active. */
 const TAPPABLE = ['.btn', '.banner:not(.static)', '.dot', '.undo',
-  '.itxt', '.sect > summary', '#tabs button'];
+  '.itxt', '.bfold', '.sect > summary', '#tabs button'];
 
 test('З26/6.1: состояние нажатия есть у каждой тач-цели, не только у .btn', () => {
   const css = CSS_SRC();
@@ -6021,7 +6081,19 @@ test('З26/6.1: ни одной тач-цели без отклика на на�
   // будний блок без действий — цель для формы правки в режиме «свои дни»
   // (этап C): в нём у действия есть недоступные чипы выходных
   seed.groups.push({ name: 'Будни', days: [{ from: addKey(prevMonday(), -14), mask: '1111100' }] });
+  // задача Р2: второй живой режим и убранный — у списка режимов свои цели
+  // («Выбрать», «Переименовать», «Убрать», «Вернуть», «Новый режим»), у формы
+  // блока — «в режим …»
+  seed.modes = [{ id: 'main', name: 'Основной', removedAt: null }, { id: 'kan', name: 'Каникулы', removedAt: null },
+    { id: 'old', name: 'Старый', removedAt: daysAgo(3) }];
+  // задача Р2, п. 4: выполненный блок «Сегодня» свёрнут в строку — у неё своя
+  // цель («block-unfold»). Блок «Вечер» с одним действием, отмеченным сегодня
+  seed.groups.push({ name: 'Вечер', caption: 'до 22:30' });
+  seed.items.push({ id: 'it9', name: 'Душ', value: null, unit: '', type: 'daily', goal: null, note: '',
+    group: 'Вечер', active: true, addedAt: addKey(prevMonday(), -14), raiseAfter: 0, history: [] });
+  seed.days[daysAgo(0)] = { it9: true };
   const { document } = await boot({ seen: undefined, seed });
+  assert.ok(document.querySelector('#scr-today [data-act="block-unfold"]'), 'на «Сегодня» есть свёрнутый блок');
 
   const seen = new Set();
   const scan = () => {
@@ -6048,6 +6120,20 @@ test('З26/6.1: ни одной тач-цели без отклика на на�
     assert.ok(document.querySelector('#scr-settings [data-form]'), 'форма открыта: ' + open);
     scan();
   }
+  // список режимов и обе его формы (задача Р2)
+  document.querySelector('#scr-settings [data-act="mode-list"]').click();
+  assert.equal(document.getElementById('mode-list').hidden, false, 'список режимов раскрыт');
+  assert.ok(document.querySelector('#scr-settings [data-act="mode-restore"]'), 'и в нём убранный режим');
+  document.querySelector('#scr-settings [data-act="mode-remove"]').click(); // взведённое «Подтвердить: убрать»
+  scan();
+  for (const open of ['mode-rename-open', 'mode-add-open']) {
+    document.querySelector(`#scr-settings [data-act="${open}"]`).click();
+    assert.ok(document.querySelector('#scr-settings [data-form^="mode-"]'), 'форма открыта: ' + open);
+    scan();
+  }
+  document.querySelector('#scr-settings [data-act="group-open"]').click();
+  assert.ok(document.querySelector('#scr-settings [data-act="group-dup-to"]'), '«в режим …» в форме блока');
+  scan();
   // форма правки действия: «как блок» («Свои дни»), затем «свои дни» в
   // будничном блоке — чипы, из них выходные недоступны, и «Как блок» (этап C)
   document.querySelector('#scr-settings [data-act="edit-open"][data-id="it1"]').click();
@@ -6216,12 +6302,13 @@ test('З26/7: устаревших комментариев про «два ли
   assert.doesNotMatch(app, /три листа поверх них/);
   assert.match(app, /ДВА листа поверх них/);
   // счёт форм в комментарии сторожа сходится с его же ассертом (было «девяти»;
-  // «Расписание 1/3», этап C, добавило два вида правки действия — одиннадцать)
+  // «Расписание 1/3», этап C, добавило два вида правки действия — одиннадцать;
+  // задача Р2 — две формы режима и форму блока с «в режим …» — четырнадцать)
   const dom = fs.readFileSync(path.join(ROOT, 'tests', 'dom.test.js'), 'utf8');
   const said = /outerHTML всех ([а-я]+) форм/.exec(dom)[1];
   const checked = /Object\.keys\(got\)\.length, (\d+),/.exec(dom)[1];
-  assert.equal(said, 'одиннадцати');
-  assert.equal(checked, '11');
+  assert.equal(said, 'четырнадцати');
+  assert.equal(checked, '14');
   // docs/plan.md помечен историческим, а не выдаёт себя за источник задач
   const plan = fs.readFileSync(path.join(ROOT, 'docs', 'plan.md'), 'utf8');
   assert.match(plan, /исторический/i);
@@ -6997,9 +7084,17 @@ const SETTINGS_FORMS = [
   { key: 'блок-правка', act: 'group-open', field: 'g-name' },
   { key: 'блок-добавить', act: 'group-add-open', field: 'g-add' },
   { key: 'упр-правка', act: 'ex-open', field: 'x-name' },
-  { key: 'упр-добавить', act: 'ex-add-open', field: 'x-add-name' }
+  { key: 'упр-добавить', act: 'ex-add-open', field: 'x-add-name' },
+  // формы режима (задача Р2) живут в раскрываемом списке режимов: list —
+  // сначала раскрыть его, как это сделал бы владелец
+  { key: 'режим-имя', act: 'mode-rename-open', field: 'm-name', list: true },
+  { key: 'режим-новый', act: 'mode-add-open', field: 'm-add', list: true }
 ];
 const formBtn = f => `#scr-settings [data-act="${f.act}"]` + (f.area ? `[data-area="${f.area}"]` : '');
+function openSettingsFormVia(document, f) {
+  if (f.list && document.getElementById('mode-list').hidden) document.querySelector('#scr-settings [data-act="mode-list"]').click();
+  document.querySelector(formBtn(f)).click();
+}
 
 function openAllSettingsSections(document) {
   for (const re of [/Расписание/, /Привычки/, /Упражнения/]) {
@@ -7010,7 +7105,7 @@ function openAllSettingsSections(document) {
   }
 }
 
-test('З28B/4: на «Настройках» форма одна, и черновик прежней цел — все 42 сочетания', async () => {
+test('З28B/4: на «Настройках» форма одна, и черновик прежней цел — все 72 сочетания', async () => {
   const seed = trainSeed();
   seed.groups = [{ name: 'Утро' }];
   seed.items[0].group = 'Утро';
@@ -7023,21 +7118,22 @@ test('З28B/4: на «Настройках» форма одна, и черно�
       const { document } = await boot({ seed });
       document.querySelector('#tabs button[data-tab="settings"]').click();
       openAllSettingsSections(document);
-      document.querySelector(formBtn(a)).click();
+      openSettingsFormVia(document, a);
       const inp = document.getElementById(a.field);
       assert.ok(inp, `${a.key}: форма открыта`);
       inp.value = 'ЧЕРНОВИК';
-      document.querySelector(formBtn(b)).click();
+      openSettingsFormVia(document, b);
       const forms = [...document.querySelectorAll('#scr-settings [data-form]')];
       assert.equal(forms.length, 1, `${a.key} → ${b.key}: на экране одна форма`);
       assert.equal(document.getElementById(a.field), null, `${a.key} → ${b.key}: первая закрыта`);
       // возврат к первой: набранное на месте
-      document.querySelector(formBtn(a)).click();
+      openSettingsFormVia(document, a);
       assert.equal(document.getElementById(a.field).value, 'ЧЕРНОВИК',
         `${a.key} → ${b.key}: черновик первой формы цел`);
     }
   }
-  assert.equal(пар, 42, 'проверены все сочетания');
+  // семь форм задачи 28.B и «Расписания 1/3» плюс две формы режима (Р2): 9 · 8
+  assert.equal(пар, 72, 'проверены все сочетания');
 });
 
 test('З28B/4: «Отмена» черновик отбрасывает, а не прячет', async () => {
@@ -7305,7 +7401,10 @@ test('З28E/C.5.1: классы сцены — при закрытии дня и
   await wait(T.DAY_CLOSE_MS + T.MOTION_TAIL_MS + 40);
   assert.equal(scr().querySelector('.closing'), null, 'сцена кончилась и убрала за собой');
 
-  // снятие отметки день «раскрывает» — сцены нет
+  // снятие отметки день «раскрывает» — сцены нет. Блок после сцены свёрнут
+  // (задача Р2, п. 4): его строки возвращает тап по свёрнутой строке
+  unfoldBlock(document, 'Утро');
+  assert.equal(scr().querySelector('.closing'), null, 'развёртка сцены не играет');
   boxes()[1].click();
   assert.equal(scr().querySelector('.closing'), null, 'снятие отметки сцену не играет');
   // и повторное закрытие играет её заново
@@ -8085,7 +8184,11 @@ test('Р1/сторож: отметки на «Сегодня» по фиксту
   await wait(T.DAY_CLOSE_MS + T.MOTION_TAIL_MS + 40); // сцена закрытия дня снимает свой след сама
   assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт');
 
-  boxes()[7].click(); // первое действие «Школы»
+  // выполненные блоки свёрнуты (задача Р2, п. 4): «Школа» разворачивается
+  // тапом, и её первое действие — первый круг на экране
+  assert.equal(boxes().length, 0, 'после сцены все пять блоков свёрнуты');
+  unfoldBlock(document, 'Школа');
+  boxes()[0].click(); // первое действие «Школы»
   assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'снятие отметки');
 });
 
@@ -8445,7 +8548,8 @@ test('Р1/B: «Добавить блок» — подпись и дни, в ко
   document.getElementById('g-add-cap').value = ' 18:00 ';
   save();
   const s = r1Saved(window);
-  assert.deepEqual(s.groups[s.groups.length - 1], { name: 'Зал', caption: '18:00', days: [{ from: daysAgo(0), mask: '0010011' }], removedAt: null });
+  // v20 (Р2): новый блок — в активном режиме, здесь основном
+  assert.deepEqual(s.groups[s.groups.length - 1], { name: 'Зал', caption: '18:00', days: [{ from: daysAgo(0), mask: '0010011' }], removedAt: null, mode: 'main' });
   assert.equal(document.getElementById('g-add'), null, 'форма закрылась');
   const card = r1Card(document, 'Зал');
   assert.equal(card.querySelector('.bhead .meta').textContent, 'ср, сб, вс');
@@ -8474,7 +8578,7 @@ test('Р1/B: «Добавить действия» — строки фиксту
   assert.equal(ta.tagName, 'TEXTAREA');
   assert.equal(ta.getAttribute('placeholder'), 'Кровать\nРазвитие · 10 мин');
   assert.match(form.textContent, /Действия — по одному в строке/);
-  assert.match(form.textContent, /После « · » — подпись\./);
+  assert.match(form.textContent, /Подпись — после « · » или « - »\./);
 
   const before = window.localStorage.getItem(NS);
   document.querySelector('#scr-settings [data-act="quick-save"]').click();
@@ -8564,7 +8668,8 @@ test('Р1/B: «Дублировать блок» — копия с действ�
   dup().click();
   const s = r1Saved(window);
   assert.deepEqual(s.groups.map(g => g.name), ['Утро', 'Школа', 'Школа (копия)', 'Выходной'], 'копия — сразу за источником');
-  assert.deepEqual(s.groups[2], { name: 'Школа (копия)', caption: 'до 15:15', days: [{ from: daysAgo(0), mask: '1111100' }], removedAt: null });
+  // v20 (Р2): копия — в режиме источника, здесь основном
+  assert.deepEqual(s.groups[2], { name: 'Школа (копия)', caption: 'до 15:15', days: [{ from: daysAgo(0), mask: '1111100' }], removedAt: null, mode: 'main' });
   const copies = s.items.filter(i => i.group === 'Школа (копия)');
   assert.deepEqual(copies.map(i => [i.name, i.type, i.addedAt]), [['Экстра', 'daily', daysAgo(0)], ['Пост', 'daily', daysAgo(0)], ['Спорт', 'weekly', daysAgo(0)]],
     'действия — daily и weekly, привычка не копируется');
@@ -8794,7 +8899,7 @@ test('Р1/B: поле «Блок» — только живые блоки; во�
   document.querySelector('#scr-settings [data-act="add-save"]').click();
   s = r1Saved(window);
   assert.equal(s.items[s.items.length - 1].group, 'Зал');
-  assert.deepEqual(s.groups[s.groups.length - 1], { name: 'Зал', caption: '', days: [], removedAt: null }, 'новый блок заведён в каноне');
+  assert.deepEqual(s.groups[s.groups.length - 1], { name: 'Зал', caption: '', days: [], removedAt: null, mode: 'main' }, 'новый блок заведён в каноне (v20 — в активном режиме)');
 });
 
 test('Р1/B (4.5): черновик формы блока держит выбранные дни при переходе в соседнюю форму; сохранённое черновиком не возвращается', async () => {
@@ -9625,8 +9730,10 @@ test('Р1/рецензия: «Дублировать блок» не теряе�
   document.getElementById('g-cap').value = '6:45'; // набрано ПОСЛЕ перерисовки
   r1Btn(document, 'group-dup', 'Утро').click();
   const s = r1Saved(window);
-  assert.deepEqual(s.groups[1], { name: 'Утро (копия)', caption: '7:00', days: [], removedAt: null }, 'копия — сохранённого блока');
-  assert.deepEqual(s.groups[0], { name: 'Утро', caption: '7:00', days: [], removedAt: null }, 'источник не записан');
+  // v20 (Р2): копия — в режиме источника, здесь основном
+  assert.deepEqual(s.groups[1], { name: 'Утро (копия)', caption: '7:00', days: [], removedAt: null, mode: 'main' }, 'копия — сохранённого блока');
+  // режим у источника — от migrate при загрузке (v20), а не от формы: подпись и дни прежние
+  assert.deepEqual(s.groups[0], { name: 'Утро', caption: '7:00', days: [], removedAt: null, mode: 'main' }, 'источник не записан');
   assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'форма закрыта');
   r1Btn(document, 'group-open', 'Утро').click();
   assert.equal(document.getElementById('g-name').value, 'Утро ранее');
@@ -9876,4 +9983,1771 @@ test('Р1/ревью: shiftWindowDays и moveToWeekday — логический 
   } finally {
     process.env.TZ = was !== undefined ? was : zone;
   }
+});
+
+/* ══ Задача Р2 («Расписание 2/2»), этап 1: хвосты Р1 (п. 5) ═══════ */
+
+test('Р2/5: пустые «Привычки» — «на сегодня нет» при живых привычках вне дня, «пока нет» — только без живых', async () => {
+  const since = addKey(curMonday(), -14);
+  const seedWith = (items) => {
+    const s = r1Store([], items);
+    s.settings.calendarSince = since;
+    return s;
+  };
+  const weekend = extra => r1Action('hb', 'Бассейн', since, '', '0000011', Object.assign({ area: 'habit', normPerWeek: 2 }, extra));
+  const param = () => {
+    const p = r1Action('ph', 'Отбой', since, '', R1_ALL, { type: 'param', area: 'habit', pkind: 'time', pvalue: 1380, pstep: -15, history: [{ date: since, value: 1380 }] });
+    delete p.schedule;
+    return p;
+  };
+  const habitsOf = async (items, dow) => {
+    const { document, window } = await boot({ seed: seedWith(items) });
+    await moveToWeekday(window, document, dow);
+    document.querySelector('#tabs button[data-tab="habits"]').click();
+    return document.getElementById('scr-habits');
+  };
+
+  // (1) вторник: живая привычка только по выходным — строка дня, без планки
+  const a = await habitsOf([weekend(), param()], 1);
+  assert.match(a.textContent, /На сегодня привычек в расписании нет\./);
+  assert.doesNotMatch(a.textContent, /Привычек пока нет/, 'не звать заводить заведённое');
+  assert.equal(a.querySelector('.dayline'), null, 'измерять нечего — планки нет');
+  assert.equal(a.querySelector('.list'), null);
+  assert.match(a.textContent, /Порог недели/, 'параметры от ветки не зависят');
+  assert.ok(a.querySelector('.creed'), 'кредо-строка на месте');
+
+  // (2) суббота: та же привычка в дне — строки нет, планка есть
+  const b = await habitsOf([weekend()], 5);
+  assert.doesNotMatch(b.textContent, /На сегодня привычек в расписании нет/);
+  assert.match(b.querySelector('.bar-note').textContent, /^сегодня\s*0\s*из\s*1$/);
+
+  // (3) привычка убрана — живых нет вовсе: прежняя строка с путём
+  const c = await habitsOf([weekend({ removedAt: addKey(since, 1) })], 1);
+  assert.match(c.textContent, /Привычек пока нет — добавить можно в Настройках → Привычки\./);
+  assert.doesNotMatch(c.textContent, /На сегодня привычек/, 'убранная привычка заведённой не считается');
+
+  // (4) живое действие вне дня — не привычка: «Привычки» принадлежат программе роста
+  const d = await habitsOf([r1Action('mn', 'Кровать', since, '', '0000011')], 1);
+  assert.match(d.textContent, /Привычек пока нет — добавить можно в Настройках → Привычки\./);
+  assert.doesNotMatch(d.textContent, /На сегодня привычек/, 'действие привычкой не считается');
+});
+
+test('Р2/5: «Убранные» упражнений — прежняя запись с преемником не стоит; устаревшая «Вернуть» дубля не заводит', async () => {
+  const seed = trainSeed();
+  const old = addKey(prevMonday(), -14);
+  seed.exercises = [
+    { id: 'e1', name: 'Жим', unit: 'кг', value: 40, addedAt: old, removedAt: daysAgo(3), history: [{ date: old, value: 40 }] },
+    { id: 'e1b', name: 'Жим', unit: 'кг', value: 42, addedAt: daysAgo(2), removedAt: daysAgo(1), history: [{ date: daysAgo(2), value: 42 }] },
+    { id: 'e2', name: 'Тяга', unit: 'кг', value: 60, addedAt: old, removedAt: null, history: [{ date: old, value: 60 }] }
+  ];
+  const { document, window } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  const sect = [...document.querySelectorAll('#scr-settings details.sect')]
+    .find(d => /Упражнения/.test(d.querySelector('summary').textContent));
+  sect.querySelector('summary').click();
+  const goneIds = () => [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="ex-restore"]')].map(b => b.dataset.id);
+  assert.deepEqual(goneIds(), ['e1b'], 'в «Убранных» — только последний отрезок «Жима»');
+
+  document.querySelector('#scr-settings .rowwrap.gone [data-act="ex-restore"]').click();
+  const s = JSON.parse(window.localStorage.getItem(NS));
+  assert.equal(s.exercises.filter(e => e.removedAt === null && e.name === 'Жим').length, 1, 'живой «Жим» — один');
+  assert.deepEqual(goneIds(), [], '«Убранные» пусты: оба прежних отрезка при парах');
+
+  // устаревшая кнопка у самой первой записи: возвращать нечего, и хранилище ни при чём
+  const stale = document.createElement('button');
+  stale.dataset.act = 'ex-restore';
+  stale.dataset.id = 'e1';
+  document.getElementById('scr-settings').appendChild(stale);
+  const before = window.localStorage.getItem(NS);
+  stale.click();
+  assert.equal(window.localStorage.getItem(NS), before, 'ничего не записано — дубля нет');
+  assert.equal(document.querySelector('#scr-settings .flash.keep'), null, 'отказа нет');
+  assert.equal(stale.isConnected, false, 'экран перерисован');
+
+  // и на листе «Тренировка» — по одному полю на упражнение
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  document.querySelector('[data-act="train-inc"]').click();
+  assert.equal(document.querySelectorAll('#scr-train input[id^="ex-"]').length, 2, 'Жим и Тяга — по одному полю');
+});
+
+test('Р2/5: group-restore — «хранилище недоступно» только при реальном отказе записи', async () => {
+  const since = daysAgo(10);
+  const seed = r1Store([
+    Object.assign(r1Block('Школа'), { removedAt: daysAgo(2) }),
+    Object.assign(r1Block('Вечер'), { removedAt: daysAgo(2) })
+  ], [
+    r1Action('s1', 'Зал', since, 'Школа', R1_ALL, { removedAt: daysAgo(2) }),
+    r1Action('v1', 'Чтение', since, 'Вечер', R1_ALL, { removedAt: daysAgo(2) })
+  ]);
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  const staleBtn = name => {
+    const x = document.createElement('button');
+    x.dataset.act = 'group-restore';
+    x.dataset.name = name;
+    document.getElementById('scr-settings').appendChild(x);
+    return x;
+  };
+
+  // блок уже вернулся — кнопка устарела: не отказ, перерисовка
+  r1Btn(document, 'group-restore', 'Школа').click();
+  assert.equal(r1Saved(window).groups.find(g => g.name === 'Школа').removedAt, null);
+  for (const name of ['Школа', 'Нет такого']) {
+    const x = staleBtn(name);
+    const before = window.localStorage.getItem(NS);
+    x.click();
+    assert.equal(window.localStorage.getItem(NS), before, name + ': ничего не записано');
+    assert.equal(document.querySelector('#scr-settings .flash.keep'), null, name + ': отказа нет');
+    assert.doesNotMatch(document.getElementById('scr-settings').textContent, /хранилище недоступно/);
+    assert.equal(x.isConnected, false, name + ': экран перерисован — устаревшей кнопки нет');
+  }
+
+  // настоящий отказ записи называется, блок остаётся убранным
+  const evening = r1Btn(document, 'group-restore', 'Вечер');
+  withBrokenStorage(window, () => evening.click());
+  assert.match(document.querySelector('#scr-settings .flash.keep').textContent, /^Не возвращено: хранилище недоступно$/);
+  assert.equal(r1Saved(window).groups.find(g => g.name === 'Вечер').removedAt, daysAgo(2));
+});
+
+test('Р2/5: нечитаемая копия — пояснение называет ту кнопку, что стоит под ним: «Стереть нечитаемое»', async () => {
+  const idb = new IDBFactory();
+  await idbPut(idb, { json: '{обрыв', savedAt: 1, schemaVersion: 16 });
+  const { document } = await boot({ idb, raw: '{битый json' });
+  openData(document);
+  const blocks = [...document.querySelectorAll('#scr-settings .restore.corrupt')];
+  assert.equal(blocks.length, 2, 'оба источника');
+  for (const bl of blocks) {
+    assert.equal(bl.querySelector('[data-act="corrupt-drop"]').textContent, 'Стереть нечитаемое');
+    assert.doesNotMatch(bl.textContent, /Убрать/, 'слова обратимой операции в строке стирания нет');
+    for (const m of bl.textContent.matchAll(/«([^»]+)»/g)) {
+      assert.ok([...bl.querySelectorAll('button')].some(x => x.textContent === m[1]), `названная кнопка «${m[1]}» стоит в строке`);
+    }
+  }
+  const mirror = blocks.find(bl => bl.querySelector('[data-src="mirror"]'));
+  assert.match(mirror.textContent, /«Стереть нечитаемое» освободит место под неё/);
+});
+
+test('Р2/5: акцентный текст на «Настройках» — ровно .hint и номерные кружки «Системы», как записано в CLAUDE.md', async () => {
+  const seed = r1Store([], [r1Action('hb', 'Бассейн', daysAgo(2), '', R1_ALL, { area: 'habit', normPerWeek: 7 })]);
+  const { document } = await boot({ seed });
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  document.querySelector('#scr-settings [data-act="add-open"][data-area="habit"]').click();
+  for (const d of document.querySelectorAll('#scr-settings details.sect')) d.open = true;
+  assert.ok(document.querySelector('#scr-settings .hint'), 'подсказка формы добавления привычки видна');
+  assert.ok(document.querySelector('#scr-settings .rules li'), 'правила «Системы» в разметке');
+
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const found = new Set();
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/(?:^|[;{\s])color\s*:\s*var\(--accent\)/.test(m[2])) continue; // текст, не рамка и не заливка
+    for (const sel of m[1].split(',').map(x => x.trim())) {
+      const probe = sel.replace(/::[\w-]+/g, '').replace(/:(?:active|hover|focus-visible|focus-within|focus)\b/g, '');
+      let hit = false;
+      try { hit = !!document.querySelector('#scr-settings ' + probe); } catch (e) { hit = false; }
+      if (hit) found.add(sel);
+    }
+  }
+  assert.deepEqual([...found].sort(), ['.hint', '.rules li::before'], 'акцентный текст «Настроек»');
+  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  assert.doesNotMatch(claude, /Акцентного ТЕКСТА на «Настройках» после этого нет/, 'неверное утверждение снято');
+  assert.match(claude, /Акцентного текста на «Настройках» после этого ровно два места[^\n]*`\.hint`[^\n]*`\.rules li::before`/);
+});
+
+test('Р2/5: сдвиг окна на логические дни — через перевод стрелок; N·24 часа в тестах окна не встречается', () => {
+  const was = process.env.TZ;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const fakeWin = iso => {
+    const t = Date.parse(iso);
+    const RealD = Date;
+    return {
+      Date: class extends RealD {
+        constructor(...a) { if (a.length) super(...a); else super(t); }
+        static now() { return t; }
+      }
+    };
+  };
+  const keyOf = w => dayKey(new w.Date());
+  try {
+    process.env.TZ = 'America/Toronto';
+    // 01.11.2026, 03:30 EST: прежние stale-guard, visibilitychange, focus,
+    // З23/5 и З22/7.2 сдвигали на 24 часа — и оставались в том же дне
+    let raw = fakeWin('2026-11-01T08:30:00Z');
+    shiftWindowDate(raw, 24 * 3600000);
+    assert.equal(keyOf(raw), '2026-11-01', 'замер: 24 часа — тот же логический день');
+    let w = fakeWin('2026-11-01T08:30:00Z');
+    shiftWindowDays(w, 1);
+    assert.equal(keyOf(w), '2026-11-02');
+    shiftWindowDays(w, 2);
+    assert.equal(keyOf(w), '2026-11-04', 'сдвиги складываются');
+    // понедельник 26.10.2026, 04:30 EDT: «ровно неделя вперёд» за 168 часов
+    // приходилась на воскресенье той же недели
+    raw = fakeWin('2026-10-26T08:30:00Z');
+    shiftWindowDate(raw, 168 * 3600000);
+    assert.equal(keyOf(raw), '2026-11-01', 'замер: 168 часов — шесть логических дней');
+    w = fakeWin('2026-10-26T08:30:00Z');
+    shiftWindowDays(w, 7);
+    assert.equal(keyOf(w), '2026-11-02', 'семь логических — следующий понедельник');
+    // весна: 14.03.2027, 03:30 EDT — логически ещё 13.03
+    w = fakeWin('2027-03-14T07:30:00Z');
+    assert.equal(keyOf(w), '2027-03-13');
+    shiftWindowDays(w, 1);
+    assert.equal(keyOf(w), '2027-03-14');
+  } finally {
+    process.env.TZ = was !== undefined ? was : zone;
+  }
+  // сторож: сдвиг на целые сутки сырыми часами в тестах окна не пишется
+  const src = fs.readFileSync(__filename, 'utf8');
+  const bad = [];
+  for (const m of src.matchAll(/shiftWindowDate\(([\w.]+),\s*([^)]*)\)/g)) {
+    if (m[1] === 'raw') continue; // замеры выше — предмет этого теста
+    const arg = m[2].replace(/\s+/g, '');
+    const h = /^(\d+)\*3600000$/.exec(arg), d = /^(?:(\d+)\*)?86400000$/.exec(arg);
+    if ((h && +h[1] % 24 === 0) || d) bad.push(m[0]);
+  }
+  assert.deepEqual(bad, [], 'сдвиг на N суток — shiftWindowDays');
+});
+
+/* ══ Задача Р2 («Расписание 2/2»), этап 3: режимы — интерфейс ═══════
+   Переключатель режима первой строкой «Расписания», карточки выбранного
+   режима, имя режима на «Сегодня», «Дублировать в режим», привычки при
+   смене режима, «Убранные» по блокам всех режимов. Домен режимов закреплён
+   тестами «Р2/1» в domain.test.js; здесь предмет — разметка и обработчики. */
+
+const R2_KAN = 'kan';
+
+/* Два режима с одноимённым блоком «Утро»: у основного — «Утро» (7:00) и
+   «Школа», у «Каникул» — «Утро» (9:00) и «Лагерь». Действия — своего режима;
+   привычки глобальны: «Чтение» — в «Утре» (есть в обоих режимах), «Плавание» —
+   в «Лагере» (только у «Каникул»), «Вода» — без блока; параметр «Отбой» — в
+   «Школе» (только у основного). Маски ежедневные: от дня недели не зависит. */
+const r2Blk = (name, mode, caption, extra) => Object.assign(r1Block(name, caption), { mode }, extra || {});
+function r2UiSeed({ modes, groups, items, days, modeLog } = {}) {
+  const since = addKey(curMonday(), -14);
+  const act = (id, name, group, mode, extra) => r1Action(id, name, since, group, R1_ALL, Object.assign({ mode }, extra || {}));
+  const habit = (id, name, group, extra) => r1Action(id, name, since, group, R1_ALL, Object.assign({ area: 'habit', normPerWeek: 7 }, extra || {}));
+  const param = r1Action('ph', 'Отбой', since, 'Школа', R1_ALL, { type: 'param', area: 'habit', pkind: 'time', pvalue: 1380, pstep: -15, history: [{ date: since, value: 1380 }] });
+  delete param.schedule;
+  const s = r1Store(
+    groups || [r2Blk('Утро', 'main', '7:00'), r2Blk('Школа', 'main', 'до 15:15'), r2Blk('Утро', R2_KAN, '9:00'), r2Blk('Лагерь', R2_KAN, '')],
+    items || [
+      act('m1', 'Кровать', 'Утро', 'main'), act('m2', 'Математика', 'Школа', 'main'),
+      act('k1', 'Зарядка', 'Утро', R2_KAN), act('k2', 'Костёр', 'Лагерь', R2_KAN),
+      habit('h1', 'Чтение', 'Утро'), habit('h2', 'Плавание', 'Лагерь'), habit('h3', 'Вода', ''),
+      param
+    ],
+    days);
+  s.modes = modes || [{ id: 'main', name: 'Основной', removedAt: null }, { id: R2_KAN, name: 'Каникулы', removedAt: null }];
+  s.modeLog = modeLog || [];
+  s.settings.calendarSince = since;
+  return s;
+}
+
+const r2Head = document => document.querySelector('#scr-settings [data-act="mode-list"]');
+const r2List = document => document.getElementById('mode-list');
+function r2OpenModes(document) {
+  r1Settings(document);
+  if (r2List(document).hidden) r2Head(document).click();
+  assert.equal(r2List(document).hidden, false, 'список режимов раскрыт');
+  return r2List(document);
+}
+const r2Btn = (document, act, id) => [...document.querySelectorAll(`#scr-settings [data-act="${act}"]`)].find(b => b.dataset.id === id);
+const r2Cards = document => [...document.querySelectorAll('#scr-settings .bcard[data-drag="group"]')].map(c => c.dataset.dragId);
+const r2Today = document => [...document.querySelectorAll('#scr-today input[data-act="mark"]')].map(i => i.dataset.id);
+const r2Rows = list => [...list.children].filter(n => n.matches('.mrow'));
+function r2Pick(document, id) {
+  r2OpenModes(document);
+  r2Btn(document, 'mode-pick', id).click();
+}
+
+test('Р2/2: переключатель режима — первой строкой над карточками; список раскрывается, выбранный отмечен; убранные в конце с «Вернуть», «Новый режим» последним', async () => {
+  const seed = r2UiSeed();
+  seed.modes.push({ id: 'old', name: 'Старый', removedAt: daysAgo(5) });
+  const { document, window } = await boot({ seed });
+  const scr = r1Settings(document);
+  const body = scr.querySelector('details.sect .sect-b');
+  assert.ok(body.firstElementChild.classList.contains('modes'), 'переключатель — первым в «Расписании»');
+  assert.ok(body.firstElementChild.nextElementSibling.classList.contains('blocks'), 'карточки — сразу за ним');
+
+  const head = r2Head(document);
+  assert.equal(head.querySelector('.tname').textContent, 'Режим: Основной');
+  assert.ok(head.querySelector('.chev'), 'шеврон раскрытия');
+  assert.equal(head.getAttribute('aria-expanded'), 'false');
+  assert.equal(head.getAttribute('aria-controls'), 'mode-list');
+  assert.ok(r2List(document), 'aria-controls указывает на живой узел');
+  assert.equal(r2List(document).hidden, true, 'по умолчанию список скрыт');
+  assert.ok(head.matches('.itxt'), 'тач-цель с откликом на нажатие');
+  const before = window.localStorage.getItem(NS);
+
+  head.click();
+  const list = r2List(document);
+  assert.equal(list.hidden, false);
+  assert.equal(r2Head(document).getAttribute('aria-expanded'), 'true');
+  assert.equal(document.activeElement, r2Head(document), 'фокус остался на строке режима');
+  const rows = r2Rows(list);
+  assert.deepEqual(rows.map(r => r.querySelector('.row .tname').textContent), ['Основной', 'Каникулы'], 'живые режимы в порядке store.modes');
+  const [main, kan] = rows;
+  assert.equal(main.getAttribute('aria-current'), 'true', 'выбранный отмечен для AT');
+  assert.equal(kan.getAttribute('aria-current'), null);
+  assert.equal(main.querySelector('.meta').textContent, 'выбран', 'и видимо');
+  assert.equal(kan.querySelector('.meta'), null);
+  assert.equal(main.querySelector('[data-act="mode-pick"]'), null, 'выбранный не выбирается');
+  assert.equal(main.querySelector('[data-act="mode-remove"]'), null, 'выбранный не убирается');
+  assert.ok(main.querySelector('[data-act="mode-rename-open"]'), 'но переименовывается');
+  for (const act of ['mode-pick', 'mode-rename-open', 'mode-remove']) {
+    const b = kan.querySelector(`[data-act="${act}"]`);
+    assert.ok(b && b.dataset.id === R2_KAN && b.matches('.btn'), 'у невыбранного: ' + act);
+    assert.match(b.getAttribute('aria-label'), /режим «Каникулы»/, 'имя режима — в названии кнопки');
+  }
+  assert.equal(kan.querySelector('[data-act="mode-pick"]').textContent, 'Выбрать');
+  assert.equal(kan.querySelector('[data-act="mode-rename-open"]').textContent, 'Переименовать');
+  assert.equal(kan.querySelector('[data-act="mode-remove"]').textContent, 'Убрать');
+
+  const gone = [...list.children].filter(n => n.matches('.rowwrap.gone'));
+  assert.equal(gone.length, 1, 'убранный — строкой «Убранных»');
+  assert.equal(gone[0].querySelector('.tname').textContent, 'Старый');
+  assert.equal(gone[0].querySelector('.meta').textContent, 'убран ' + fmtShortKey(daysAgo(5)));
+  assert.equal(gone[0].querySelector('[data-act="mode-restore"]').dataset.id, 'old');
+  assert.ok(rows[rows.length - 1].compareDocumentPosition(gone[0]) & window.Node.DOCUMENT_POSITION_FOLLOWING, 'убранные — после живых');
+  assert.equal(list.lastElementChild.dataset.act, 'mode-add-open', '«Новый режим» — последним');
+  assert.equal(list.lastElementChild.textContent, 'Новый режим');
+
+  r2Head(document).click();
+  assert.equal(r2List(document).hidden, true, 'второй тап сворачивает');
+  assert.equal(window.localStorage.getItem(NS), before, 'раскрытие ничего не пишет');
+});
+
+test('Р2/2: «Выбрать» — один тап: отрезок журнала с сегодняшнего дня, подтверждение под строкой режима; карточки и «Сегодня» — выбранного режима', async () => {
+  const { document, window } = await boot({ seed: r2UiSeed() });
+  assert.deepEqual(r2Today(document), ['m1', 'm2'], '«Сегодня» — действия основного режима');
+  r1Settings(document);
+  assert.deepEqual(r2Cards(document), ['Утро', 'Школа'], 'карточки основного режима');
+  assert.match(r1Card(document, 'Утро').textContent, /Кровать/);
+
+  const before = window.localStorage.getItem(NS);
+  r2Pick(document, R2_KAN);
+  assert.notEqual(window.localStorage.getItem(NS), before, 'выбор записан с первого тапа');
+  assert.deepEqual(r1Saved(window).modeLog, [{ from: daysAgo(0), mode: R2_KAN }], 'отрезок с сегодняшнего дня');
+  assert.equal(r2List(document).hidden, true, 'список закрылся');
+  assert.equal(r2Head(document).querySelector('.tname').textContent, 'Режим: Каникулы');
+  const flash = document.querySelector('#scr-settings .modes .flash');
+  assert.ok(flash, 'подтверждение у строки режима');
+  assert.equal(flash.textContent, 'Режим: Каникулы — с сегодняшнего дня');
+  assert.equal(flash.previousElementSibling, r2Head(document), 'сразу под строкой «Режим»');
+
+  assert.deepEqual(r2Cards(document), ['Утро', 'Лагерь'], 'карточки — выбранного режима');
+  const morning = r1Card(document, 'Утро');
+  assert.equal(morning.querySelector('.bhead .bcap').textContent, '9:00', 'одноимённый блок — свой, со своей подписью');
+  assert.match(morning.textContent, /Зарядка/);
+  assert.doesNotMatch(morning.textContent, /Кровать/, 'действия другого режима в одноимённой карточке не стоят');
+  assert.equal(document.querySelector('#scr-settings .bcard.loose'), null, '«Без блока» не нужна');
+
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.deepEqual(r2Today(document), ['k1', 'k2'], '«Сегодня» — действия выбранного режима');
+  assert.equal(document.querySelector('#scr-today .hmode').textContent, 'режим Каникулы');
+
+  // назад в тот же день — отрезок снимается, журнал пуст: до первого отрезка и так основной
+  r2Pick(document, 'main');
+  assert.deepEqual(r1Saved(window).modeLog, []);
+  assert.equal(document.querySelector('#scr-settings .modes .flash').textContent, 'Режим: Основной — с сегодняшнего дня');
+  assert.deepEqual(r2Cards(document), ['Утро', 'Школа']);
+
+  // устаревшая кнопка (режим уже убран) — не отказ, перерисовка
+  window.eval('store').modes[1].removedAt = daysAgo(0);
+  window.save();
+  const stale = document.createElement('button');
+  stale.dataset.act = 'mode-pick';
+  stale.dataset.id = R2_KAN;
+  document.getElementById('scr-settings').appendChild(stale);
+  const was = window.localStorage.getItem(NS);
+  stale.click();
+  assert.equal(window.localStorage.getItem(NS), was, 'ничего не записано');
+  assert.equal(document.querySelector('#scr-settings .flash.keep'), null, 'отказа нет');
+  assert.equal(stale.isConnected, false, 'экран перерисован');
+
+  // отказ записи — строкой у кнопки, журнал цел
+  window.eval('store').modes[1].removedAt = null;
+  window.save();
+  r2OpenModes(document);
+  withBrokenStorage(window, () => r2Btn(document, 'mode-pick', R2_KAN).click());
+  assert.equal(document.querySelector('#scr-settings .flash.keep').textContent, 'Не выбрано: хранилище недоступно');
+  assert.deepEqual(r1Saved(window).modeLog, []);
+  assert.equal(window.eval('store').modeLog.length, 0, 'откат в памяти');
+});
+
+test('Р2/2: смена режима снимает формы, черновики, свёртки и короткие пути назад; после возврата ничего чужого не всплывает', async () => {
+  const { document, window } = await boot({ seed: r2UiSeed() });
+  r1Settings(document);
+  // черновик формы блока «Утро» основного режима, быстрое добавление в нём же, свёрнутая «Школа»
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-name').value = 'ЧЕРНОВИК БЛОКА';
+  r1Btn(document, 'quick-open', 'Утро').click();
+  document.getElementById('q-lines').value = 'ЧУЖИЕ СТРОКИ';
+  r1Btn(document, 'group-fold', 'Школа').click();
+  assert.equal(r1Card(document, 'Школа').querySelector('.bbody').hidden, true);
+  assert.ok(window.eval('ui').formDraft['group:Утро'], 'черновик формы блока лежит');
+  assert.ok(window.eval('ui').formDraft['quick:Утро'], 'и быстрого добавления');
+
+  r2Pick(document, R2_KAN);
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'формы закрыты');
+  assert.deepEqual(Object.keys(window.eval('ui').formDraft), [], 'черновики сняты');
+  assert.deepEqual(Object.keys(window.eval('ui').blockFold), [], 'свёртки сняты');
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(document.getElementById('g-name').value, 'Утро', 'одноимённый блок другого режима — без чужого черновика');
+  assert.equal(document.getElementById('g-cap').value, '9:00');
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+  r1Btn(document, 'quick-open', 'Утро').click();
+  assert.equal(document.getElementById('q-lines').value, '', 'быстрое добавление — пустое');
+  document.querySelector('#scr-settings [data-act="quick-cancel"]').click();
+
+  // короткий путь назад блока «Лагерь» — и снова смена режима
+  r1Btn(document, 'group-open', 'Лагерь').click();
+  r1Btn(document, 'group-remove', 'Лагерь').click();
+  r1Btn(document, 'group-remove', 'Лагерь').click();
+  assert.ok(document.querySelector('#scr-settings .blocks > .gone-note'), 'короткий путь стоит');
+  r2Pick(document, 'main');
+  assert.equal(document.querySelector('#scr-settings .gone-note'), null, 'короткий путь снят');
+  assert.equal(window.eval('ui').goneGroup, null);
+  assert.equal(r1Card(document, 'Школа').querySelector('.bbody').hidden, false, 'свёртка «Школы» не вернулась');
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(document.getElementById('g-name').value, 'Утро', 'черновик прежнего режима не всплыл');
+  assert.equal(document.getElementById('g-cap').value, '7:00');
+});
+
+test('Р2/2: «Новый режим» — пустой и копия текущего; отказы строкой; подтверждение у строки нового режима; сам он не выбирается', async () => {
+  const { document, window } = await boot({ seed: r2UiSeed() });
+  r2OpenModes(document);
+  document.querySelector('#scr-settings [data-act="mode-add-open"]').click();
+  const form = () => document.querySelector('#scr-settings [data-form="mode-add"]');
+  assert.ok(form() && form().matches('.card.form'), 'форма открыта');
+  assert.equal(document.querySelector('#scr-settings [data-act="mode-add-open"]'), null, 'кнопка уступила место форме');
+  const inp = () => document.getElementById('m-add');
+  assert.equal(inp().type, 'text');
+  assert.match(form().textContent, /Копия берёт блоки и действия режима «Основной» с сегодняшнего дня\. Привычки общие для всех режимов\./);
+  assert.deepEqual([...form().querySelectorAll('.btn')].map(b => [b.dataset.act, b.textContent]),
+    [['mode-add-copy', 'Копия текущего'], ['mode-add-empty', 'Пустой'], ['mode-add-cancel', 'Отмена']]);
+
+  let before = window.localStorage.getItem(NS);
+  document.querySelector('#scr-settings [data-act="mode-add-empty"]').click();
+  r1Refused(document, window, 'mode-add-empty', /^Название не заполнено$/, before);
+  assert.equal(document.activeElement, inp(), 'фокус — в название');
+  inp().value = ' Каникулы ';
+  document.querySelector('#scr-settings [data-act="mode-add-copy"]').click();
+  r1Refused(document, window, 'mode-add-copy', /^Режим с таким именем уже есть$/, before);
+  assert.equal(inp().value, ' Каникулы ', 'введённое цело');
+
+  inp().value = 'Лето';
+  document.querySelector('#scr-settings [data-act="mode-add-empty"]').click();
+  let s = r1Saved(window);
+  const leto = s.modes.find(m => m.name === 'Лето');
+  assert.ok(leto, 'режим заведён');
+  assert.deepEqual(s.modes.map(m => m.name), ['Основной', 'Каникулы', 'Лето'], 'в конец списка');
+  assert.equal(s.groups.filter(g => g.mode === leto.id).length, 0, 'пустой — без блоков');
+  assert.deepEqual(s.modeLog, [], 'новый режим не выбран');
+  assert.equal(form(), null, 'форма закрыта');
+  assert.equal(r2Head(document).querySelector('.tname').textContent, 'Режим: Основной');
+  let row = r2Rows(r2List(document)).find(r => r.querySelector('.tname').textContent === 'Лето');
+  assert.equal(row.querySelector('.flash').textContent, 'Режим создан: «Лето»', 'подтверждение — у строки нового режима');
+  assert.ok(row.querySelector('[data-act="mode-pick"]'), 'выбрать его — отдельным тапом');
+
+  document.querySelector('#scr-settings [data-act="mode-add-open"]').click();
+  inp().value = 'Осень';
+  document.querySelector('#scr-settings [data-act="mode-add-copy"]').click();
+  s = r1Saved(window);
+  const autumn = s.modes.find(m => m.name === 'Осень');
+  assert.deepEqual(s.groups.filter(g => g.mode === autumn.id).map(g => [g.name, g.caption]), [['Утро', '7:00'], ['Школа', 'до 15:15']],
+    'копия — блоки выбранного режима с подписями');
+  const copies = s.items.filter(i => i.mode === autumn.id);
+  assert.deepEqual(copies.map(i => [i.name, i.group, i.addedAt]), [['Кровать', 'Утро', daysAgo(0)], ['Математика', 'Школа', daysAgo(0)]],
+    'действия — новыми записями с сегодняшнего дня');
+  assert.equal(s.items.filter(i => i.area === 'habit').length, 4, 'привычки и параметр не копируются');
+  row = r2Rows(r2List(document)).find(r => r.querySelector('.tname').textContent === 'Осень');
+  assert.equal(row.querySelector('.flash').textContent, 'Копия создана: «Осень»');
+
+  // «Отмена» черновик отбрасывает
+  document.querySelector('#scr-settings [data-act="mode-add-open"]').click();
+  inp().value = 'ОТМЕНЁННОЕ';
+  document.querySelector('#scr-settings [data-act="mode-add-cancel"]').click();
+  document.querySelector('#scr-settings [data-act="mode-add-open"]').click();
+  assert.equal(inp().value, '');
+
+  // отказ хранилища — строкой, режим не заведён
+  inp().value = 'Зима';
+  before = window.localStorage.getItem(NS);
+  withBrokenStorage(window, () => document.querySelector('#scr-settings [data-act="mode-add-empty"]').click());
+  assert.equal(document.querySelector('#scr-settings .flash.keep').textContent, 'Не сохранено: хранилище недоступно');
+  assert.equal(window.localStorage.getItem(NS), before);
+  assert.equal(window.eval('store').modes.some(m => m.name === 'Зима'), false, 'откат в памяти');
+});
+
+test('Р2/2: «Переименовать» режим — форма, отказы строкой (пустое, занятое, в том числе убранным); «Сохранено» у строки; имя в шапке и на «Сегодня»', async () => {
+  const seed = r2UiSeed();
+  seed.modes.push({ id: 'old', name: 'Старый', removedAt: daysAgo(5) });
+  const { document, window } = await boot({ seed });
+  r2OpenModes(document);
+  r2Btn(document, 'mode-rename-open', 'main').click();
+  const form = document.querySelector('#scr-settings [data-form="mode-rename"]');
+  assert.equal(form.dataset.id, 'main');
+  assert.ok(form.closest('.mrow[aria-current="true"]'), 'форма — в строке своего режима');
+  assert.equal(document.getElementById('m-name').value, 'Основной');
+  assert.equal(r2Btn(document, 'mode-rename-open', 'main'), undefined, 'кнопка уступила место форме');
+
+  const before = window.localStorage.getItem(NS);
+  const save = () => document.querySelector('#scr-settings [data-act="mode-rename-save"]').click();
+  document.getElementById('m-name').value = '   ';
+  save();
+  r1Refused(document, window, 'mode-rename-save', /^Название не заполнено$/, before);
+  for (const taken of ['Каникулы', 'Старый']) {
+    document.getElementById('m-name').value = taken;
+    save();
+    r1Refused(document, window, 'mode-rename-save', /^Режим с таким именем уже есть$/, before);
+    assert.equal(document.getElementById('m-name').value, taken, 'введённое цело');
+  }
+
+  document.getElementById('m-name').value = ' Учёба ';
+  save();
+  assert.equal(r1Saved(window).modes[0].name, 'Учёба');
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'форма закрыта');
+  const row = r2Rows(r2List(document))[0];
+  assert.equal(row.querySelector('.flash').textContent, 'Сохранено', 'подтверждение — у строки режима');
+  assert.equal(r2Head(document).querySelector('.tname').textContent, 'Режим: Учёба');
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(document.querySelector('#scr-today .hmode').textContent, 'режим Учёба');
+});
+
+test('Р2/2: «Убрать» режим — у выбранного нет; у невыбранного вторым тапом, последствие ПОД кнопкой; строка уходит к убранным, «Вернуть» возвращает', async () => {
+  const { document, window } = await boot({ seed: r2UiSeed() });
+  r2OpenModes(document);
+  const rm = () => r2Btn(document, 'mode-remove', R2_KAN);
+  const before = window.localStorage.getItem(NS);
+  rm().click();
+  assert.equal(rm().textContent, 'Подтвердить: убрать');
+  assert.equal(window.localStorage.getItem(NS), before, 'первый тап только взводит');
+  const box = rm().closest('.btns');
+  assert.deepEqual([...box.children].map(x => x.dataset.act), ['mode-remove'], '«Убрать» — один в своём ряду');
+  const what = box.nextElementSibling;
+  assert.ok(what && what.matches('p.muted'), 'последствие — сразу ПОД кнопкой');
+  assert.equal(what.textContent, 'Режим уйдёт из выбора. Прошлые дни и отметки останутся как есть.');
+
+  // уход с экрана гасит взведённое
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  r2OpenModes(document);
+  assert.equal(rm().textContent, 'Убрать', 'подтверждение не пережило смены вкладки');
+  // и свёртка списка тоже
+  rm().click();
+  r2Head(document).click();
+  r2Head(document).click();
+  assert.equal(rm().textContent, 'Убрать', 'и закрытия списка');
+
+  rm().click();
+  rm().click();
+  const s = r1Saved(window);
+  assert.equal(s.modes.find(m => m.id === R2_KAN).removedAt, daysAgo(0));
+  assert.equal(s.groups.filter(g => g.mode === R2_KAN).length, 2, 'блоки режима на месте');
+  assert.equal(s.items.filter(i => i.mode === R2_KAN && i.removedAt === null).length, 2, 'действия режима на месте');
+  assert.deepEqual(r2Rows(r2List(document)).map(r => r.querySelector('.tname').textContent), ['Основной']);
+  const back = r2Btn(document, 'mode-restore', R2_KAN);
+  assert.ok(back && back.closest('.rowwrap.gone'), 'строка — среди убранных');
+  assert.equal(document.activeElement, back, 'фокус — на «Вернуть»');
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(document.querySelector('#scr-today .hmode'), null, 'живой режим один — имени на «Сегодня» нет');
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(document.querySelector('#scr-settings [data-act="group-dup-to"]'), null, 'копировать некуда');
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+
+  r2OpenModes(document);
+  r2Btn(document, 'mode-restore', R2_KAN).click();
+  assert.equal(r1Saved(window).modes.find(m => m.id === R2_KAN).removedAt, null);
+  const row = r2Rows(r2List(document)).find(r => r.querySelector('.tname').textContent === 'Каникулы');
+  assert.equal(row.querySelector('.flash').textContent, 'Сохранено', 'подтверждение — у вернувшейся строки');
+  assert.equal(document.querySelector('#scr-settings [data-act="mode-restore"]'), null);
+});
+
+test('Р2/2: имя режима на «Сегодня» — только при двух и более живых режимах, рядом с датой, приглушённо; слово владельца через esc', async () => {
+  // один режим — разметки нет вовсе, шапка прежняя
+  const one = await boot({ seed: r2UiSeed({ modes: [{ id: 'main', name: 'Основной', removedAt: null }] }) });
+  const head1 = one.document.querySelector('#scr-today header.page');
+  assert.deepEqual([...head1.children].map(n => n.className), ['overline', '', 'dline']);
+  assert.equal(head1.querySelector('.hmode, .hdate'), null);
+
+  // второй режим убран — живой один, разметки нет
+  const gone = await boot({ seed: r2UiSeed({ modes: [{ id: 'main', name: 'Основной', removedAt: null }, { id: R2_KAN, name: 'Каникулы', removedAt: daysAgo(3) }] }) });
+  assert.equal(gone.document.querySelector('#scr-today .hmode, #scr-today .hdate'), null);
+
+  // два живых — имя выбранного рядом с датой; строка дня остаётся третьей
+  const seed = r2UiSeed({
+    modes: [{ id: 'main', name: 'Основной', removedAt: null }, { id: R2_KAN, name: '<b>Лето</b>', removedAt: null }],
+    modeLog: [{ from: daysAgo(2), mode: R2_KAN }]
+  });
+  const { document } = await boot({ seed });
+  const head = document.querySelector('#scr-today header.page');
+  assert.deepEqual([...head.children].map(n => n.className), ['overline', 'hdate', 'dline'], 'день недели → дата с режимом → строка дня');
+  const date = head.children[1];
+  assert.equal(date.firstElementChild.tagName, 'H1', 'дата — прежний заголовок');
+  assert.equal(date.firstElementChild.textContent, document.querySelector('#scr-today h1').textContent);
+  const name = date.querySelector('.hmode');
+  assert.equal(name.textContent, 'режим <b>Лето</b>');
+  assert.equal(name.querySelector('b'), null, 'слово владельца экранировано');
+  assert.equal(name.querySelector('.sr-only').textContent, 'режим ', '«режим» — только для чтения с экрана');
+  assert.equal(document.querySelectorAll('.hmode').length, 1, 'только на «Сегодня»');
+  for (const t of ['habits', 'progress', 'settings']) {
+    document.querySelector(`#tabs button[data-tab="${t}"]`).click();
+    assert.equal(document.querySelector(`#scr-${t} .hmode`), null, t);
+  }
+  const rule = ruleOf(CSS_SRC(), '.hmode');
+  assert.match(rule, /font-size:\s*var\(--text-sm\)/, 'существующая ступень');
+  assert.match(rule, /color:\s*var\(--muted\)/, 'приглушённо, существующим тоном');
+});
+
+test('Р2/2: «Дублировать блок» — вариант «в режим …» только при двух живых режимах; копия ложится в режим цели, подтверждение у шапки источника', async () => {
+  const one = await boot({ seed: r2UiSeed({ modes: [{ id: 'main', name: 'Основной', removedAt: null }] }) });
+  r1Settings(one.document);
+  r1Btn(one.document, 'group-open', 'Школа').click();
+  assert.ok(one.document.querySelector('#scr-settings [data-act="group-dup"]'));
+  assert.equal(one.document.querySelector('#scr-settings [data-act="group-dup-to"]'), null, 'один режим — варианта нет');
+
+  const seed = r2UiSeed();
+  seed.modes.push({ id: 'old', name: 'Старый', removedAt: daysAgo(4) });
+  const { document, window } = await boot({ seed });
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Школа').click();
+  const to = [...document.querySelectorAll('#scr-settings [data-act="group-dup-to"]')];
+  assert.deepEqual(to.map(b => [b.dataset.name, b.dataset.mode, b.textContent]), [['Школа', R2_KAN, 'в режим «Каникулы»']],
+    'по кнопке на живой режим, кроме своего; убранного нет');
+  assert.equal(to[0].getAttribute('aria-label'), 'дублировать блок «Школа» в режим «Каникулы»');
+  assert.equal(to[0].closest('.btns'), r1Btn(document, 'group-dup', 'Школа').closest('.btns'), 'в ряду «Дублировать блок»');
+  document.getElementById('g-cap').value = 'набрано, но не сохранено';
+
+  to[0].click();
+  let s = r1Saved(window);
+  const copy = s.groups.filter(g => g.mode === R2_KAN);
+  assert.deepEqual(copy.map(g => g.name), ['Утро', 'Лагерь', 'Школа'], 'в конец блоков режима цели, имя свободно — прежнее');
+  assert.equal(copy[2].caption, 'до 15:15', 'копия — сохранённого блока');
+  assert.deepEqual(s.items.filter(i => i.mode === R2_KAN && i.group === 'Школа').map(i => [i.name, i.addedAt]), [['Математика', daysAgo(0)]]);
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'форма источника закрыта');
+  assert.equal(window.eval('ui').formDraft['group:Школа'].fields['g-cap'], 'набрано, но не сохранено', 'набранное в ней — черновиком, как при переходе');
+  const flash = r1Card(document, 'Школа').querySelector('.flash');
+  assert.equal(flash.textContent, 'Копия создана в режиме «Каникулы»: «Школа»', 'подтверждение у шапки источника и называет режим');
+  assert.deepEqual(r2Cards(document), ['Утро', 'Школа'], 'карточек выбранного режима не прибавилось');
+
+  // занято в цели — «(копия)»
+  r1Btn(document, 'group-open', 'Утро').click();
+  r1Btn(document, 'group-dup-to', 'Утро').click();
+  assert.equal(r1Card(document, 'Утро').querySelector('.flash').textContent, 'Копия создана в режиме «Каникулы»: «Утро (копия)»');
+
+  r2Pick(document, R2_KAN);
+  assert.deepEqual(r2Cards(document), ['Утро', 'Лагерь', 'Школа', 'Утро (копия)']);
+  assert.match(r1Card(document, 'Школа').textContent, /Математика/);
+
+  // устаревшая цель — не отказ, перерисовка; отказ записи — строкой
+  r1Btn(document, 'group-open', 'Лагерь').click();
+  const btn = r1Btn(document, 'group-dup-to', 'Лагерь');
+  window.eval('store').modes[0].removedAt = daysAgo(0);
+  const was = window.localStorage.getItem(NS);
+  btn.click();
+  assert.equal(window.localStorage.getItem(NS), was);
+  assert.equal(document.querySelector('#scr-settings .flash.keep'), null);
+  assert.equal(document.querySelector('#scr-settings [data-act="group-dup-to"]'), null, 'перерисовано: копировать больше некуда');
+  window.eval('store').modes[0].removedAt = null;
+  window.renderSettings();
+  withBrokenStorage(window, () => r1Btn(document, 'group-dup-to', 'Лагерь').click());
+  assert.equal(document.querySelector('#scr-settings .flash.keep').textContent, 'Не скопировано: хранилище недоступно');
+  assert.equal(window.eval('store').groups.filter(g => g.name === 'Лагерь').length, 1, 'откат');
+  s = r1Saved(window);
+  assert.equal(s.groups.filter(g => g.name === 'Лагерь').length, 1);
+});
+
+test('Р2/2: секция «Привычки» — заголовки блоков выбранного режима, затем прочие имена; при смене режима привычки не пропадают и не переезжают', async () => {
+  const { document, window } = await boot({ seed: r2UiSeed() });
+  const layout = () => {
+    const body = openSect(document, /Привычки/).querySelector('.sect-b');
+    const out = [];
+    let head = null;
+    for (const n of body.children) {
+      if (n.matches('h2')) break; // «Убранные» — ниже
+      if (n.matches('.g-label')) head = n.textContent;
+      if (n.matches('.list')) for (const b of n.querySelectorAll('[data-act="edit-open"]')) out.push([head, b.dataset.id]);
+    }
+    return out;
+  };
+  r1Settings(document);
+  assert.deepEqual(layout(), [['Утро', 'h1'], ['Школа', 'ph'], ['Лагерь', 'h2'], ['Без блока', 'h3']],
+    'основной: его «Утро» и «Школа», затем «Лагерь» из другого режима, без блока — последней');
+  assert.ok([...openSect(document, /Привычки/).querySelectorAll('.g-label')].every(h => !h.querySelector('.g-cap')), 'заголовки без подписи');
+
+  r2Pick(document, R2_KAN);
+  assert.deepEqual(layout(), [['Утро', 'h1'], ['Лагерь', 'h2'], ['Школа', 'ph'], ['Без блока', 'h3']],
+    'каникулы: порядок заголовков — выбранного режима; каждая привычка под тем же именем');
+
+  // правка открывается со своим блоком, сохранение без правки его не сбрасывает
+  byId(document, 'edit-open', 'ph').click();
+  const sel = document.getElementById('e-group');
+  assert.equal(sel.value, 'Школа', 'блок привычки не потерян');
+  assert.match(sel.options[sel.selectedIndex].textContent, /^Школа \(нет в списке\)$/, 'в выборе — блоки выбранного режима');
+  document.querySelector('#scr-settings [data-act="edit-save"]').click();
+  assert.equal(r1Saved(window).items.find(i => i.id === 'ph').group, 'Школа');
+  assert.equal(document.querySelector('#scr-settings .flash.keep'), null, 'без отказа');
+});
+
+test('Р2/2: «Убранные» привычек и счётчиков — по блокам ВСЕХ режимов; блок убран во всех — строки нет, и старт блок не оживляет', async () => {
+  const since = addKey(curMonday(), -14);
+  const D1 = daysAgo(5), D2 = daysAgo(3);
+  const habit = (id, name, group, extra) => r1Action(id, name, since, group, R1_ALL, Object.assign({ area: 'habit', normPerWeek: 7 }, extra));
+  const seed = r2UiSeed({
+    groups: [r2Blk('Утро', 'main', '', { removedAt: D2 }), r2Blk('Школа', 'main', ''), r2Blk('Утро', R2_KAN, ''), r2Blk('Лагерь', R2_KAN, '', { removedAt: D2 })],
+    items: [
+      r1Action('m2', 'Математика', since, 'Школа', R1_ALL, { mode: 'main' }),
+      // A: блок «Лагерь» есть только у «Каникул» и убран; привычка и счётчик убраны раньше
+      habit('hA', 'Плавание', 'Лагерь', { removedAt: D1 }),
+      Object.assign(r1Action('wA', 'Поход', since, 'Лагерь', R1_ALL, { type: 'weekly', goal: 2, removedAt: D1 }), { schedule: undefined }),
+      // B: «Утро» убрано у основного, но живо у «Каникул»
+      habit('hB', 'Чтение', 'Утро', { removedAt: D1 }),
+      // C: имя, которого нет ни у одного блока
+      habit('hC', 'Вода', 'Нигде', { removedAt: D1 })
+    ]
+  });
+  let { document, window } = await boot({ seed });
+  const goneHabits = () => [...openSect(document, /Привычки/).querySelectorAll('[data-act="item-restore"]')].map(b => b.dataset.id).sort();
+  const goneSchedule = () => [...openSect(document, /Расписание/).querySelectorAll('.blocks .rowwrap.gone [data-act="item-restore"]')].map(b => b.dataset.id);
+  r1Settings(document);
+  assert.deepEqual(goneHabits(), ['hB', 'hC'], 'A — блок убран во всех режимах: строки нет; B — блок жив в другом; C — блока нет нигде');
+  assert.deepEqual(goneSchedule(), [], 'счётчик «Лагеря» в «Убранных» основного режима не стоит');
+  assert.equal(window.goneBesideBlock(window.eval('store').items.find(i => i.id === 'wA')), false);
+
+  // B возвращается: блок «Утро» жив у «Каникул» — ничего не оживает
+  byId(document, 'item-restore', 'hB').click();
+  // возврат позже дня ухода — новая запись (инвариант 12)
+  assert.equal(r1Saved(window).items.filter(i => i.name === 'Чтение' && i.removedAt === null).length, 1);
+  ({ document, window } = await boot({ seed: r1Saved(window) })); // следующий старт — migrate
+  const s = r1Saved(window);
+  assert.equal(s.groups.find(g => g.name === 'Утро' && g.mode === 'main').removedAt, D2, 'старт убранное «Утро» основного не оживил');
+  assert.equal(s.groups.find(g => g.name === 'Лагерь').removedAt, D2, 'и «Лагерь» тоже: живой ссылки на него нет');
+  r1Settings(document);
+  assert.deepEqual(goneHabits(), ['hC']);
+
+  // дорога к A — возврат блока в его режиме: ушедшие в другой день снова встают в «Убранные»
+  r2Pick(document, R2_KAN);
+  const restore = [...document.querySelectorAll('#scr-settings .rowwrap.gone [data-act="group-restore"]')].find(b => b.dataset.name === 'Лагерь');
+  assert.ok(restore, '«Лагерь» — в «Убранных» своего режима');
+  restore.click();
+  assert.deepEqual(goneHabits(), ['hA', 'hC'], 'блок вернулся — привычка «Лагеря» снова в «Убранных»');
+  assert.deepEqual(goneSchedule(), ['wA'], 'и счётчик — в «Убранных» «Расписания»');
+});
+
+test('Р2/2: «Отметки» на «Прогрессе» — живые действия всех режимов; действие невыбранного режима нигде не печатает «ни одного дня»', async () => {
+  const { document, window } = await boot({ seed: r2UiSeed({ days: { [daysAgo(1)]: { m1: true } } }) });
+  const marks = () => {
+    document.querySelector('#tabs button[data-tab="progress"]').click();
+    const card = [...document.querySelectorAll('#scr-progress .pcard')].find(c => c.querySelector('h2').textContent === 'Отметки');
+    return [...card.querySelectorAll('.line')].map(p => p.textContent.split(' · ')[0]);
+  };
+  const NONE = /ни одного дня|ни в один день/;
+  const scanAll = what => {
+    for (const t of ['today', 'habits', 'progress', 'settings']) {
+      document.querySelector(`#tabs button[data-tab="${t}"]`).click();
+      assert.doesNotMatch(document.getElementById('scr-' + t).textContent, NONE, `${what}: ${t}`);
+    }
+    for (const d of document.querySelectorAll('#scr-settings details.sect')) d.open = true;
+    const ids = [...document.querySelectorAll('#scr-settings .bcard [data-act="edit-open"]')].map(b => b.dataset.id);
+    assert.ok(ids.length >= 2, 'строки действий в карточках');
+    for (const id of ids) {
+      byId(document, 'edit-open', id).click();
+      assert.doesNotMatch(document.getElementById('scr-settings').textContent, NONE, `${what}: форма ${id}`);
+    }
+  };
+  assert.deepEqual(marks().slice(0, 4).sort(), ['Зарядка', 'Костёр', 'Кровать', 'Математика'], 'действия обоих режимов');
+  scanAll('основной');
+  r2Pick(document, R2_KAN);
+  scanAll('каникулы');
+  assert.deepEqual(marks().slice(0, 4).sort(), ['Зарядка', 'Костёр', 'Кровать', 'Математика'], 'после смены режима — те же');
+  assert.equal(window.eval('store').items.filter(i => i.area === 'min').length, 4);
+});
+
+test('Р2/2: смена логического дня, принёсшая другой режим, снимает формы, черновики и свёртки «Настроек»', async () => {
+  // отрезок «с завтрашнего дня» приносит только импорт
+  const { document, window } = await boot({ seed: r2UiSeed({ modeLog: [{ from: daysAgo(-1), mode: R2_KAN }] }) });
+  r1Settings(document);
+  assert.equal(r2Head(document).querySelector('.tname').textContent, 'Режим: Основной');
+  r1Btn(document, 'group-fold', 'Школа').click();
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-name').value = 'ЧЕРНОВИК';
+  window.renderSettings();
+  assert.ok(window.eval('ui').formDraft['group:Утро']);
+  shiftWindowDays(window, 1);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  assert.equal(r2Head(document).querySelector('.tname').textContent, 'Режим: Каникулы');
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'форма чужого «Утра» не открыта');
+  assert.deepEqual(Object.keys(window.eval('ui').formDraft), []);
+  assert.deepEqual(Object.keys(window.eval('ui').blockFold), []);
+  r1Btn(document, 'group-open', 'Утро').click();
+  assert.equal(document.getElementById('g-name').value, 'Утро');
+
+  // тот же режим сменой дня — ничего не снимается
+  const same = await boot({ seed: r2UiSeed() });
+  r1Settings(same.document);
+  r1Btn(same.document, 'group-fold', 'Школа').click();
+  shiftWindowDays(same.window, 1);
+  same.document.dispatchEvent(new same.window.Event('visibilitychange'));
+  assert.deepEqual(Object.keys(same.window.eval('ui').blockFold), ['Школа'], 'режим не сменился — свёртка на месте');
+});
+
+test('Р2/2: отметка на «Сегодня» при двух режимах — экран после точечного пути равен перерисованному', async () => {
+  const seed = r2UiSeed({ modeLog: [{ from: daysAgo(3), mode: R2_KAN }] });
+  seed.items.push(Object.assign(r1Action('kw', 'Спорт', seed.settings.calendarSince, '', R1_ALL, { type: 'weekly', goal: 3 }), { schedule: undefined }));
+  seed.days[daysAgo(1)] = { k1: true };
+  seed.days[daysAgo(5)] = { m1: true };
+  const { document, window } = await boot({ seed });
+  assert.deepEqual(r2Today(document), ['k1', 'k2'], 'действия режима этого дня');
+  assert.ok(document.querySelector('#scr-today .hmode'), 'имя режима в шапке');
+  assert.ok(document.querySelector('#scr-today .weekcount'), 'и глобальный счётчик');
+  const box = id => document.querySelector(`#scr-today input[data-act="mark"][data-id="${id}"]`);
+  box('k1').click();
+  // «Утро» режима из одного действия выполнено и сворачивается: сторож ждёт
+  // конца схлопывания и сравнивает после него (задача Р2, п. 4)
+  await settle();
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'первая отметка');
+  box('k2').click();
+  await wait(T.DAY_CLOSE_MS + T.MOTION_TAIL_MS + 40);
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт');
+  unfoldBlock(document, 'Лагерь');
+  box('k2').click();
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'снятие отметки');
+});
+
+test('Р2/2: «Без блока» и «Убранные» «Расписания» — действия выбранного режима; глобальный счётчик — в обоих', async () => {
+  const since = addKey(curMonday(), -14);
+  const act = (id, name, group, mode, extra) => r1Action(id, name, since, group, R1_ALL, Object.assign({ mode }, extra || {}));
+  const seed = r2UiSeed({
+    items: [
+      act('m1', 'Кровать', 'Утро', 'main'), act('mL', 'Вне блока осн', '', 'main'),
+      act('mG', 'Ушедшее осн', 'Утро', 'main', { removedAt: daysAgo(2) }),
+      act('k1', 'Зарядка', 'Утро', R2_KAN), act('kL', 'Вне блока кан', '', R2_KAN),
+      act('kG', 'Ушедшее кан', 'Лагерь', R2_KAN, { removedAt: daysAgo(2) }),
+      Object.assign(r1Action('w', 'Спорт', since, '', R1_ALL, { type: 'weekly', goal: 3 }), { schedule: undefined })
+    ]
+  });
+  seed.groups[1].removedAt = daysAgo(1); // «Школа» основного убрана
+  const { document } = await boot({ seed });
+  const loose = () => [...document.querySelectorAll('#scr-settings .bcard.loose [data-act="edit-open"]')].map(b => b.dataset.id);
+  const gone = () => [...document.querySelectorAll('#scr-settings .blocks .rowwrap.gone [data-act]')].map(b => b.dataset.id || b.dataset.name);
+  r1Settings(document);
+  assert.deepEqual(loose(), ['mL', 'w'], 'основной: своё действие без блока и глобальный счётчик');
+  assert.deepEqual(gone(), ['Школа', 'mG'], 'основной: свой убранный блок, затем своё убранное действие');
+  r2Pick(document, R2_KAN);
+  assert.deepEqual(loose(), ['kL', 'w'], 'каникулы: своё и тот же счётчик');
+  assert.deepEqual(gone(), ['kG'], 'каникулы: только своё убранное');
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.ok(document.querySelector('#scr-today .weekcount'), 'счётчик на «Сегодня» — при любом режиме');
+});
+
+test('Р2/2: закрытие списка режимов закрывает его форму снимком — набранное возвращается с формой, призрака нет', async () => {
+  const { document, window } = await boot({ seed: r2UiSeed() });
+  r2OpenModes(document);
+  document.querySelector('#scr-settings [data-act="mode-add-open"]').click();
+  document.getElementById('m-add').value = 'Лето';
+  r2Head(document).click();
+  assert.equal(r2List(document).hidden, true);
+  assert.equal(document.querySelector('#scr-settings [data-form]'), null, 'скрытой открытой формы нет');
+  assert.equal(window.eval('currentFormKey')(), null, 'и ключа черновика у неё нет');
+  r1Btn(document, 'group-open', 'Утро').click(); // соседняя форма не тронула черновик режима
+  document.querySelector('#scr-settings [data-act="group-cancel"]').click();
+  r2OpenModes(document);
+  document.querySelector('#scr-settings [data-act="mode-add-open"]').click();
+  assert.equal(document.getElementById('m-add').value, 'Лето', 'черновик «Нового режима» цел');
+  // и переименование — тем же правилом, ключ по id режима
+  r2Btn(document, 'mode-rename-open', R2_KAN).click();
+  assert.equal(window.eval('currentFormKey')(), 'mode:' + R2_KAN);
+  document.getElementById('m-name').value = 'Отпуск';
+  r2Head(document).click();
+  r2OpenModes(document);
+  r2Btn(document, 'mode-rename-open', R2_KAN).click();
+  assert.equal(document.getElementById('m-name').value, 'Отпуск');
+  assert.equal(r1Saved(window).modes[1].name, 'Каникулы', 'ничего не записано');
+});
+
+/* ══ Задача Р2, этап 4: «Не сегодня» на «Сегодня» и в разборе ═════
+   Пропуск — false в days{}: строка остаётся на месте, зачёркнута и
+   приглушена, круг неактивен; знаменатель дня — без пропущенных. Кнопка
+   «Не сегодня» / «Вернуть» стоит в разметке строки всегда, свайп её только
+   выдвигает. Сид — pointSeed: «Зарядка» и «Английский» в блоке «Утро». */
+
+const r2Row = (document, id) =>
+  document.querySelector(`#scr-today input[data-act="mark"][data-id="${id}"]`).closest('.rowwrap');
+const r2SkipBtn = (document, id) => r2Row(document, id).querySelector('.skipbtn');
+const r2Note = document => document.querySelector('#scr-today .bar-note').textContent.replace(/\s+/g, ' ').trim();
+const r2Scene = () => wait(T.DAY_CLOSE_MS + T.MOTION_TAIL_MS + 40);
+
+test('Р2/3: «Не сегодня» и «Вернуть» — строка на месте, зачёркнута, круг неактивен; «N из M» и планка по знаменателю без пропущенных; точечный путь = перерисовка', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  const scr = () => document.getElementById('scr-today');
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const t = daysAgo(0);
+  const inp = id => scr().querySelector(`input[data-act="mark"][data-id="${id}"]`);
+  const btn = id => r2SkipBtn(document, id);
+
+  // кнопка в разметке строки всегда: у неотмеченной — «Не сегодня», с именем действия
+  assert.ok(r2Row(document, 'p-a').classList.contains('swipe'), 'строка действия сдвигается свайпом');
+  assert.equal(btn('p-a').dataset.act, 'skip');
+  assert.equal(btn('p-a').textContent, 'Не сегодня');
+  assert.equal(btn('p-a').getAttribute('aria-label'), 'не сегодня: «Зарядка»');
+  assert.equal(btn('p-a').type, 'button');
+  assert.equal(btn('p-a').hidden, false);
+  assert.ok(btn('p-a').classList.contains('btn'), 'тач-цель ≥ 44 px с откликом — общий .btn');
+  // у привычек — ни жеста, ни кнопки: пропуск принадлежит только действиям минимума
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  assert.equal(document.querySelector('#scr-habits .skipbtn'), null);
+  assert.equal(document.querySelector('#scr-habits .rowwrap.swipe'), null);
+  document.querySelector('#tabs button[data-tab="today"]').click();
+
+  assert.equal(r2Note(document), '0 из 2');
+  btn('p-a').click();
+  assert.equal(saved().days[t]['p-a'], false, 'записан пропуск, а не отметка');
+  assert.ok(r2Row(document, 'p-a').classList.contains('skip'), 'строка на месте, помечена пропуском');
+  assert.equal(inp('p-a').disabled, true, 'круг неактивен');
+  assert.equal(inp('p-a').checked, false);
+  assert.equal(inp('p-a').closest('label.check').classList.contains('on'), false, 'и не «on»');
+  assert.equal(btn('p-a').dataset.act, 'unskip');
+  assert.equal(btn('p-a').textContent, 'Вернуть');
+  assert.equal(btn('p-a').getAttribute('aria-label'), 'вернуть: «Зарядка»');
+  assert.equal(r2Note(document), '0 из 1', 'пропущенное выпало из знаменателя');
+  assert.equal(scr().querySelector('.bar i').style.width, '0%');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'пропуск');
+
+  // тап по строке пропущенного отметкой не становится
+  inp('p-a').closest('label.check').click();
+  assert.equal(saved().days[t]['p-a'], false, 'label пропущенного круг не переключает');
+
+  // отметка второго закрывает день — знаменатель уже без пропущенного
+  inp('p-b').click();
+  assert.equal(r2Note(document), 'День закрыт');
+  assert.equal(scr().querySelector('.bar i').style.width, '100%');
+  assert.equal(btn('p-b').hidden, true, 'у отмеченной «Не сегодня» не предлагается');
+  assert.ok(scr().querySelector('label.check.closing'), 'закрыто отметкой — сцена с кольцом, как прежде');
+  await r2Scene();
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт при пропуске');
+
+  // «Вернуть»: знаменатель растёт, день снова открыт, сцены нет. Блок после
+  // сцены свёрнут (задача Р2, п. 4) — «Вернуть» стоит в его строках
+  unfoldBlock(document, 'Утро');
+  btn('p-a').click();
+  assert.equal(saved().days[t]['p-a'], undefined, 'пропуск снят');
+  assert.equal(r2Row(document, 'p-a').classList.contains('skip'), false);
+  assert.equal(inp('p-a').disabled, false);
+  assert.equal(r2Note(document), '1 из 2');
+  assert.equal(scr().querySelector('.closing'), null, '«Вернуть» сцены не играет');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'возврат');
+
+  // день закрывается ПРОПУСКОМ последнего неотмеченного — сцена играет, кольца нет
+  btn('p-a').click();
+  assert.equal(r2Note(document), 'День закрыт');
+  assert.ok(scr().querySelector('.dayline.closing'), 'планка и фраза — отклик на действие, закрывшее день');
+  assert.equal(scr().querySelector('label.check.closing'), null, 'кольца от неактивного круга нет');
+  await r2Scene();
+  assert.equal(scr().querySelector('.closing'), null, 'след сцены снят');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт пропуском');
+
+  // всё пропущено: «0 из 0», не закрыт, сцены нет — а строки на месте
+  unfoldBlock(document, 'Утро'); // закрытый пропуском день свернул блок (Р2, п. 4)
+  inp('p-b').click(); // снять отметку
+  btn('p-b').click();
+  assert.equal(r2Note(document), '0 из 0');
+  assert.equal(scr().querySelector('.bar i').style.width, '0%');
+  assert.equal(scr().querySelector('.bar-note').classList.contains('ok'), false, 'всё пропущено — не «День закрыт»');
+  assert.equal(scr().querySelector('.closing'), null, 'и сцены нет');
+  // Блок, где всё пропущено, решён и сворачивается (задача Р2, п. 4) — но
+  // строки не пропали: вернуть можно только из них, и они в его развёртке
+  await settle();
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'всё пропущено');
+  unfoldBlock(document, 'Утро');
+  assert.equal(scr().querySelectorAll('.rowwrap.skip').length, 2, 'строки не пропали: вернуть можно только из них');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'всё пропущено, блок развёрнут');
+
+  // «Прогресс»: полоса дня тем же правилом — план есть, знаменатель пуст
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  assert.equal(document.querySelector('#scr-progress .dbar-note').textContent, '0 из 0 сегодня');
+  assert.ok(document.querySelector('#scr-progress .dbar'), 'полоса есть: делать было что');
+});
+
+test('Р2/3: клавиатурный путь — кнопка достижима Tab, фокус выдвигает её; после тапа фокус на той же кнопке, уже «Вернуть»', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  const b = r2SkipBtn(document, 'p-b');
+  assert.equal(b.hasAttribute('tabindex'), false, 'в порядке Tab, без tabindex -1');
+  assert.equal(b.disabled, false);
+  b.focus();
+  assert.equal(document.activeElement, b);
+  b.click(); // Enter и пробел на кнопке — это click
+  assert.equal(document.activeElement, b, 'узел не пересоздан — фокус на месте');
+  assert.equal(b.textContent, 'Вернуть');
+  assert.equal(b.isConnected, true);
+  b.click();
+  assert.equal(document.activeElement, b);
+  assert.equal(b.textContent, 'Не сегодня');
+  assert.equal(JSON.parse(window.localStorage.getItem(NS)).days[daysAgo(0)], undefined);
+  // фокус выдвигает кнопку сам: сдвиг строки по :focus-visible, и без :has — поверх строки
+  const css = CSS_SRC();
+  assert.match(css, /\.rowwrap\.swipe:has\(> \.skipbtn:focus-visible\)\s*\{\s*--sx:/);
+  assert.match(css, /\.rowwrap\.swipe:has\(> \.skipbtn:focus-visible\)::before,/, 'и подложка под сдвинутой строкой');
+  const focus = ruleOf(css, '.skipbtn:focus-visible');
+  assert.match(focus, /opacity:\s*1/, 'в покое прозрачная кнопка при фокусе видна');
+  assert.match(focus, /z-index:\s*3/);
+  // прозрачность, а не visibility: скрытая visibility кнопка фокус не получила бы
+  assert.doesNotMatch(ruleOf(css, '.skipbtn'), /visibility/);
+});
+
+test('Р2/3: свайп — захват при |dx| > 8 и |dx| > |dy|, иначе скролл; порог 40 % ширины; незавершённый возвращает строку; клик после жеста не отмечает', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  const scr = document.getElementById('scr-today');
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const t = daysAgo(0);
+  const row = id => r2Row(document, id);
+  const label = id => row(id).querySelector('label.check');
+  // геометрия строки в jsdom нулевая — ширина 335 px, как на 375 px экрана
+  const down = (id, x, y) => {
+    row(id).getBoundingClientRect = () => ({ top: 200, bottom: 256, height: 56, left: 20, right: 355, width: 335, x: 20, y: 200 });
+    label(id).querySelector('.tname').dispatchEvent(pointer(window, 'pointerdown', x, y));
+  };
+  const move = (x, y) => document.dispatchEvent(pointer(window, 'pointermove', x, y));
+  const up = (x, y) => document.dispatchEvent(pointer(window, 'pointerup', x, y));
+  const sx = id => row(id).style.getPropertyValue('--sx');
+  const is = (id, cls) => row(id).classList.contains(cls);
+
+  // в мёртвой зоне жест не решён; вертикаль сильнее — это скролл, строка отпущена
+  down('p-a', 300, 230);
+  move(294, 234);
+  assert.equal(is('p-a', 'swiping'), false, 'в пределах 8 px — не решено');
+  move(280, 262);
+  assert.equal(is('p-a', 'swiping'), false, '|dy| > |dx| — скролл');
+  move(100, 262);
+  assert.equal(sx('p-a'), '', 'решённый скролл горизонталью строку уже не двигает');
+  up(100, 262);
+  assert.equal(row('p-a').hasAttribute('style'), false);
+
+  // вбок сильнее — захват: строка идёт за пальцем без перехода и только влево
+  down('p-a', 300, 230);
+  move(290, 232);
+  assert.ok(is('p-a', 'swiping'), '|dx| > 8 и |dx| > |dy| — захват');
+  assert.equal(sx('p-a'), '-10px');
+  move(360, 232);
+  assert.equal(sx('p-a'), '0px', 'вправо дальше покоя строка не едет');
+  move(170, 236);
+  assert.equal(sx('p-a'), '-130px');
+  up(170, 236); // 130 < 134 = 40 % от 335
+  assert.equal(is('p-a', 'open'), false, 'меньше порога — строка вернулась');
+  assert.equal(is('p-a', 'swiping'), false);
+  assert.equal(row('p-a').hasAttribute('style'), false, 'и следа сдвига не осталось');
+  label('p-a').click(); // клик, рождённый жестом
+  assert.equal(saved().days[t], undefined, 'клик после свайпа отметку не переключил');
+  assert.equal(scr.querySelector('input[data-id="p-a"]').checked, false);
+
+  // за порогом — строка остаётся открытой
+  down('p-a', 300, 230);
+  move(290, 231);
+  move(160, 233); // 140 ≥ 134
+  up(160, 233);
+  assert.ok(is('p-a', 'open'), 'кнопка выдвинута');
+  assert.equal(row('p-a').hasAttribute('style'), false, 'положение открытой строки даёт класс, а не инлайн');
+  label('p-a').click();
+  assert.equal(saved().days[t], undefined);
+  // касание содержимого открытой строки закрывает её, а не отмечает
+  label('p-a').querySelector('.tname').dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  up(100, 230);
+  assert.equal(is('p-a', 'open'), false);
+  label('p-a').click();
+  assert.equal(saved().days[t], undefined, 'тап по открытой строке — «закрыть»');
+
+  // открыть и нажать «Не сегодня»: касание самой кнопки строку не закрывает
+  down('p-a', 300, 230); move(290, 231); move(150, 231); up(150, 231);
+  const b = row('p-a').querySelector('.skipbtn');
+  b.dispatchEvent(pointer(window, 'pointerdown', 330, 230));
+  assert.ok(is('p-a', 'open'), 'касание кнопки открытую строку не закрывает');
+  up(330, 230);
+  b.click();
+  assert.equal(saved().days[t]['p-a'], false, 'тап по выдвинутой кнопке — пропуск');
+  assert.equal(is('p-a', 'open'), false, 'после пропуска строка стоит на месте');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'пропуск жестом');
+
+  // пропущенная строка выдвигает «Вернуть»; касание вне строки закрывает её
+  down('p-a', 300, 230); move(290, 231); move(150, 231); up(150, 231);
+  assert.ok(is('p-a', 'open'));
+  assert.equal(row('p-a').querySelector('.skipbtn').textContent, 'Вернуть');
+  scr.querySelector('h1').dispatchEvent(pointer(window, 'pointerdown', 50, 40));
+  up(50, 40);
+  assert.equal(is('p-a', 'open'), false);
+
+  // pointercancel — браузер забрал жест себе: строка возвращается
+  down('p-b', 300, 290); move(290, 291); move(150, 291);
+  document.dispatchEvent(pointer(window, 'pointercancel', 150, 291));
+  assert.equal(is('p-b', 'open'), false);
+  assert.equal(row('p-b').hasAttribute('style'), false);
+  assert.equal(saved().days[t]['p-b'], undefined);
+
+  // у отмеченной строки жеста нет
+  scr.querySelector('input[data-id="p-b"]').click();
+  await r2Scene(); // день закрылся отметкой
+  unfoldBlock(document, 'Утро'); // и блок свернулся — строки возвращает развёртка (Р2, п. 4)
+  down('p-b', 300, 290); move(280, 291); move(100, 291);
+  assert.equal(is('p-b', 'swiping'), false, 'отмеченной «Не сегодня» не предлагается и жестом');
+  up(100, 291);
+  assert.equal(is('p-b', 'open'), false);
+  assert.equal(row('p-b').hasAttribute('style'), false);
+
+  // тот же жест мышью: обработчики не различают pointerType — событие мыши
+  // (а в jsdom событие указателя и есть MouseEvent) проходит тем же путём
+  assert.doesNotMatch(APP, /pointerType/, 'ни одной ветки по типу указателя');
+  // и перетаскивание «Настроек» не задето: там строк со свайпом нет
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  assert.equal(document.querySelector('#scr-settings .rowwrap.swipe'), null);
+});
+
+test('Р2/3: сетка разбора — ячейка пропуска с чертой, «пропусков K» рядом с «запланировано D дней», sr «отмечено n из D, пропусков K»; пропуск вне плана не считается', async () => {
+  const seed = r1ReviewSeed();
+  const prev = prevMonday();
+  const put = (i, id) => { const k = addKey(prev, i); (seed.days[k] || (seed.days[k] = {}))[id] = false; };
+  put(4, 'it1'); // пятница у ежедневного
+  put(3, 'hw');  // четверг у будничного
+  put(5, 'sw');  // суббота у «Бассейна» (пн, ср, пт) — вне плана
+  const { document } = await boot({ seed });
+  openReview(document);
+  const [minGrid] = document.getElementById('scr-review').querySelectorAll('.grid');
+  const skipCells = name => [...minGrid.querySelectorAll('.g-name')].find(x => x.firstChild.textContent === name)
+    .nextElementSibling.querySelectorAll('i.skip');
+
+  const daily = r1GridRow(minGrid, 'Тестовый пункт');
+  assert.equal(daily.plan.textContent, 'пропусков 1', 'при семи днях — одна подпись о пропусках');
+  assert.equal(daily.plan.getAttribute('aria-hidden'), 'true');
+  assert.equal(daily.sr, ', отмечено 2 из 7, пропусков 1: пятница', 'пропуск в знаменатель не входит и недобором не зовётся; день назван');
+  assert.equal(daily.on, 2);
+  assert.equal(skipCells('Тестовый пункт').length, 1, 'своя ячейка');
+  assert.equal(skipCells('Тестовый пункт')[0].classList.contains('on'), false);
+
+  const hw = r1GridRow(minGrid, 'Домашка');
+  assert.equal(hw.plan.textContent, 'запланировано 5 дней · пропусков 1', 'рядом с «запланировано D дней»');
+  assert.equal(hw.sr, ', отмечено 3 из 5, пропусков 1: четверг');
+
+  const sw = r1GridRow(minGrid, 'Бассейн');
+  assert.equal(sw.plan.textContent, 'запланировано 3 дня', 'пропуск вне плана «пропусков» не даёт');
+  assert.equal(sw.sr, ', отмечено 1 из 3');
+  assert.equal(skipCells('Бассейн').length, 1, 'а круг показывает факт, как и отметку вне плана');
+
+  const call = r1GridRow(minGrid, 'Звонок');
+  assert.equal(call.plan.textContent, 'запланировано 1 день', 'без пропусков — строка прежняя');
+  assert.equal(skipCells('Звонок').length, 0);
+
+  // форма ячейки: круг с чертой, только токены — различим не одним цветом
+  const css = CSS_SRC();
+  const cell = ruleOf(css, '.grid i.skip');
+  const bar = ruleOf(css, '.grid i.skip::after');
+  assert.ok(cell && bar, 'правила ячейки пропуска');
+  assert.match(bar, /content:\s*""/, 'черта — отдельная фигура');
+  for (const body of [cell, bar]) {
+    assert.doesNotMatch(body, /#[0-9a-f]{3,8}\b|rgba?\(/i, 'только токены');
+    assert.match(body, /var\(--control-border\)/);
+  }
+});
+
+test('Р2/3: CSS свайпа и пропуска — transform в окне движения без задержки, pan-y, под пальцем без перехода; пропущенная строка — зачёркивание и пунктир существующими токенами', () => {
+  const css = CSS_SRC();
+  const body = (/\.rowwrap\.swipe::before,\s*\.rowwrap\.swipe > :not\(\.skipbtn\)\s*\{([^}]*)\}/.exec(css) || [])[1];
+  assert.ok(body, 'правило сдвига строки');
+  const swipeTrans = declValues(body, 'transition').flatMap(motionParts);
+  assert.equal(swipeTrans.length, 1, 'переход доезда строки один — только transform');
+  const [p] = swipeTrans;
+  assert.ok(p.dur >= 180 && p.dur <= 260, 'в окне движения: ' + p.dur);
+  assert.equal(p.delay, 0, 'без задержки: раскадровка разрешена только сцене закрытия дня');
+  assert.match(css, /\.rowwrap\.swipe::before,\s*\.rowwrap\.swipe > :not\(\.skipbtn\)\s*\{\s*transform: translateX\(var\(--sx\)\);\s*transition: transform \.22s ease-in;/,
+    'двигается только transform — ни ширины, ни отступов, ни left; возврат — уход кнопки, ease-in');
+  assert.match(css, /\.rowwrap\.swipe:has\(> \.skipbtn:focus-visible\) > :not\(\.skipbtn\)\s*\{\s*transition-timing-function: ease-out;/,
+    'выезд — появление, ease-out');
+  assert.match(css, /\.rowwrap\.swipe\.open > :not\(\.skipbtn\),/);
+  assert.match(ruleOf(css, '.rowwrap.swipe'), /touch-action:\s*pan-y/, 'вертикальный скролл страницы — браузеру');
+  assert.match(css, /\.rowwrap\.swipe\.swiping::before,\s*\.rowwrap\.swipe\.swiping > :not\(\.skipbtn\)\s*\{\s*transition: none;/,
+    'под пальцем строка идёт без перехода');
+  assert.match(css, /\.rowwrap\.swipe\.open,/, 'открытое положение — классом');
+  // в покое кнопка не видна и касаний не ловит: промах в зазор строки пропуском не становится
+  assert.match(ruleOf(css, '.skipbtn'), /opacity:\s*0;[\s\S]*pointer-events:\s*none/);
+  assert.match(css, /\n\.rowwrap\.swipe\.open > \.skipbtn\s*\{\s*pointer-events:\s*auto;\s*\}/, 'нажимается только выдвинутая');
+  // подложки в покое нет: кольцо сцены закрытия дня выходит за край строки и не срезается соседней
+  assert.match(ruleOf(css, '.rowwrap.swipe::before'), /opacity:\s*0/);
+  assert.match(ruleOf(css, '.skipbtn[hidden]'), /display:\s*none/, 'у отмеченной кнопка скрыта явно');
+  assert.doesNotMatch(ruleOf(css, '.skipbtn'), /min-height|height:/, 'высоту тач-цели держит .btn (44 px)');
+  assert.equal(px(ruleOf(css, '.btn'), 'min-height'), 44);
+
+  const name = ruleOf(css, '.rowwrap.skip .tname');
+  assert.match(name, /text-decoration:\s*line-through/, 'зачёркнута — не только цветом');
+  assert.match(name, /color:\s*var\(--muted\)/, 'приглушена существующим токеном');
+  const box = ruleOf(css, '.rowwrap.skip .check .box');
+  assert.match(box, /border-style:\s*dashed/, 'круг неактивен — пунктир');
+  for (const body of [name, box, ruleOf(css, '.rowwrap.swipe::before')]) {
+    assert.doesNotMatch(body, /#[0-9a-f]{3,8}\b|rgba?\(/i, 'сырых цветов нет');
+  }
+  assert.doesNotMatch(css.slice(css.indexOf('.rowwrap.swipe {'), css.indexOf('.rowwrap.skip .tname')), /gradient/, 'нового градиента нет');
+  // reduced-motion: глобальный блок гасит и этот переход — конечное положение мгновенно
+  const rm = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(rm, /transition: none !important/);
+});
+
+test('Р2/3: кнопка пропуска — в списке тач-целей с откликом на нажатие, в обоих состояниях', async () => {
+  const { document } = await boot({ seed: pointSeed() });
+  const css = CSS_SRC();
+  r2SkipBtn(document, 'p-a').click(); // «Вернуть»
+  const btns = [...document.querySelectorAll('#scr-today .skipbtn')];
+  assert.deepEqual(btns.map(b => b.dataset.act).sort(), ['skip', 'unskip']);
+  for (const b of btns) {
+    const hit = TAPPABLE.find(s => b.matches(s));
+    assert.ok(hit, 'кнопка — тач-цель из списка: ' + b.dataset.act);
+    assert.match(css, new RegExp(hit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':active'), 'и у неё есть состояние нажатия');
+  }
+});
+
+/* ── Свёртка выполненного блока «Сегодня» (задача Р2, п. 4) ─────
+   Блок, где каждое запланированное на сегодня действие отмечено или
+   пропущено, стоит одной строкой. Свёрнутость — состояние (печатает рендер),
+   движение — только отклик на отметку или пропуск, сделавшие блок
+   выполненным. Сцена закрытия дня главнее. */
+
+/* «Утро» (7:00) из двух действий — свёртка через .chain; «Вечер» из одного —
+   через саму строку; «Прогулка» без блока; привычка «Чтение» в «Утре».
+   Маски ежедневные: от дня недели прогона не зависит. */
+function r2FoldSeed(days) {
+  const since = addKey(curMonday(), -14);
+  const s = r1Store(
+    [r1Block('Утро', '7:00'), r1Block('Вечер', 'до 22:30')],
+    [
+      r1Action('u1', 'Кровать', since, 'Утро', R1_ALL), r1Action('u2', 'Шторы', since, 'Утро', R1_ALL),
+      r1Action('v1', 'Душ', since, 'Вечер', R1_ALL), r1Action('l1', 'Прогулка', since, '', R1_ALL),
+      r1Action('h1', 'Чтение', since, 'Утро', R1_ALL, { area: 'habit', normPerWeek: 7 })
+    ],
+    days ? { [daysAgo(0)]: days } : {});
+  s.settings.calendarSince = since;
+  return s;
+}
+const r2Fold = (document, name) =>
+  [...document.querySelectorAll('#scr-today [data-act="block-unfold"]')].find(b => b.dataset.name === name) || null;
+const r2Text = n => n.textContent.replace(/\s+/g, ' ').trim();
+const r2Box = (document, id) => document.querySelector(`#scr-today input[data-act="mark"][data-id="${id}"]`);
+const r2ReducedMotion = window => {
+  window.matchMedia = q => ({ matches: /reduced-motion/.test(q), media: q,
+    addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
+};
+
+test('Р2/4: последняя отметка блока — строки схлопываются классом-триггером, затем одна строка «✓ N из N»: имя, подпись, кнопка с aria-expanded и именем для AT', async () => {
+  const { document, window } = await boot({ seed: r2FoldSeed() });
+  const scr = document.getElementById('scr-today');
+  const disk = () => window.localStorage.getItem(NS);
+  assert.equal(r2Fold(document, 'Утро'), null, 'невыполненный блок не свёрнут');
+
+  r2Box(document, 'u1').click();
+  assert.equal(scr.querySelector('.folding'), null, 'не последняя отметка — ничего не схлопывается');
+  await settle();
+  assert.equal(r2Fold(document, 'Утро'), null);
+
+  r2Box(document, 'u2').click();
+  const rows = scr.querySelector('.list > .chain.folding');
+  assert.ok(rows, 'строки блока получили класс-триггер');
+  assert.equal(rows.style.maxHeight, '0px', 'схлопывание по высоте');
+  assert.ok(rows.contains(r2Box(document, 'u2')), 'схлопываются строки именно этого блока');
+  assert.equal(scr.querySelectorAll('.folding').length, 1, 'одного блока');
+  assert.equal(rows.previousElementSibling.className, 'g-label', 'заголовок не схлопывается — на его место встанет строка');
+  assert.equal(scr.querySelector('.closing'), null, 'день не закрыт — сцены нет');
+  assert.equal(r2Fold(document, 'Утро'), null, 'свёрнутая строка появляется перерисовкой после схлопывания');
+  assert.equal(r2Note(document), '2 из 4', 'планка — точечно, как всегда');
+  const stored = disk();
+
+  await settle();
+  const b = r2Fold(document, 'Утро');
+  assert.ok(b, 'блок свёрнут');
+  assert.equal(scr.querySelector('.folding'), null, 'класс-триггер ушёл вместе с узлом');
+  assert.equal(r2Box(document, 'u1'), null, 'строк блока нет');
+  assert.equal(scr.querySelector('.list').firstElementChild, b, 'строка стоит там, где стоял заголовок');
+  assert.equal(b.tagName, 'BUTTON');
+  assert.equal(b.type, 'button');
+  assert.equal(b.getAttribute('aria-expanded'), 'false');
+  assert.equal(b.hasAttribute('aria-controls'), false, 'строк блока в DOM нет — указывать не на что');
+  assert.equal(b.querySelector('.bf-name').textContent, 'Утро');
+  assert.equal(b.querySelector('.g-cap').textContent, '7:00');
+  assert.equal(r2Text(b.querySelector('.bf-count')), '✓ 2 из 2');
+  assert.equal(b.querySelector('.bf-count [aria-hidden="true"]').textContent.codePointAt(0), 0x2713, 'знак — текстовый U+2713, от AT скрыт');
+  assert.equal(b.getAttribute('aria-label'), 'Утро, 7:00: отмечено 2 из 2');
+  // соседей свёртка не трогает; планка и хранилище — как без неё
+  assert.ok(r2Box(document, 'v1') && r2Box(document, 'l1'), '«Вечер» и пункт без блока на месте');
+  assert.equal(r2Note(document), '2 из 4');
+  assert.equal(disk(), stored, 'свёртка в хранилище не пишет ничего');
+  assert.deepEqual(JSON.parse(disk()).days[daysAgo(0)], { u1: true, u2: true });
+
+  // имя и подпись — слова владельца: через esc, узлов из них не рождается
+  const seed = r2FoldSeed({ u1: true });
+  seed.groups[0].name = 'Сон & <b>x</b>';
+  seed.groups[0].caption = '<i>7:00</i>';
+  seed.items[0].group = seed.items[1].group = seed.items[4].group = 'Сон & <b>x</b>';
+  const w2 = await boot({ seed });
+  r2Box(w2.document, 'u2').click();
+  await settle();
+  const e = r2Fold(w2.document, 'Сон & <b>x</b>');
+  assert.ok(e, 'data-name несёт имя как есть');
+  assert.equal(e.querySelector('.bf-name').textContent, 'Сон & <b>x</b>');
+  assert.equal(e.querySelector('.g-cap').textContent, '<i>7:00</i>');
+  assert.ok([...e.querySelectorAll('*')].every(n => n.tagName === 'SPAN'), 'разметки из слов владельца нет');
+  assert.equal(e.getAttribute('aria-label'), 'Сон & <b>x</b>, <i>7:00</i>: отмечено 2 из 2');
+});
+
+test('Р2/4: последний пропуск блока — «N из N · пропусков K», без знака; блок из одного действия схлопывает саму строку', async () => {
+  const { document } = await boot({ seed: r2FoldSeed() });
+  const scr = document.getElementById('scr-today');
+  r2Box(document, 'u1').click();
+  r2SkipBtn(document, 'u2').click(); // последнее действие — пропуск
+  assert.ok(scr.querySelector('.list > .chain.folding'), 'пропуск сворачивает, как отметка');
+  await settle();
+  const u = r2Fold(document, 'Утро');
+  assert.ok(u);
+  assert.equal(r2Text(u.querySelector('.bf-count')), '1 из 1 · пропусков 1');
+  assert.doesNotMatch(u.textContent, /✓/, 'при пропусках знака нет');
+  assert.equal(u.getAttribute('aria-label'), 'Утро, 7:00: отмечено 1 из 1, пропусков 1');
+
+  // «Вечер» — одно действие, у него нет .chain: схлопывается сама строка
+  r2SkipBtn(document, 'v1').click();
+  const row = scr.querySelector('.list > .rowwrap.folding');
+  assert.ok(row, 'класс-триггер на строке блока из одного действия');
+  assert.ok(row.contains(r2Box(document, 'v1')));
+  await settle();
+  const v = r2Fold(document, 'Вечер');
+  assert.equal(r2Text(v.querySelector('.bf-count')), '0 из 0 · пропусков 1', 'всё пропущено — блок решён, число говорит правду');
+  assert.equal(v.getAttribute('aria-label'), 'Вечер, до 22:30: отмечено 0 из 0, пропусков 1');
+  assert.equal(r2Note(document), '1 из 2', 'день не закрыт: «Прогулка» не отмечена');
+});
+
+test('Р2/4: первичный рендер и любая перерисовка — выполненный блок уже свёрнут, без класса-триггера и без таймера', async () => {
+  const { document, window } = await boot({ seed: r2FoldSeed({ u1: true, u2: false, v1: true }) });
+  const scr = document.getElementById('scr-today');
+  const u = r2Fold(document, 'Утро');
+  const v = r2Fold(document, 'Вечер');
+  assert.ok(u && v, 'оба блока свёрнуты при загрузке');
+  assert.equal(r2Text(u.querySelector('.bf-count')), '1 из 1 · пропусков 1');
+  assert.equal(r2Text(v.querySelector('.bf-count')), '✓ 1 из 1');
+  assert.equal(scr.querySelector('.folding, .closing'), null, 'ни одного класса-триггера');
+  assert.ok(r2Box(document, 'l1'), 'пункт без блока — строкой');
+
+  // таймеров рендер не заводит: узлы переживают время схлопывания и сцены
+  await wait(T.DAY_CLOSE_MS + T.MOTION_MS + T.MOTION_TAIL_MS + 40);
+  assert.equal(u.isConnected, true, 'экран не перерисовался сам');
+  const timers = [];
+  const real = window.setTimeout;
+  window.setTimeout = (fn, ms, ...rest) => { timers.push(ms); return real(fn, ms, ...rest); };
+  try {
+    window.renderToday();
+    document.querySelector('#tabs button[data-tab="habits"]').click();
+    document.querySelector('#tabs button[data-tab="today"]').click();
+    assert.deepEqual(timers, [], 'перерисовка и смена вкладки таймеров не взводят');
+    assert.ok(r2Fold(document, 'Утро') && r2Fold(document, 'Вечер'), 'после перерисовки — свёрнуты');
+    assert.equal(scr.querySelector('.folding'), null);
+    // шпион не слеп: таймеры приложения он видит — отклик их взводит
+    r2Box(document, 'l1').click(); // день закрыт — сцена
+    assert.ok(timers.includes(T.DAY_CLOSE_MS + T.MOTION_TAIL_MS), 'таймер сцены виден шпиону');
+  } finally { window.setTimeout = real; }
+
+  // класс-триггер печатает только хук: в исходнике строка 'folding' живёт в motionFold и нигде больше
+  const start = APP.indexOf('function motionFold(');
+  const end = APP.indexOf('\n}\n', start);
+  const uses = [...APP.matchAll(/'folding'/g)].map(m => m.index);
+  assert.ok(uses.length >= 1 && uses.every(i => i > start && i < end), 'класс навешивает только motionFold');
+  for (const fn of ['renderToday', 'groupSections', 'foldRow', 'dailyRow']) {
+    assert.doesNotMatch(window[fn].toString(), /folding|closing/, fn + ' триггеров не печатает');
+  }
+  assert.match(window.motionFold.toString(), /prefersReducedMotion\(\)\)\s*\{\s*done\(\);\s*return;/, 'ранний выход при reduced-motion');
+  assert.match(window.motionFold.toString(), /setTimeout\(fin, MOTION_MS \+ MOTION_TAIL_MS\)/, 'fallback — константы timing()');
+});
+
+test('Р2/4: тап разворачивает до конца дня — фокус на первый круг, в хранилище ничего; снятие отметки оставляет развёрнутым; снова выполнен — сворачивается', async () => {
+  const { document, window } = await boot({ seed: r2FoldSeed({ u1: true, u2: true }) });
+  const scr = document.getElementById('scr-today');
+  const disk = window.localStorage.getItem(NS);
+  const fold = r2Fold(document, 'Утро');
+  assert.ok(fold);
+
+  fold.click();
+  assert.equal(r2Fold(document, 'Утро'), null, 'развёрнут');
+  assert.ok(r2Box(document, 'u1').checked && r2Box(document, 'u2').checked, 'строки как обычно');
+  assert.equal(scr.querySelector('.list > .g-label').firstElementChild.textContent, 'Утро', 'с заголовком');
+  assert.equal(document.activeElement, r2Box(document, 'u1'), 'фокус — на первый круг блока');
+  assert.equal(scr.querySelector('.folding, .closing'), null, 'развёртка ничего не проигрывает');
+  assert.equal(window.localStorage.getItem(NS), disk, 'развёртка — состояние экрана, не хранилище');
+
+  // перерисовка и уход с вкладки развёртку не снимают: она живёт день
+  window.renderAll();
+  document.querySelector('#tabs button[data-tab="progress"]').click();
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(r2Fold(document, 'Утро'), null, 'после перерисовки — развёрнут');
+
+  // снятие отметки внутри — остаётся развёрнутым
+  r2Box(document, 'u2').click();
+  await settle();
+  assert.equal(r2Fold(document, 'Утро'), null);
+  assert.ok(r2Box(document, 'u2'), 'строки на месте');
+  window.renderToday();
+  assert.equal(r2Fold(document, 'Утро'), null, 'и перерисовка его не сворачивает: блок не выполнен');
+
+  // снова выполнен — сворачивается откликом; флаг развёртки снят
+  r2Box(document, 'u2').focus();
+  r2Box(document, 'u2').click();
+  assert.ok(scr.querySelector('.list > .chain.folding'), 'схлопывание, как у первой свёртки');
+  await settle();
+  const again = r2Fold(document, 'Утро');
+  assert.ok(again, 'свёрнут');
+  assert.equal(document.activeElement, again, 'фокус из свернувшихся строк — на его строку');
+  window.renderToday();
+  assert.ok(r2Fold(document, 'Утро'), 'флаг снят: перерисовка оставляет свёрнутым');
+
+  // блок, где всё пропущено: круги неактивны — фокус на первое «Вернуть»
+  r2SkipBtn(document, 'v1').click();
+  await settle();
+  r2Fold(document, 'Вечер').click();
+  const back = r2SkipBtn(document, 'v1');
+  assert.equal(back.dataset.act, 'unskip');
+  assert.equal(document.activeElement, back, 'фокус — на «Вернуть»');
+  back.click();
+  assert.equal(r2Fold(document, 'Вечер'), null, '«Вернуть» в развёрнутом — остаётся развёрнутым');
+  assert.equal(scr.querySelector('.folding'), null);
+});
+
+test('Р2/4: смена логического дня и смена режима снимают развёртку', async () => {
+  const t = daysAgo(0);
+  const seed = r2FoldSeed({ u1: true, u2: true });
+  seed.days[addKey(t, 1)] = { u1: true, u2: true, l1: true };
+  const { document, window } = await boot({ seed });
+  r2Fold(document, 'Утро').click();
+  assert.equal(r2Fold(document, 'Утро'), null, 'развёрнут сегодня');
+  shiftWindowDays(window, 1);
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  assert.ok(r2Fold(document, 'Утро'), 'назавтра выполненный блок снова свёрнут: развёртка принадлежала дню');
+  assert.equal(document.querySelector('#scr-today .folding'), null, 'смена дня — перерисовка, не отклик');
+
+  // режим: одноимённое «Утро» у каждого — другой блок
+  const r = r2UiSeed({ days: { [daysAgo(0)]: { m1: true, k1: true } } });
+  const w = await boot({ seed: r });
+  assert.ok(r2Fold(w.document, 'Утро'), '«Утро» основного свёрнуто');
+  r2Fold(w.document, 'Утро').click();
+  assert.equal(r2Fold(w.document, 'Утро'), null);
+  const pick = id => {
+    r2OpenModes(w.document);
+    r2Btn(w.document, 'mode-pick', id).click();
+    w.document.querySelector('#tabs button[data-tab="today"]').click();
+  };
+  pick(R2_KAN);
+  assert.deepEqual(r2Today(w.document), ['k2'], '«Утро» каникул выполнено и свёрнуто, «Лагерь» — строкой');
+  assert.ok(r2Fold(w.document, 'Утро'), 'развёртка «Утра» основного не развернула «Утро» каникул');
+  pick('main');
+  assert.ok(r2Fold(w.document, 'Утро'), 'и возврат к основному её не воскресил');
+});
+
+test('Р2/4: пункты вне блоков не сворачиваются; на «Привычках» свёртки нет', async () => {
+  const { document } = await boot({ seed: r2FoldSeed({ u1: true, u2: true, v1: true }) });
+  const scr = document.getElementById('scr-today');
+  r2Box(document, 'l1').click(); // день закрыт пунктом без блока
+  assert.ok(scr.querySelector('.dayline.closing'));
+  assert.equal(scr.querySelector('.folding'), null);
+  await r2Scene();
+  assert.ok(r2Box(document, 'l1'), 'выполненный пункт без блока — строкой');
+  assert.equal(scr.querySelectorAll('[data-act="block-unfold"]').length, 2, 'свёрнуты только блоки');
+
+  document.querySelector('#tabs button[data-tab="habits"]').click();
+  const hb = document.getElementById('scr-habits');
+  hb.querySelector('input[data-act="mark"][data-id="h1"]').click();
+  await settle();
+  assert.equal(hb.querySelector('.bfold, .folding'), null, '«Утро» с отмеченной привычкой не свёрнуто');
+  assert.ok(hb.querySelector('input[data-id="h1"]').checked);
+});
+
+test('Р2/4: сцена закрытия дня главнее — своей анимации у свёртки нет, блок свёрнут перерисовкой после сцены; схлопывание, застанное сценой, уступает ей', async () => {
+  const { document, window } = await boot({ seed: r2FoldSeed({ u1: true, v1: true, l1: true }) });
+  const scr = document.getElementById('scr-today');
+  const renders = [];
+  const real = window.renderToday;
+  window.renderToday = function () { renders.push(!!scr.querySelector('.closing')); return real.apply(this, arguments); };
+
+  r2Box(document, 'u2').click(); // последний в блоке и последний в дне
+  assert.ok(scr.querySelector('.dayline.closing') && scr.querySelector('label.check.closing'), 'играет сцена');
+  assert.equal(scr.querySelector('.folding'), null, 'схлопывания нет — двойной анимации нет');
+  assert.ok(r2Box(document, 'u2'), 'строки блока стоят, пока идёт сцена');
+  await r2Scene();
+  assert.equal(scr.querySelector('.closing'), null);
+  assert.ok(r2Fold(document, 'Утро'), 'после сцены блок свёрнут');
+  assert.deepEqual(renders, [false], 'одна перерисовка — после сцены, не во время');
+
+  // схлопывание «Утра» идёт, и пункт без блока закрывает день: сцена застаёт
+  // схлопывание — оно перерисовку уступает, сворачивает конец сцены
+  r2Fold(document, 'Утро').click();
+  r2Box(document, 'u2').click();   // снять
+  r2Box(document, 'l1').click();   // снять
+  await settle();
+  renders.length = 0;
+  r2Box(document, 'u2').click();   // «Утро» снова выполнено — схлопывание
+  assert.ok(scr.querySelector('.list > .chain.folding'));
+  r2Box(document, 'l1').click();   // день закрыт пунктом без блока
+  assert.ok(scr.querySelector('.dayline.closing'), 'сцена');
+  await r2Scene();
+  assert.ok(r2Fold(document, 'Утро'), 'свёрнут');
+  assert.equal(scr.querySelector('.closing, .folding'), null);
+  assert.deepEqual(renders, [false], 'схлопывание не перерисовало экран посреди сцены');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'после сцены');
+});
+
+test('Р2/4: reduced-motion — свёртка мгновенна и без классов, и отметкой, и закрытием дня', async () => {
+  const { document, window } = await boot({ seed: r2FoldSeed() });
+  r2ReducedMotion(window);
+  const scr = document.getElementById('scr-today');
+  r2Box(document, 'u1').click();
+  r2Box(document, 'u2').click();
+  assert.ok(r2Fold(document, 'Утро'), 'свёрнут сразу, без ожидания');
+  assert.equal(scr.querySelector('.folding'), null, 'класс-триггер не навешивался');
+  r2Box(document, 'l1').click();
+  r2Box(document, 'v1').click(); // закрывает день и «Вечер»
+  assert.ok(r2Fold(document, 'Вечер'), 'и после закрытия дня — сразу');
+  assert.equal(scr.querySelector('.closing, .folding'), null, 'ни сцены, ни схлопывания');
+  assert.equal(r2Note(document), 'День закрыт', 'конечное состояние на месте');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'reduced-motion');
+});
+
+test('Р2/4: сторож по фикстуре владельца — после отклика свёртки и сцены точечно = перерисовка', async () => {
+  const { document, window } = await bootR1Owner(1); // вторник: 20 действий в пяти блоках
+  const scr = document.getElementById('scr-today');
+  const rowsOf = name => {
+    const head = [...scr.querySelectorAll('.list > .g-label')].find(l => l.firstElementChild.textContent === name);
+    return [...head.nextElementSibling.querySelectorAll('input[data-act="mark"]')];
+  };
+  for (const b of rowsOf('Утро')) b.click();
+  await settle();
+  assert.ok(r2Fold(document, 'Утро'));
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), '«Утро» выполнено');
+
+  const school = rowsOf('Школа');
+  r2SkipBtn(document, school[0].dataset.id).click();
+  for (const b of school.slice(1)) b.click();
+  await settle();
+  assert.equal(r2Text(r2Fold(document, 'Школа').querySelector('.bf-count')), '4 из 4 · пропусков 1');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), '«Школа» с пропуском');
+
+  unfoldBlock(document, 'Школа');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'развёрнута');
+  rowsOf('Школа')[2].click();
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'снятие отметки в развёрнутом');
+  rowsOf('Школа')[2].click();
+  await settle();
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'снова выполнена');
+
+  for (const name of ['Дом + Спорт', 'Учеба', 'Вечер']) for (const b of rowsOf(name)) b.click();
+  assert.equal(r2Note(document), 'День закрыт');
+  await r2Scene();
+  assert.equal(scr.querySelectorAll('[data-act="block-unfold"]').length, 5, 'все пять блоков свёрнуты');
+  assert.equal(scr.querySelector('.closing, .folding'), null, 'следа ни сцены, ни схлопывания');
+  assertSame(pointVsFull(window, 'scr-today', 'renderToday'), 'день закрыт');
+});
+
+test('Р2/4: свёрнутая строка — тач-цель ≥ 44 px с откликом из списка; схлопывание — в окне движения, ease-in, без задержки; стиль — существующие ступень и тон', async () => {
+  const { document } = await boot({ seed: r2FoldSeed({ u1: true, u2: true }) });
+  const css = CSS_SRC();
+  const b = r2Fold(document, 'Утро');
+  const hit = TAPPABLE.find(s => b.matches(s));
+  assert.equal(hit, '.bfold', 'строка свёртки — в списке тач-целей');
+  assert.match(css, /\.bfold:active,/, 'и у неё состояние нажатия общего правила');
+  const row = ruleOf(css, '.bfold');
+  assert.ok(px(row, 'min-height') >= 44, 'тач-цель ≥ 44 px');
+  assert.match(row, /font-size:\s*var\(--text-xs\)/, 'ступень существующая');
+  assert.match(row, /color:\s*var\(--muted\)/, 'тон приглушённый, акцента нет');
+  assert.doesNotMatch(row, /transition|animation|gradient|--accent/);
+  assert.doesNotMatch(ruleOf(css, '.bf-name'), /transition|animation/);
+
+  assert.match(css, /\n\.list > \.chain\.folding,\n\.list > \.rowwrap\.folding \{/, 'одно правило на оба вида строк блока');
+  const fold = ruleOf(css, '.list > .rowwrap.folding');
+  const parts = motionParts(declValues(fold, 'transition')[0]);
+  assert.deepEqual(parts.map(p => p.raw.split(' ')[0]).sort(), ['max-height', 'opacity'], 'схлопывание по высоте и прозрачности');
+  for (const p of parts) {
+    assert.ok(p.dur >= 180 && p.dur <= 260, `«${p.raw}» — ${p.dur} мс в окне`);
+    assert.equal(p.delay, 0, 'без задержки: задержка законна только в сцене');
+    assert.match(p.raw, /ease-in$/, 'уход — ease-in');
+  }
+  assert.doesNotMatch(fold, /font-weight|gradient/);
+  assert.match(fold, /pointer-events:\s*none/, 'схлопывающиеся строки не ловят тап');
+  assert.match(fold, /overflow:\s*hidden/);
+  const rm = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(rm, /transition: none !important/, 'reduced-motion гасит и этот переход');
+});
+
+/* ══ Задача Р2: ремонт по рецензии ═══════════════════════════════ */
+
+test('Р2/рецензия: «Убрать блок» — последствие по факту: при живом одноимённом блоке другого режима привычки не обещаны; второй тап делает названное', async () => {
+  const { document, window } = await boot({ seed: r2UiSeed() });
+  const s = () => r1Saved(window);
+  const said = name => r1Btn(document, 'group-remove', name).closest('.btns').nextElementSibling;
+  const OLD = 'Блок уйдёт из списков вместе с действиями и привычками. Отметки и прошлые дни останутся как есть.';
+  const NAMESAKE = 'Блок уйдёт из списков вместе со своими действиями. Привычки и недельные счётчики останутся: блок с этим именем есть в другом режиме. Отметки и прошлые дни останутся как есть.';
+
+  // основной: «Утро» есть и у «Каникул» — привычка «Чтение» останется
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Утро').click();
+  r1Btn(document, 'group-remove', 'Утро').click();
+  assert.equal(said('Утро').textContent, NAMESAKE);
+  assert.equal(said('Утро').className, 'muted');
+  r1Btn(document, 'group-remove', 'Утро').click();
+  const live = id => s().items.find(i => i.id === id).removedAt === null;
+  assert.deepEqual(['m1', 'h1'].map(live), [false, true], 'ушло действие, привычка — как сказано');
+
+  // «Школа» одноимённого нет — прежние слова, и параметр уходит вместе с блоком
+  r1Btn(document, 'group-open', 'Школа').click();
+  r1Btn(document, 'group-remove', 'Школа').click();
+  assert.equal(said('Школа').textContent, OLD);
+  r1Btn(document, 'group-remove', 'Школа').click();
+  assert.deepEqual(['m2', 'ph'].map(live), [false, false]);
+
+  // «Утро» каникул: одноимённое основного уже убрано — живого тёзки нет, прежние слова
+  r2Pick(document, R2_KAN);
+  r1Btn(document, 'group-open', 'Утро').click();
+  r1Btn(document, 'group-remove', 'Утро').click();
+  assert.equal(said('Утро').textContent, OLD, 'убранный тёзка привычек не держит');
+  r1Btn(document, 'group-remove', 'Утро').click();
+  assert.deepEqual(['k1', 'h1'].map(live), [false, false], 'и привычка ушла вместе с блоком');
+});
+
+test('Р2/рецензия: медленный тап по содержимому открытой строки — закрыть, а не отметить, сколько бы ни держали; после отпускания память снимается', async () => {
+  const { document, window } = await boot({ seed: pointSeed() });
+  const saved = () => JSON.parse(window.localStorage.getItem(NS));
+  const t = daysAgo(0);
+  const row = id => r2Row(document, id);
+  const label = id => row(id).querySelector('label.check');
+  const down = (node, x, y) => node.dispatchEvent(pointer(window, 'pointerdown', x, y));
+  const move = (x, y) => document.dispatchEvent(pointer(window, 'pointermove', x, y));
+  const up = (x, y) => document.dispatchEvent(pointer(window, 'pointerup', x, y));
+  const open = id => {
+    row(id).getBoundingClientRect = () => ({ top: 200, bottom: 256, height: 56, left: 20, right: 355, width: 335, x: 20, y: 200 });
+    down(label(id).querySelector('.tname'), 300, 230); move(290, 231); move(150, 231); up(150, 231);
+    assert.ok(row(id).classList.contains('open'), 'строка открыта');
+  };
+
+  open('p-a');
+  await wait(T.DRAG_CLICK_MS + 20); // клик жеста не пришёл — память жеста истекла
+  down(label('p-a').querySelector('.tname'), 100, 230);
+  assert.equal(row('p-a').classList.contains('open'), false, 'касание закрыло строку');
+  await wait(T.DRAG_CLICK_MS * 3); // держат дольше страховочного окна
+  up(100, 230);
+  label('p-a').click();
+  assert.equal(saved().days[t], undefined, 'долгий тап по открытой строке — «закрыть», не «отметить»');
+  assert.equal(document.querySelector('#scr-today input[data-id="p-a"]').checked, false);
+
+  // отпускание взводит окно: клик, не пришедший за ним, память не держит
+  open('p-a');
+  await wait(T.DRAG_CLICK_MS + 20);
+  down(label('p-a').querySelector('.tname'), 100, 230);
+  up(100, 230);
+  await wait(T.DRAG_CLICK_MS + 20);
+  label('p-a').click();
+  assert.equal(saved().days[t]['p-a'], true, 'следующий обычный тап отмечает');
+
+  // pointercancel вместо отпускания — то же окно
+  label('p-a').click(); // снять отметку
+  open('p-b');
+  await wait(T.DRAG_CLICK_MS + 20);
+  down(label('p-b').querySelector('.tname'), 100, 290);
+  await wait(T.DRAG_CLICK_MS * 3);
+  document.dispatchEvent(pointer(window, 'pointercancel', 100, 290));
+  label('p-b').click();
+  assert.equal((saved().days[t] || {})['p-b'], undefined, 'клик сразу за отменой жеста не отмечает');
+});
+
+test('Р2/рецензия: чистка и «Вернуть» закрывают раскрытый список режимов; режимы названы в предупреждении и в строке копии', async () => {
+  const { document } = await boot({ seed: r2UiSeed() });
+  r2OpenModes(document);
+  openData(document);
+  assert.equal(r2List(document).hidden, false, 'раскрытие секции «Данные» список не трогает');
+  document.querySelector('[data-act="wipe-open"]').click();
+  const danger = document.querySelector('#scr-settings .danger').textContent;
+  assert.match(danger, /Будут стёрты: 8 пунктов, 4 блока, 0 дней отметок, 0 разборов, 0 лестниц, 0 упражнений, 0 тренировок, 0 заметок, 1 режим\./,
+    'режим назван; отрезков журнала нет — и строки о них нет');
+  document.querySelector('[data-act="wipe-do"]').click();
+  document.querySelector('[data-act="wipe-do"]').click();
+  r1Settings(document);
+  assert.equal(r2List(document).hidden, true, 'после чистки список режимов закрыт');
+  assert.equal(r2Head(document).getAttribute('aria-expanded'), 'false');
+  assert.match(document.querySelector('#scr-settings .restore').textContent, /· 8 пунктов, 0 дней отметок, 1 режим/, 'копия называет режим');
+
+  r2OpenModes(document);
+  document.querySelector('[data-act="wipe-undo"]').click();
+  r1Settings(document);
+  assert.equal(r2List(document).hidden, true, 'после «Вернуть» — тоже');
+  assert.match(r2Head(document).textContent, /Режим: Основной/);
+});
+
+test('Р2/рецензия: сетка разбора на двух режимах — действие режима разобранной недели стоит, живое действие чужого режима вне недели — нет, активного — всегда', async () => {
+  const since = addKey(curMonday(), -14);
+  const seed = r2UiSeed({ modeLog: [{ from: curMonday(), mode: R2_KAN }] });
+  seed.modes.push({ id: 'far', name: 'Дальний', removedAt: null });
+  seed.groups.push(r2Blk('Утро', 'far', ''));
+  seed.items.push(r1Action('x1', 'Чужое', since, 'Утро', R1_ALL, { mode: 'far' }));
+  seed.days = { [prevMonday()]: { m1: true } };
+  const { document } = await boot({ seed });
+  openReview(document);
+  const [minGrid] = document.getElementById('scr-review').querySelectorAll('.grid');
+  const names = [...minGrid.querySelectorAll('.g-name')].map(n => n.firstChild.textContent);
+  assert.deepEqual(names, ['Кровать', 'Математика', 'Зарядка', 'Костёр']);
+  assert.equal(r1GridRow(minGrid, 'Кровать').sr, ', отмечено 1 из 7', 'а: неделя шла в основном — его действие в плане');
+  assert.equal(r1GridRow(minGrid, 'Математика').sr, ', отмечено 0 из 7');
+  assert.ok(!names.includes('Чужое'), 'б: живое действие режима, которого в неделе не было, в сетке не стоит');
+  assert.equal(r1GridRow(minGrid, 'Зарядка').sr, ', не запланировано', 'в: активный режим — стоит, хоть и не в плане той недели');
+});
+
+test('Р2/рецензия: сетка разбора — убранное действие с одними пропусками в неделе стоит в ней ячейкой пропуска; пропуск назван днём', async () => {
+  const seed = r1ReviewSeed();
+  const prev = prevMonday();
+  seed.items.push(r1Action('gone', 'Ушедшее', addKey(prev, -14), '', R1_ALL, { removedAt: addKey(prev, 2) }));
+  seed.days[prev] = Object.assign(seed.days[prev] || {}, { gone: false });
+  const { document } = await boot({ seed });
+  openReview(document);
+  const [minGrid] = document.getElementById('scr-review').querySelectorAll('.grid');
+  const row = r1GridRow(minGrid, 'Ушедшее');
+  assert.equal(row.plan.textContent, 'запланировано 2 дня · пропусков 1');
+  assert.equal(row.sr, ', отмечено 0 из 2, пропусков 1: понедельник', 'AT слышит, какой день пропущен');
+  assert.equal(row.on, 0);
+  const cells = [...minGrid.querySelectorAll('.g-name')].find(x => x.firstChild.textContent === 'Ушедшее').nextElementSibling.querySelectorAll('i');
+  assert.deepEqual([...cells].map(c => c.classList.contains('skip')), [true, false, false, false, false, false, false], 'ячейка пропуска — понедельник');
+});
+
+test('Р2/рецензия: «Сегодня» в выбранном режиме без действий — «Пунктов пока нет», а не «ничего нет»; у действий режима вне дня — наоборот', async () => {
+  const seed = r2UiSeed({ modeLog: [{ from: daysAgo(2), mode: 'summer' }] });
+  seed.modes.push({ id: 'summer', name: 'Лето', removedAt: null });
+  let { document } = await boot({ seed });
+  let text = document.getElementById('scr-today').textContent;
+  assert.match(text, /Пунктов пока нет — добавить можно в Настройках → Расписание\./, 'у выбранного режима действий нет вовсе');
+  assert.doesNotMatch(text, /На сегодня в расписании ничего нет/, 'действия другого режима строку не меняют');
+
+  const wd = (new Date(daysAgo(0) + 'T12:00').getDay() + 6) % 7;
+  const notToday = R1_ALL.split('').map((c, i) => (i === wd ? '0' : '1')).join('');
+  const seed2 = r2UiSeed({ modeLog: [{ from: daysAgo(2), mode: R2_KAN }] });
+  for (const it of seed2.items) if (it.mode === R2_KAN) it.schedule = [{ from: it.addedAt, mask: notToday }];
+  ({ document } = await boot({ seed: seed2 }));
+  text = document.getElementById('scr-today').textContent;
+  assert.match(text, /На сегодня в расписании ничего нет\./, 'действия выбранного режима есть, но не сегодня');
+  assert.doesNotMatch(text, /Пунктов пока нет/);
+});
+
+test('Р2/рецензия: свёрнутая строка блока без подписи — узла подписи нет, имя для AT без запятой', async () => {
+  const seed = r2FoldSeed({ v1: true });
+  seed.groups[1].caption = '';
+  const { document } = await boot({ seed });
+  const v = r2Fold(document, 'Вечер');
+  assert.ok(v, 'выполненный блок свёрнут');
+  assert.equal(v.querySelector('.g-cap'), null, 'пустой подписи нет в разметке');
+  assert.equal(v.getAttribute('aria-label'), 'Вечер: отмечено 1 из 1');
+  assert.equal(v.querySelector('.bf-name').textContent, 'Вечер');
+  assert.equal(r2Text(v.querySelector('.bf-count')), '✓ 1 из 1');
+});
+
+test('Р2/рецензия: переименование развёрнутого выполненного блока переносит развёртку «Сегодня» на новое имя', async () => {
+  const { document } = await boot({ seed: r2FoldSeed({ u1: true, u2: true }) });
+  assert.ok(r2Fold(document, 'Утро'), 'выполненный блок свёрнут');
+  unfoldBlock(document, 'Утро');
+  r1Settings(document);
+  r1Btn(document, 'group-open', 'Утро').click();
+  document.getElementById('g-name').value = 'Рассвет';
+  r1Btn(document, 'group-save', 'Утро').click();
+  document.querySelector('#tabs button[data-tab="today"]').click();
+  assert.equal(r2Fold(document, 'Рассвет'), null, 'развёрнут под новым именем');
+  assert.ok(r2Box(document, 'u1') && r2Box(document, 'u2'), 'строки блока на месте');
+  assert.equal(r2Fold(document, 'Утро'), null);
 });
