@@ -313,3 +313,70 @@ test('перетаскивание: лупа и выделение сняты с
   const inputs = ruleBySelector(/^\.drag-row input, \.drag-row textarea$/, 'поля внутри строки');
   assert.equal(inputs['user-select'], 'auto');
 });
+
+/* ── Задача Р4, п. 2: primary-кнопка под пальцем ──────────────
+   Общее состояние нажатия (.btn:active) заливало и primary: на место
+   акцентного фона вставал полупрозрачный --accent-weak, и светлый текст
+   --on-accent оставался на тоне экрана (замер: 1,23:1 в светлой теме,
+   1,13:1 в тёмной). Отклик primary — тот же акцентный фон, притемнённый
+   filter: brightness(k). Фильтр умножает фон И текст одним множителем.
+
+   Считается формулой, а не на глаз, и в ОБОИХ толкованиях фильтра: канал
+   sRGB × k и линейная яркость × k (фильтр в linearRGB). В каком
+   пространстве цвета движок применяет сокращённую функцию, тест не
+   угадывает — порог обязан держаться в худшем из двух. Множитель и имена токенов берутся из самого правила:
+   сменили k или токен — тест пересчитает, а не поверит комментарию. */
+function brightnessOf(value, what) {
+  const m = /^brightness\(\s*([\d.]+)\s*\)$/.exec(String(value || '').trim());
+  assert.ok(m, `${what}: ожидался filter: brightness(k), а не «${value}»`);
+  return +m[1];
+}
+
+function scaleSrgb(hex, k) {
+  return '#' + [1, 3, 5].map(i =>
+    Math.min(255, Math.round(parseInt(hex.slice(i, i + 2), 16) * k)).toString(16).padStart(2, '0')).join('');
+}
+
+/* Специфичность селектора без атрибутов и id: классы и псевдоклассы
+   (псевдоэлементы — не в счёт), затем теги. Для сравнения двух правил
+   кнопки этого достаточно. */
+function specificity(sel) {
+  const s = sel.replace(/::[\w-]+/g, '');
+  const cls = (s.match(/[.:][\w-]+/g) || []).length;
+  const tags = (s.match(/(^|[\s>+~])[a-z][\w-]*/gi) || []).length;
+  return [cls, tags];
+}
+
+test('Р4/2: primary под пальцем — акцентный фон с затемнением, --on-accent ≥ 4,5:1 в обеих темах; правило сильнее .btn:active', () => {
+  const pressed = ruleBySelector(/^\.btn\.primary:active$/, 'primary под пальцем');
+  const base = ruleBySelector(/^\.btn\.primary$/, 'primary');
+  const bgName = varOf(pressed.background, 'фон primary под пальцем');
+  assert.equal(bgName, varOf(base.background, 'фон primary'), 'фон под пальцем — тот же токен, что в покое: акцент, а не --accent-weak');
+  assert.notEqual(bgName, 'accent-weak');
+  const fgName = varOf(base.color, 'текст primary');
+  assert.equal(fgName, 'on-accent');
+  assert.equal(pressed.color, undefined, 'цвет текста под пальцем не переопределён — остаётся --on-accent');
+  const k = brightnessOf(pressed.filter, 'primary под пальцем');
+  assert.ok(k > 0 && k < 1, `фильтр затемняет: brightness(${k})`);
+
+  for (const [theme, vars] of Object.entries(THEMES)) {
+    const bg = hexOf(vars[bgName]);
+    const fg = hexOf(vars[fgName]);
+    const srgb = contrast(scaleSrgb(fg, k), scaleSrgb(bg, k));
+    const [hi, lo] = [luminance(fg), luminance(bg)].sort((a, b) => b - a);
+    const linear = (hi * k + 0.05) / (lo * k + 0.05);
+    assert.ok(Math.min(srgb, linear) >= 4.5,
+      `--${fgName} на --${bgName} × brightness(${k}) (${theme}): sRGB ${srgb.toFixed(2)}:1, линейно ${linear.toFixed(2)}:1 < 4.5:1`);
+    // отклик виден: фон под пальцем отличается от фона в покое
+    assert.notEqual(scaleSrgb(bg, k), bg, `фон под пальцем отличается от покоя (${theme})`);
+  }
+
+  // правило сильнее общего отклика при любом порядке в файле
+  const general = TOP.find(r => r.selector.split(',').map(x => x.trim()).includes('.btn:active'));
+  assert.ok(general, 'общее правило .btn:active на месте');
+  const [a, b] = [specificity('.btn.primary:active'), specificity('.btn:active')];
+  assert.ok(a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]), `.btn.primary:active (${a}) специфичнее .btn:active (${b})`);
+  // и само состояние мгновенное: движения в нём нет — reduced-motion гасить нечего
+  assert.equal(pressed.transition, undefined);
+  assert.equal(pressed.animation, undefined);
+});

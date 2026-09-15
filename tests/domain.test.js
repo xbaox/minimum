@@ -2439,6 +2439,10 @@ test('З16F: стрелки двигают пункт только среди с
   const s = freshStore();
   const t = app.todayKey();
   const mk = (id, group, area = 'min') => Object.assign(mkMin(id, t, area), { group });
+  // оба блока заведены записями store.groups: с задачи Р4 соседи строки
+  // «Расписания» — строки её карточки, и имя без живого блока стояло бы в
+  // «Без блока» одной секцией (до Р1 блок и был именем — записи не требовалось)
+  s.groups = [{ name: 'A' }, { name: 'Б' }];
   // блоки перемежаются: A1 A2 B1 A3 — так их и держит store.items
   s.items = [mk('a1', 'A'), mk('a2', 'A'), mk('b1', 'Б'), mk('a3', 'A'), mk('h1', 'A', 'habit')];
   const ids = () => s.items.map(i => i.id);
@@ -2468,6 +2472,7 @@ test('З16F: перетаскивание ставит пункт на пози�
   const s = freshStore();
   const t = app.todayKey();
   const mk = (id, group) => Object.assign(mkMin(id, t), { group });
+  s.groups = [{ name: 'A' }, { name: 'Б' }]; // живые блоки — их карточки и есть секции (Р4)
   s.items = [mk('a1', 'A'), mk('b1', 'Б'), mk('a2', 'A'), mk('a3', 'A')];
   const ids = () => s.items.map(i => i.id);
 
@@ -8613,4 +8618,100 @@ test('Р3/рецензия: holdsName — блок живой записи с р
   assert.deepEqual(s.items.map(i => [i.id, i.removedAt]), [['am', R2_T], ['h', null], ['hs', null]],
     'привычку держит тёзка — с блоком основного она не уходит');
   clearLocalStorage();
+});
+
+/* ── Задача Р4, п. 1: соседи недельного счётчика в «Без блока» ───────
+   Счётчик глобален для режимов (Р2) и в режиме, где одноимённого живого
+   блока нет, печатается в карточке «Без блока» рядом с действиями без
+   блока. Соседи по сырому item.group оставляли его там с обеими
+   неактивными стрелками, а соседей уводили через его голову (вопрос 1
+   задачи Р3). Правило теперь то же, что у привычек: секция = соседи. */
+test('Р4/1: looseRows и scheduleSectionOf — «Без блока» активного режима одна секция со счётчиком; карточка блока — прежнее правило; действие другого режима — свои одноимённые', () => {
+  const s = r2Store();
+  s.modes = [r2Mode('main', 'Основной'), r2Mode('school', 'Школа')];
+  const since = '2026-08-31';
+  // «Движение» — блок только «Школы»; «Утро» — только основного
+  s.groups = [r2Block('Утро', 'main'), r2Block('Движение', 'school')];
+  s.items = [
+    r2Act('a1', since, '', R1_WEEK, 'main'),
+    r2Weekly('w', since, 'Движение', 3),
+    r2Act('u1', since, 'Утро', R1_WEEK, 'main'),
+    r2Act('x', since, 'Движение', R1_WEEK, 'school'),
+    r2Act('a2', since, '', R1_WEEK, 'main'),
+    r2Weekly('wu', since, 'Утро', 2),
+    r2Act('o', since, 'Старое', R1_WEEK, 'main'), // осиротевшее имя (импорт)
+    r2Act('g', since, '', R1_WEEK, 'main', { removedAt: '2026-09-10' }),
+    r2Act('u2', since, 'Утро', R1_WEEK, 'main'),
+    r1Item('h', since, '', R1_WEEK, { area: 'habit', normPerWeek: 7 })
+  ];
+  const byId = id => s.items.find(i => i.id === id);
+  const order = () => s.items.map(i => i.id).join(' ');
+  const arrows = id => [app.canMoveItem(id, 'up'), app.canMoveItem(id, 'down')];
+  const ids = list => list.map(i => i.id).join(' ');
+
+  // карточка «Без блока» основного: действия без его живого блока (и
+  // убранное — короткий путь назад печатает то же место) и счётчик «Движения»
+  assert.equal(ids(app.looseRows()), 'a1 w a2 o g');
+  assert.equal(ids(app.looseRows('school')), 'wu', 'режим назван явно: у «Школы» x — в «Движении», счётчик «Утра» — в «Без блока»');
+  assert.equal(app.scheduleSectionOf(byId('w')).name, null, 'счётчик «Движения» — в «Без блока»');
+  assert.equal(ids(app.scheduleSectionOf(byId('w')).items), 'a1 w a2 o g');
+  assert.equal(app.scheduleSectionName(byId('w')), '', 'для перетаскивания — секция «Без блока»');
+  assert.equal(app.scheduleSectionName(byId('o')), '', 'осиротевшее имя — та же секция');
+  assert.equal(app.scheduleSectionName(byId('u1')), 'Утро');
+  assert.equal(app.scheduleSectionName(byId('wu')), 'Утро', 'счётчик с именем живого блока — в его карточке');
+  assert.equal(ids(app.scheduleSectionOf(byId('wu')).items), 'u1 wu u2', 'карточка «Утра»: действия режима и счётчик — как прежде');
+  assert.equal(app.scheduleSectionOf(byId('h')), null, 'привычка — не секция «Расписания»');
+  assert.equal(app.scheduleSectionOf(r2Weekly('чужой', since, '', 1)), null, 'пункта нет в store — секции нет');
+  assert.equal(app.scheduleSectionName(r2Weekly('чужой', since, '', 1)), '');
+
+  assert.deepEqual(['a1', 'w', 'a2', 'o'].map(arrows), [[false, true], [true, true], [true, true], [true, false]],
+    'ни одна живая строка «Без блока» не заперта — у каждой стрелки к видимому соседу');
+  assert.deepEqual(arrows('g'), [false, false], 'убранный не двигается и соседом не считается');
+  assert.deepEqual(['u1', 'wu', 'u2'].map(arrows), [[false, true], [true, true], [true, false]], 'карточка «Утра» — прежние соседи');
+  assert.deepEqual(arrows('x'), [false, false], 'действие «Школы» на экране основного не стоит: одноимённых своего режима у него нет, счётчик ему не сосед');
+
+  assert.equal(app.moveItem('w', 'up'), true);
+  assert.equal(order(), 'w a1 u1 x a2 wu o g u2 h', 'счётчик встал над a1 — на одну строку');
+  assert.equal(app.moveItem('a1', 'down'), true);
+  assert.equal(order(), 'w a2 u1 x a1 wu o g u2 h', 'a1 обменялся с a2: строки «Утра» и «Школы» перепрыгнуты и на месте');
+  assert.equal(app.moveItem('w', 'up'), false, 'счётчик — первый в «Без блока»');
+  assert.equal(app.reorderItem('w', 3), true);
+  assert.equal(order(), 'a2 a1 u1 x o wu w g u2 h', 'перетаскивание — позиция среди четырёх живых «Без блока»; wu «Утра» и убранный g на месте');
+  assert.equal(app.reorderItem('w', 4), false, 'за границей секции');
+  assert.equal(app.moveItem('u2', 'up'), true);
+  assert.equal(order(), 'a2 a1 u1 x o u2 w g wu h', 'u2 обменялся со счётчиком «Утра» через голову «Без блока»: карточка «Утра» — своя секция');
+
+  // «Школа» выбрана: «Движение» — живой блок, счётчик уходит в его карточку
+  assert.equal(app.setActiveMode('school').ok, true);
+  assert.equal(app.scheduleSectionName(byId('w')), 'Движение');
+  assert.equal(ids(app.scheduleSectionOf(byId('w')).items), 'x w', 'в карточке «Движения» — действие «Школы» и счётчик');
+  assert.deepEqual([arrows('x'), arrows('w')], [[false, true], [true, false]]);
+  assert.equal(ids(app.looseRows()), 'wu', '«Утра» у «Школы» нет — его счётчик теперь в «Без блока»');
+  assert.deepEqual(arrows('wu'), [false, false], 'один в «Без блока» — двигать некуда');
+  assert.deepEqual([arrows('a2'), arrows('a1'), arrows('o')], [[false, true], [true, false], [false, false]],
+    'действия основного на экране «Школы» не стоят — прежнее правило: одноимённые своего режима (a2, a1), осиротевшее o одно');
+  clearLocalStorage();
+});
+
+/* Р4/рецензия: преемник вытесненного ожидающего. Полоса обновления
+   удерживается, пока у регистрации есть кем сменить снятое предложение
+   (dropOffer): вытеснение без удержания снимало отступ has-update, и у
+   нижнего края прокрутки экран уезжал на 56 px (замер рецензии). */
+test('Р4/рецензия: offerSuccessor — устанавливаемый или уже ожидающий воркер регистрации, не сам вытесненный и не лишний; без регистрации — null', () => {
+  const dropped = { state: 'redundant' };
+  const installing = { state: 'installing' };
+  const installed = { state: 'installed' };
+  const lost = { state: 'redundant' };
+  assert.equal(app.offerSuccessor(null, dropped), null, 'регистрации нет — преемника нет');
+  assert.equal(app.offerSuccessor({ installing: null, waiting: null }, dropped), null);
+  assert.equal(app.offerSuccessor({ installing: null, waiting: dropped }, dropped), null,
+    'регистрация ещё держит вытесненного ожидающим — он себе не преемник');
+  // по спецификации statechange вытесненного приходит, пока новый ещё installing
+  assert.equal(app.offerSuccessor({ installing, waiting: dropped }, dropped), installing);
+  // иной порядок реализации: регистрация уже переписана, новый ждёт
+  assert.equal(app.offerSuccessor({ installing: null, waiting: installed }, dropped), installed);
+  assert.equal(app.offerSuccessor({ installing, waiting: installed }, dropped), installing, 'устанавливаемый — первым');
+  // лишний воркер преемником не бывает: предлагать его нельзя
+  assert.equal(app.offerSuccessor({ installing: lost, waiting: dropped }, dropped), null);
+  assert.equal(app.offerSuccessor({ installing: lost, waiting: installed }, dropped), installed);
 });

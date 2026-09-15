@@ -1882,6 +1882,74 @@ const MUTANTS = [
     file: 'app.js',
     note: 'ошибка: хвост без .bar-skip — «· пропусков K» печатается голосом счёта, а не приглушённо',
     edits: [['<span class="bar-skip"> · пропусков', '<span> · пропусков']]
+  },
+
+  /* ── Задача Р4: соседи строк «Расписания» ─────────────────────────
+     Решение архитектора: мутанты — ТОЛЬКО для новых доменных функций Р4:
+     looseRows, scheduleSectionOf, scheduleSectionName (и их чтение в
+     siblingIndexes). Полоса обновления, исход «не загрузилась», удержание
+     полосы (offerSuccessor) и primary под пальцем сюда не входят: это не
+     доменные функции задачи. «до задачи» в note — поведение, каким оно было
+     до Р4; «ошибка» — правдоподобная порча нового кода. */
+  {
+    id: 'R4-без-блока-соседи-по-сырому-имени',
+    file: 'app.js',
+    note: 'до задачи: scheduleSectionOf не знает карточки «Без блока» — счётчик, чей блок живёт только в другом режиме, соседствует лишь со своим именем: обе стрелки заперты, перетаскивание берёт одну строку',
+    edits: [['  const loose = looseRows(am);\n  if (loose.includes(item)) return { name: null, items: loose };\n', '']]
+  },
+  {
+    id: 'R4-имя-секции-без-блока-сырое',
+    file: 'app.js',
+    note: 'ошибка: scheduleSectionName отдаёт строке «Без блока» сырое имя блока — data-dgroup расходится со стрелками: перетаскивание счётчика не видит соседей карточки',
+    edits: [["  const sec = scheduleSectionOf(item);\n  return sec && sec.name !== null ? sec.name : '';",
+      '  const sec = scheduleSectionOf(item);\n  return sec && sec.name !== null ? sec.name : groupNameOf(item);']]
+  },
+  {
+    id: 'R4-без-блока-все-режимы',
+    file: 'app.js',
+    note: 'ошибка: looseRows не смотрит на режим действия — действие другого режима без живого блока активного встаёт в «Без блока» и в соседи его строк',
+    edits: [["store.items.filter(it => it.area === 'min' && belongsToMode(it, m) && !names.has(groupNameOf(it)));",
+      "store.items.filter(it => it.area === 'min' && !names.has(groupNameOf(it)));"]]
+  },
+  {
+    id: 'R4-без-блока-с-привычками',
+    file: 'app.js',
+    note: 'ошибка: looseRows не отсекает область — привычки и параметры без блока встают в карточку «Без блока» «Расписания» и в соседи её строк',
+    edits: [["store.items.filter(it => it.area === 'min' && belongsToMode(it, m) && !names.has(groupNameOf(it)));",
+      'store.items.filter(it => belongsToMode(it, m) && !names.has(groupNameOf(it)));']]
+  },
+  {
+    id: 'R4-без-блока-имена-всех-режимов',
+    file: 'app.js',
+    note: 'ошибка: looseRows берёт имена живых блоков ВСЕХ режимов — счётчик, чей блок живёт только в другом режиме, не попадает ни в одну карточку активного и пропадает с экрана',
+    edits: [['  const names = new Set(liveGroups(m).map(g => g.name));\n  return store.items.filter(',
+      '  const names = new Set(store.groups.filter(live).map(g => g.name));\n  return store.items.filter(']]
+  },
+  {
+    id: 'R4-без-блока-по-основному-режиму',
+    file: 'app.js',
+    note: 'ошибка: looseRows без названного режима берёт основной, а не активный — при выбранной «Школе» строки «Без блока» основного',
+    edits: [['function looseRows(mode) {\n  const m = mode === undefined ? activeMode() : mode;',
+      'function looseRows(mode) {\n  const m = mode === undefined ? MAIN_MODE : mode;']]
+  },
+  {
+    id: 'R4-карточка-блока-без-режима',
+    file: 'app.js',
+    note: 'ошибка: scheduleSectionOf судит действия карточки блока по активному режиму, а не по своему — действие другого режима соседствует с одноимёнными действиями активного и счётчиком, стрелка меняет его с невидимой строкой',
+    edits: [['  const scope = x => (isAction(x) ? itemMode(x) : am);', '  const scope = x => am;']]
+  },
+  {
+    id: 'R4-счётчик-сосед-действию-другого-режима',
+    file: 'app.js',
+    note: 'ошибка: scheduleSectionOf добавляет недельный счётчик в соседи одноимённого действия любого режима — действие другого режима получает соседом счётчик, и разбиение на секции перестаёт быть разбиением',
+    edits: [['groupNameOf(x) === g && scope(x) === own) };', 'groupNameOf(x) === g && (scope(x) === own || !isAction(x))) };']]
+  },
+  {
+    id: 'R4-убранный-сосед-в-секции',
+    file: 'app.js',
+    note: 'ошибка: siblingIndexes, читая секцию, теряет фильтр live — убранный пункт карточки считается соседом: стрелка «срабатывает» обменом с невидимой строкой',
+    edits: [['  store.items.forEach((x, i) => { if (live(x) && members.has(x)) out.push(i); });',
+      '  store.items.forEach((x, i) => { if (members.has(x)) out.push(i); });']]
   }
 ];
 

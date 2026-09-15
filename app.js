@@ -3359,6 +3359,51 @@ function habitSectionName(item) {
   return sec && sec.name !== null ? sec.name : '';
 }
 
+/* Строки карточки «Без блока» «Расписания» режима mode (по умолчанию
+   активного) — действия режима без его живого блока и глобальные недельные
+   счётчики без одноимённого живого блока этого режима (Р2), в порядке
+   items[], живые и убранные: какие печатать, решает место вызова. Одна
+   функция на карточку (scheduleSection) и на её соседство
+   (scheduleSectionOf, задача Р4). */
+function looseRows(mode) {
+  const m = mode === undefined ? activeMode() : mode;
+  const names = new Set(liveGroups(m).map(g => g.name));
+  return store.items.filter(it => it.area === 'min' && belongsToMode(it, m) && !names.has(groupNameOf(it)));
+}
+
+/* Секция строки минимума в «Расписании» — по образцу habitSectionOf
+   (задача Р4, п. 1). Недельный счётчик глобален для режимов (Р2) и в
+   режиме, где одноимённого живого блока нет, печатается в «Без блока»
+   рядом с действиями без блока; соседство по сырому item.group оставляло
+   его там с обеими неактивными стрелками и не давало перетащить, а соседей
+   уводило через его голову (вопрос 1 задачи Р3). Соседи строки «Без блока»
+   — все строки этой карточки (name: null), тем же правилом, что у привычек:
+   секция = соседи, границы движения — список, который видит владелец
+   (инвариант 17). Строки карточки блока — прежнее правило: действия
+   активного режима и счётчики с именем блока. Действие ДРУГОГО режима на
+   экране не стоит и соседей ищет, как прежде, — одноимённые действия
+   своего режима, без счётчиков: разбиение на секции остаётся разбиением,
+   и ни одна строка не попадает в чужие соседи. Раскладка и соседство —
+   одна функция, разойтись им нечем. null — пункта нет среди пунктов
+   минимума store. */
+function scheduleSectionOf(item) {
+  if (!item || item.area !== 'min' || !store.items.includes(item)) return null;
+  const am = activeMode();
+  const loose = looseRows(am);
+  if (loose.includes(item)) return { name: null, items: loose };
+  const g = groupNameOf(item);
+  const scope = x => (isAction(x) ? itemMode(x) : am);
+  const own = scope(item);
+  return { name: g, items: store.items.filter(x => x.area === 'min' && groupNameOf(x) === g && scope(x) === own) };
+}
+
+/* Имя секции строки «Расписания» для перетаскивания (data-dgroup): '' —
+   «Без блока» (у блока имя непустое всегда, спутать не с чем). */
+function scheduleSectionName(item) {
+  const sec = scheduleSectionOf(item);
+  return sec && sec.name !== null ? sec.name : '';
+}
+
 /* Соседи пункта по перестановке — пункты того же блока и той же области
    (задача 16F). Блок пункт меняет полем «Блок» в форме правки, а не
    стрелками и не перетаскиванием: порядок и принадлежность — разные
@@ -3367,26 +3412,16 @@ function habitSectionName(item) {
    действий своего режима и недельных счётчиков карточки; счётчик, глобальный
    для режимов, стоит в карточке одноимённого блока АКТИВНОГО режима и
    соседствует с его действиями. Привычки и параметры — строки своей секции
-   habitSections (Р3/рецензия, habitSectionOf выше). */
+   habitSections (Р3/рецензия, habitSectionOf выше); пункты минимума — строки
+   своей секции «Расписания» (задача Р4, scheduleSectionOf выше): в «Без
+   блока» соседи — вся карточка, в карточке блока — прежнее правило. */
 function siblingIndexes(item) {
-  if (item.area === 'habit') {
-    // убранный пункт соседом не считается и здесь
-    const sec = habitSectionOf(item);
-    const members = new Set(sec ? sec.items : []);
-    const out = [];
-    store.items.forEach((x, i) => { if (live(x) && members.has(x)) out.push(i); });
-    return out;
-  }
-  const g = groupNameOf(item);
-  const am = activeMode();
-  const scope = x => (isAction(x) ? itemMode(x) : (x.area === 'min' ? am : null));
-  const own = scope(item);
+  // убранный пункт в списке не стоит и соседом не считается: стрелка
+  // перепрыгивает его, а его собственное место в items[] не меняется
+  const sec = item.area === 'habit' ? habitSectionOf(item) : scheduleSectionOf(item);
+  const members = new Set(sec ? sec.items : []);
   const out = [];
-  store.items.forEach((x, i) => {
-    // убранный пункт в списке не стоит и соседом не считается: стрелка
-    // перепрыгивает его, а его собственное место в items[] не меняется
-    if (live(x) && x.area === item.area && groupNameOf(x) === g && scope(x) === own) out.push(i);
-  });
+  store.items.forEach((x, i) => { if (live(x) && members.has(x)) out.push(i); });
   return out;
 }
 
@@ -4417,8 +4452,9 @@ const ui = {
   // «Обновить»: только тогда controllerchange перезагружает страницу, иначе
   // смена контроллера (чужой claim) не делает ничего. updateCheck — строка
   // результата «Проверить обновления» в «Системе»: null | 'busy' | 'done' |
-  // 'failed'; живёт, пока владелец на «Настройках». Оба — память открытой
-  // страницы: в store не пишутся и перезапуск не переживают
+  // 'lost' | 'failed' ('lost' — установка сорвалась, задача Р4); живёт, пока
+  // владелец на «Настройках». Оба — память открытой страницы: в store не
+  // пишутся и перезапуск не переживают
   updateArmed: false,
   updateCheck: null,
   // свёрнутые секции «Настроек»: по умолчанию раскрыто только «Расписание».
@@ -6453,7 +6489,7 @@ function actionRow(it, blockMask) {
   }
   const sub = parts.filter(Boolean).join(' · ');
   return `
-      <div class="rowwrap drag-row" data-drag="item" data-drag-id="${esc(it.id)}" data-dgroup="${esc(groupNameOf(it))}">
+      <div class="rowwrap drag-row" data-drag="item" data-drag-id="${esc(it.id)}" data-dgroup="${esc(scheduleSectionName(it))}">
         <div class="row item">
           <button class="itxt" data-act="edit-open" data-id="${esc(it.id)}" aria-label="изменить «${esc(it.name)}»">
             <span class="tname">${esc(it.name)}${sub ? `<span class="csub"> · ${esc(sub)}</span>` : ''}</span>
@@ -6706,7 +6742,6 @@ function scheduleSection() {
   // стоит первой строкой над карточками, и карточки ниже — его
   const am = activeMode();
   const lives = liveGroups(am);
-  const liveNames = new Set(lives.map(g => g.name));
   let h = modeSelector(am) + `<div class="blocks">`;
   store.groups.forEach((g, i) => {
     if (blockMode(g) !== am) return;
@@ -6725,8 +6760,9 @@ function scheduleSection() {
   // тап по ней снимает короткий путь (onClick) раньше, чем форма
   // откроется. Без этого условия перерисовка карточку не рисовала, форма
   // не появлялась, а ui.quickFor оставался — «призрачная» форма всплывала
-  // потом сама, при первом же поводе нарисовать карточку (Р1/рецензия)
-  const loose = store.items.filter(it => it.area === 'min' && belongsToMode(it, am) && !liveNames.has(groupNameOf(it)));
+  // потом сама, при первом же поводе нарисовать карточку (Р1/рецензия).
+  // Строки карточки — та же функция, что даёт им соседей (looseRows, Р4)
+  const loose = looseRows(am);
   if (!lives.length || loose.some(live) || loose.some(it => ui.goneNote === it.id) || ui.quickFor === '') {
     h += `
     <div class="bcard loose">
@@ -9022,7 +9058,7 @@ function onInput(e) {
    тихим: воркер вытеснял старый сразу после установки (skipWaiting в
    install), и новая версия доезжала при следующем запуске — или не
    доезжала, пока iOS держал приложение в памяти. Теперь установленный
-   воркер ждёт, над экранами встаёт строка «Доступна версия vN —
+   воркер ждёт, над таб-баром встаёт полоса «Доступна версия vN —
    Обновить», и перезагружается страница только по тапу владельца.
 
    Инвариант: приложение НЕ ПЕРЕЗАГРУЖАЕТ СЕБЯ САМО. Перезагрузку зовёт
@@ -9088,6 +9124,8 @@ let updateShown = false;  // номер получен или истёк тай�
 let activeVersion;        // номер активного воркера: undefined — ждём, null — не определён
 let lastAutoCheck = null; // метка последней АВТОпроверки — память страницы, не store
 let reloading = false;    // перезагрузка уже позвана: второй controllerchange её не повторит
+let updateReg = null;     // регистрация: у неё dropOffer ищет преемника вытесненного воркера
+let updateHold = null;    // удержанная полоса {worker: преемник, version: прежний номер} (Р4/рецензия)
 
 function swApi() {
   return (typeof navigator !== 'undefined' && navigator.serviceWorker) || null;
@@ -9137,32 +9175,79 @@ function offerUpdate(worker) {
     if (updateWaiting !== worker) return;
     updateVersion = v;
     updateShown = true;
+    updateHold = null; // предложение преемника сменяет удержанную полосу на месте
     updateNote();
   });
   return updateOffer;
 }
 
+/* Преемник вытесненного ожидающего (Р4/рецензия): воркер регистрации —
+   устанавливаемый или уже ожидающий, — не сам вытесненный и не лишний.
+   По спецификации ожидающий становится redundant, когда более новый
+   УЖЕ установился: statechange вытесненного приходит раньше, чем
+   регистрация переписала installing/waiting и новый стал installed.
+   Чистая функция: регистрация передаётся снаружи. */
+function offerSuccessor(reg, dropped) {
+  if (!reg) return null;
+  for (const w of [reg.installing, reg.waiting]) {
+    if (w && w !== dropped && w.state !== 'redundant') return w;
+  }
+  return null;
+}
+
+/* Предложение снято: воркер вытеснен или postMessage к нему бросил.
+
+   Полоса на экране, и у регистрации есть преемник, — полоса УДЕРЖИВАЕТСЯ
+   (Р4/рецензия): тот же узел, тот же текст, тот же отступ has-update, пока
+   предложение преемника не перепишет текст на месте. Прежде вытеснение
+   прятало полосу и снимало отступ, а через задачу и обмен сообщениями с
+   воркером предложение преемника возвращало их: у нижнего края прокрутки
+   документ на это время укорачивался на 56px, прокрутка прижималась, и
+   экран уезжал вниз (замер рецензии в Chromium: 585 → 641px), а
+   вернувшаяся полоса проигрывала появление заново и закрывала последнюю
+   строку. Снимается полоса только окончательным исходом: установка
+   преемника сорвалась, предложить его некому (нет контроллера) или
+   преемника нет вовсе. Удержанная «Обновить» не делает ничего, пока
+   предложение преемника не встало: взвод принадлежал вытесненному. */
 function dropOffer(worker) {
   if (updateWaiting !== worker) return;
+  const onScreen = updateShown ? { version: updateVersion } : updateHold;
+  const next = onScreen ? offerSuccessor(updateReg, worker) : null;
   updateWaiting = null;
   updateOffer = null;
   updateVersion = null;
   updateShown = false;
   ui.updateArmed = false; // взвод принадлежал этому воркеру
+  const hold = updateHold = next ? { worker: next, version: onScreen.version } : null;
+  if (hold) {
+    installSettled(next)
+      .then(state => (state === 'installed' ? offerUpdate(next) : null))
+      .then(() => { if (updateHold === hold) { updateHold = null; updateNote(); } });
+  }
   updateNote();
+}
+
+/* Что стоит на полосе: предложение ожидающему с полученным номером — или
+   удержанная полоса вытесненного (dropOffer). Одна функция на #update-note
+   и строку результата «Системы»: рендер и точечный путь печатают одно. */
+function offerOnScreen() {
+  if (updateWaiting && updateShown) return { version: updateVersion };
+  return updateHold;
 }
 
 /* Установка завершилась так или иначе: installed, activating, activated
    или redundant. registration.update() разрешается, когда установка лишь
-   НАЧАТА, поэтому ручной проверке и updatefound нужен этот исход. */
+   НАЧАТА, поэтому ручной проверке и updatefound нужен этот исход.
+   Разрешается состоянием воркера в миг завершения (задача Р4, п. 4):
+   'redundant' — установка сорвалась, не дойдя до installed. */
 function installSettled(w) {
   return new Promise(resolve => {
     const settled = () => w.state !== 'installing';
-    if (settled()) { resolve(); return; }
+    if (settled()) { resolve(w.state); return; }
     const on = () => {
       if (!settled()) return;
       w.removeEventListener('statechange', on);
-      resolve();
+      resolve(w.state);
     };
     w.addEventListener('statechange', on);
   });
@@ -9174,13 +9259,32 @@ function watchInstalling(w) {
 }
 
 /* Проверка: update(), затем установка, если она началась, затем
-   ожидающий — предложение. Отказ (нет сети, нет регистрации) — reject. */
+   ожидающий — предложение. Отказ (нет сети, нет регистрации) — reject.
+
+   Исход (задача Р4, п. 4): 'lost' — новая версия найдена, но её воркер
+   стал redundant, не дойдя до installed (оборвалась закачка файлов в
+   установке); иначе 'done'. До Р4 такой исход читался «Это последняя
+   версия» — неправдой: версия есть, не загрузилась. Воркер берётся и из
+   updatefound, пришедшего ВО ВРЕМЯ update(): сорвись установка раньше, чем
+   update() разрешится, reg.installing был бы уже пуст, и найденное снова
+   читалось бы последней версией. Исход читает только ручная проверка;
+   автопроверка его отбрасывает — молчит (checkForUpdate). */
 async function runUpdateCheck() {
   const reg = await swRegReady;
   if (!reg || typeof reg.update !== 'function') throw new Error('нет регистрации');
-  await reg.update();
-  if (reg.installing) await installSettled(reg.installing);
+  let found = null;
+  const onFound = () => { if (reg.installing) found = reg.installing; };
+  const listen = typeof reg.addEventListener === 'function';
+  if (listen) reg.addEventListener('updatefound', onFound);
+  try {
+    await reg.update();
+  } finally {
+    if (listen && typeof reg.removeEventListener === 'function') reg.removeEventListener('updatefound', onFound);
+  }
+  const w = reg.installing || found;
+  const state = w ? await installSettled(w) : null;
   if (reg.waiting) await offerUpdate(reg.waiting);
+  return state === 'redundant' ? 'lost' : 'done';
 }
 
 /* Автопроверка: троттлинг и молчание при отказе */
@@ -9202,7 +9306,7 @@ function manualUpdateCheck() {
   if (!swRegReady || ui.updateCheck === 'busy') return Promise.resolve();
   ui.updateCheck = 'busy';
   updateCheckLine();
-  return runUpdateCheck().then(() => 'done', () => 'failed').then(res => {
+  return runUpdateCheck().then(res => res, () => 'failed').then(res => {
     const here = ui.tab === 'settings' && !ui.reviewOpen && !ui.trainOpen;
     ui.updateCheck = here ? res : null;
     updateCheckLine();
@@ -9236,16 +9340,32 @@ function offerHtml(text) {
     : `<span>${esc(text)}</span><button class="btn primary" data-act="update-apply">Обновить</button>`;
 }
 
-/* Постоянный узел над экранами — точечно, по образцу storageNote().
+/* Постоянный узел вне экранов, полоса над таб-баром, — точечно, по образцу
+   storageNote().
    Домен без DOM выходит сразу. Строку «Системы» ведёт тот же вызов:
-   предложение, найденное автопроверкой, меняет и её результат. */
+   предложение, найденное автопроверкой, меняет и её результат.
+
+   С задачи Р4 (п. 3) узел — фиксированная полоса над таб-баром, вне потока
+   документа: в потоке он вставал над экраном и сдвигал его вниз посреди
+   чтения. Пока полоса показана, body несёт .has-update — нижний отступ
+   прокрутки на высоту полосы, чтобы последняя строка экрана (недельный
+   счётчик «Сегодня») не пряталась под ней. Класс ставит и снимает ТОЛЬКО
+   эта функция, тем же вызовом, что показывает и прячет узел: отступ и
+   полоса разойтись не могут, а рендер экранов о полосе не знает.
+   Вытесненное более новым предложение полосу не снимает, а удерживает до
+   предложения преемника (dropOffer, Р4/рецензия). */
 function updateNote() {
   if (typeof document === 'undefined') return;
   const p = el('update-note');
   if (p) {
-    const on = !!updateWaiting && updateShown;
-    p.innerHTML = on ? offerHtml('Доступна ' + (updateVersion ? 'версия ' + updateVersion : 'новая версия')) : '';
+    const offer = offerOnScreen();
+    const on = !!offer;
+    const html = on ? offerHtml('Доступна ' + (offer.version ? 'версия ' + offer.version : 'новая версия')) : '';
+    // та же разметка не переписывается: удержанная полоса остаётся теми же
+    // узлами — скринридер не слышит её заново, фокус на «Обновить» не теряется
+    if (p.innerHTML !== html) p.innerHTML = html;
     p.hidden = !on;
+    if (document.body) document.body.classList.toggle('has-update', on);
   }
   updateCheckLine();
 }
@@ -9254,10 +9374,17 @@ function updateCheckHtml() {
   switch (ui.updateCheck) {
     case 'busy': return '<span>Проверяю…</span>';
     case 'failed': return '<span>Не удалось проверить — нет сети?</span>';
+    // «не загрузилась» (задача Р4, п. 4) уступает предложению так же, как
+    // «последняя версия»: ожидающий есть — обновиться владельцу есть чем,
+    // и строка говорит об этом, а не о сорвавшейся следующей установке
     case 'done':
-      return updateWaiting && updateShown
-        ? offerHtml('Доступна ' + (updateVersion || 'новая версия'))
+    case 'lost': {
+      const offer = offerOnScreen();
+      if (offer) return offerHtml('Доступна ' + (offer.version || 'новая версия'));
+      return ui.updateCheck === 'lost'
+        ? '<span>Новая версия найдена, но не загрузилась — попробуйте позже</span>'
         : '<span>Это последняя версия</span>';
+    }
     default: return '';
   }
 }
@@ -9269,7 +9396,8 @@ function updateCheckLine() {
   if (typeof document === 'undefined') return;
   const p = el('update-check');
   if (p) {
-    p.innerHTML = updateCheckHtml();
+    const html = updateCheckHtml();
+    if (p.innerHTML !== html) p.innerHTML = html; // та же разметка — те же узлы, как у полосы
     p.hidden = !ui.updateCheck;
   }
   const b = document.querySelector('#scr-settings [data-act="update-check"]');
@@ -9309,6 +9437,7 @@ function startUpdates() {
   swRegReady = Promise.resolve()
     .then(() => sw.register('./sw.js', { updateViaCache: 'none' }))
     .then(reg => {
+      updateReg = reg || null;
       if (reg && typeof reg.addEventListener === 'function') {
         reg.addEventListener('updatefound', () => watchInstalling(reg.installing));
       }
@@ -9473,6 +9602,9 @@ if (typeof module !== 'undefined' && module.exports) {
     // держит имя только живой блок живого режима; раскладка привычек — одна на
     // дневной экран и секцию «Настроек» (задача Р3, п. 0.2–0.3)
     holdsName, habitSections, habitSectionOf, habitSectionName,
+    // соседи строк «Расписания» — строки их карточки; в «Без блока» вместе с
+    // недельным счётчиком (задача Р4, п. 1)
+    looseRows, scheduleSectionOf, scheduleSectionName,
     // «Не сегодня» (задача Р2, этап 4): пропуск — false в days{}, только
     // сегодня, только у действия минимума; число пропусков сетки разбора
     isSkipped, skipToday, unskipToday, weekSkips,
@@ -9495,6 +9627,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // автопроверки — чистые функции; остальное живёт на service worker API
     // и закреплено интерфейсным уровнем с подменой navigator.serviceWorker
     versionLabel, updateCheckDue,
+    // преемник вытесненного ожидающего — удержание полосы (Р4/рецензия)
+    offerSuccessor,
     // константы времени (задача 23): TIMING — значения этой загрузки,
     // TIMING_DEFAULTS — рантайм приложения, подмене не подверженный
     TIMING, TIMING_DEFAULTS

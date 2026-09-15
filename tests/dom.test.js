@@ -6104,7 +6104,7 @@ test('З26/6.1: ни одной тач-цели без отклика на на�
   seed.items.push({ id: 'it9', name: 'Душ', value: null, unit: '', type: 'daily', goal: null, note: '',
     group: 'Вечер', active: true, addedAt: addKey(prevMonday(), -14), raiseAfter: 0, history: [] });
   seed.days[daysAgo(0)] = { it9: true };
-  // задача Р3: ожидающий воркер — «Обновить» в строке над экранами, а в
+  // задача Р3: ожидающий воркер — «Обновить» на полосе предложения (с Р4 — над таб-баром), а в
   // «Системе» — «Проверить обновления» и «Обновить» в строке результата
   const sw = fakeSW({ waiting: new FakeWorker('minimum-v49', 'installed') });
   const { document } = await boot({ seed, sw });
@@ -9926,8 +9926,16 @@ test('Р1/ревью: блок «new» и упражнение «new» — че�
    списке стоят пункты без блока и пункты с осиротевшим именем из импорта.
    Прежде фильтр нагружал тест 16F, где чужая строка стояла между соседями;
    с карточками блоков чужой блок отсекается родителем, и фильтр data-dgroup
-   ничем не проверялся */
-test('Р1/ревью: перетаскивание в «Без блока» — соседи только своего имени (data-dgroup)', async () => {
+   ничем не проверялся.
+
+   С задачи Р4 (п. 1) соседи строки «Без блока» — ВСЯ карточка, по правилу
+   секций привычек (Р3/рецензия): осиротевшее имя стояло посреди списка с
+   обеими неактивными стрелками, и x1↓ уводило x1 через его голову. Предмет
+   теста прежний — data-dgroup и перетаскивание в «Без блока» совпадают с
+   тем, что видит владелец; ожидание развёрнуто вслед за правилом: строка
+   с чужим именем — теперь такой же сосед. Карточку блока фильтр по-прежнему
+   отсекает родителем (u1 в соседи не попадает). */
+test('Р1/ревью: перетаскивание в «Без блока» — соседи — все строки карточки, и осиротевшее имя тоже (data-dgroup, Р4)', async () => {
   const since = daysAgo(10);
   const seed = r1Store([r1Block('Утро')], [
     r1Action('u1', 'Кровать', since, 'Утро', R1_ALL),
@@ -9940,24 +9948,30 @@ test('Р1/ревью: перетаскивание в «Без блока» — 
   r1Settings(document);
   assert.deepEqual(r1Saved(window).groups.map(g => g.name), ['Утро'], 'осиротевшее имя блока не получило');
   const rows = () => [...document.querySelectorAll('#scr-settings [data-drag="item"]')].filter(r => r.dataset.dragId !== 'u1');
-  assert.deepEqual(rows().map(r => [r.dataset.dragId, r.dataset.dgroup]), [['x1', ''], ['y1', 'Чужой'], ['x2', '']]);
+  const arrows = () => rows().map(r => [r.dataset.dragId,
+    !r.querySelector('[data-act="move-up"]').disabled, !r.querySelector('[data-act="move-down"]').disabled]);
+  assert.deepEqual(rows().map(r => [r.dataset.dragId, r.dataset.dgroup]), [['x1', ''], ['y1', ''], ['x2', '']],
+    'секция для перетаскивания одна на карточку');
   assert.equal(new Set(rows().map(r => r.parentElement)).size, 1, 'все три — в одном списке');
+  assert.deepEqual(arrows(), [['x1', false, true], ['y1', true, true], ['x2', true, false]],
+    'строка с чужим именем не заперта и стрелками ведёт к видимому соседу');
 
-  // палец между чужой строкой и x2: среди своих x1 по-прежнему первый
+  // палец ниже середины чужой строки: x1 встаёт за ней
   stubRows(rows());
   rows()[0].dispatchEvent(pointer(window, 'pointerdown', 100, 230));
   await hold();
   document.dispatchEvent(pointer(window, 'pointermove', 100, 320));
   document.dispatchEvent(pointer(window, 'pointerup', 100, 320));
-  assert.deepEqual(saved(), ['u1', 'x1', 'y1', 'x2'], 'чужая строка позицией среди своих не считается');
+  assert.deepEqual(saved(), ['u1', 'y1', 'x1', 'x2'], 'чужая строка — позиция среди соседей');
 
-  // ниже середины x2 — x1 встаёт за ним; чужая строка — на своём месте
+  // ниже середины x2 — чужая строка встаёт последней; u1 карточки блока на месте
   stubRows(rows());
   rows()[0].dispatchEvent(pointer(window, 'pointerdown', 100, 230));
   await hold();
   document.dispatchEvent(pointer(window, 'pointermove', 100, 355));
   document.dispatchEvent(pointer(window, 'pointerup', 100, 355));
-  assert.deepEqual(saved(), ['u1', 'x2', 'y1', 'x1']);
+  assert.deepEqual(saved(), ['u1', 'x1', 'x2', 'y1']);
+  assert.deepEqual(rows().map(r => r.dataset.dragId), ['x1', 'x2', 'y1'], 'экран — в том же порядке');
 });
 
 /* Сдвиг окна по дням — логическими днями, а не кратным 24 часам: через
@@ -12424,17 +12438,19 @@ test('Р3/3: «Система» — «Минимум · v48» из ответа 
   assert.ok(checkLine(document).classList.contains('muted'));
   assert.equal(offerShown(document), false);
 
-  // 3) установка началась и сорвалась — последняя версия
+  // 3) установка началась и сорвалась — «найдена, но не загрузилась»
+  // (задача Р4, п. 4; до Р4 здесь стояло «Это последняя версия» — неправда:
+  // версия есть, не загрузилась). Подробно оба пути — тест Р4/4 ниже
   sw.reg.onUpdate = reg => {
     const w = installNew(sw, 'minimum-v49');
     setTimeout(() => { sw.reg.installing = null; w.setState('redundant'); }, 5);
     return Promise.resolve(reg);
   };
   btn().click();
-  await waitFor(() => checkLine(document).textContent === 'Это последняя версия', 'сорвавшаяся установка');
+  await waitFor(() => checkLine(document).textContent === 'Новая версия найдена, но не загрузилась — попробуйте позже', 'сорвавшаяся установка');
   assert.equal(offerShown(document), false);
 
-  // 4) найдена v49: строка на месте и предложение над экраном
+  // 4) найдена v49: строка на месте и предложение на полосе над таб-баром
   let found;
   sw.reg.onUpdate = reg => {
     found = installNew(sw, 'minimum-v49');
@@ -12645,4 +12661,666 @@ test('Р3/рецензия: «Убрать режим» — привычка е�
   const lr = camp.nextElementSibling.querySelector('[data-drag="item"]');
   assert.deepEqual([lr.dataset.dragId, lr.dataset.dgroup, lr.querySelector('[data-act="move-up"]').disabled, lr.querySelector('[data-act="move-down"]').disabled],
     ['hL', 'Лагерь', true, true]);
+});
+
+/* ══ Задача Р4: доводка обновления ═════════════════════════════════ */
+
+/* п. 1. Недельный счётчик глобален для режимов (Р2): в режиме, где блока с
+   его именем нет, он стоит в «Без блока». Соседи по сырому item.group
+   запирали его там обеими стрелками и не давали перетащить, а соседей
+   уводили через его голову (вопрос 1 задачи Р3). */
+test('Р4/1: «Расписание» — счётчик, чей блок есть только в другом режиме, в «Без блока» ведут к видимым соседям и стрелки, и перетаскивание; в карточке своего блока — прежние соседи', async () => {
+  const since = addKey(curMonday(), -14);
+  const act = (id, name, group, mode) => r1Action(id, name, since, group, R1_ALL, { mode });
+  const seed = r2UiSeed({
+    groups: [r2Blk('Утро', 'main', '7:00'), r2Blk('Движение', R2_KAN, '')],
+    items: [
+      act('m1', 'Кровать', 'Утро', 'main'), act('a1', 'Вода', '', 'main'),
+      Object.assign(r1Action('w', 'Тренировка', since, 'Движение', R1_ALL, { type: 'weekly', goal: 3 }), { schedule: undefined }),
+      act('k1', 'Зарядка', 'Движение', R2_KAN), act('a2', 'Письмо', '', 'main')
+    ]
+  });
+  const { document, window } = await boot({ seed });
+  const saved = () => r1Saved(window).items.map(i => i.id);
+  r1Settings(document);
+  const loose = () => document.querySelector('#scr-settings .bcard.loose');
+  const rows = () => [...loose().querySelectorAll('[data-drag="item"]')];
+  const arrows = list => list.map(r => [r.dataset.dragId,
+    !r.querySelector('[data-act="move-up"]').disabled, !r.querySelector('[data-act="move-down"]').disabled]);
+
+  assert.deepEqual(r2Cards(document), ['Утро'], 'основной режим: карточка одна, «Движения» у него нет');
+  assert.deepEqual(rows().map(r => [r.dataset.dragId, r.dataset.dgroup]), [['a1', ''], ['w', ''], ['a2', '']],
+    'счётчик — в «Без блока», и секция для перетаскивания у всей карточки одна');
+  assert.deepEqual(arrows(rows()), [['a1', false, true], ['w', true, true], ['a2', true, false]],
+    'счётчик не заперт: стрелки к видимым соседям');
+
+  byId(document, 'move-up', 'w').click();
+  assert.deepEqual(saved(), ['m1', 'w', 'a1', 'k1', 'a2'], 'счётчик встал над «Водой» — на одну строку');
+  assert.deepEqual(arrows(rows()), [['w', false, true], ['a1', true, true], ['a2', true, false]], 'экран — тот же порядок');
+  byId(document, 'move-down', 'a1').click();
+  assert.deepEqual(saved(), ['m1', 'w', 'a2', 'k1', 'a1'], '«Вода» обменялась с «Письмом» через голову «Зарядки» другого режима');
+
+  // перетаскивание: счётчик — в конец «Без блока»
+  stubRows(rows());
+  rows()[0].dispatchEvent(pointer(window, 'pointerdown', 100, 230));
+  await hold();
+  document.dispatchEvent(pointer(window, 'pointermove', 100, 355));
+  document.dispatchEvent(pointer(window, 'pointerup', 100, 355));
+  assert.deepEqual(saved(), ['m1', 'a2', 'a1', 'k1', 'w'], 'счётчик среди соседей «Без блока» считается');
+  assert.deepEqual(rows().map(r => r.dataset.dragId), ['a2', 'a1', 'w']);
+  const html = document.getElementById('scr-settings').innerHTML;
+  window.renderSettings();
+  assert.equal(document.getElementById('scr-settings').innerHTML, html, 'перерисовка печатает то же');
+
+  // «Каникулы» выбраны: «Движение» — живой блок, счётчик в его карточке рядом с «Зарядкой»
+  r2Pick(document, R2_KAN);
+  assert.deepEqual(r2Cards(document), ['Движение']);
+  const card = r1Card(document, 'Движение');
+  const inCard = [...card.querySelectorAll('[data-drag="item"]')];
+  assert.deepEqual(inCard.map(r => [r.dataset.dragId, r.dataset.dgroup]), [['k1', 'Движение'], ['w', 'Движение']]);
+  assert.deepEqual(arrows(inCard), [['k1', false, true], ['w', true, false]], 'в карточке блока — прежнее правило');
+  assert.equal(loose(), null, '«Без блока» у «Каникул» нет: живых строк без блока нет');
+});
+
+/* п. 2. Primary под пальцем: общее .btn:active заливало её --accent-weak, и
+   светлый текст оставался на тоне экрана. Контраст считает contrast.test;
+   здесь — что правило достаётся КАЖДОЙ primary приложения. Обход живого DOM
+   сверен с исходником: каждая primary, которую app.js умеет напечатать,
+   встречена на экране, и ни одна встреченная не выпала из правила. */
+test('Р4/2: каждая primary — в полосе обновления, «Системе», формах «Настроек», листах — под правилом .btn.primary:active; «Добавить действия» — не primary, отклик общий', async () => {
+  const seed = sheetSeed();
+  seed.exercises = [{ id: 'sx', name: 'Жим', unit: 'кг', value: 60, history: [], active: true, addedAt: addKey(prevMonday(), -14) }];
+  seed.groups = [{ name: 'Утро', caption: '7:00' }];
+  seed.items[0].group = 'Утро';
+  seed.modes = [{ id: 'main', name: 'Основной', removedAt: null }, { id: 'kan', name: 'Каникулы', removedAt: null }];
+  const sw = fakeSW({ waiting: new FakeWorker('minimum-v50', 'installed') });
+  const { document } = await boot({ seed, sw });
+  await waitFor(() => document.querySelector('#update-note [data-act="update-apply"]'), 'предложение обновления');
+
+  const css = CSS_SRC();
+  const rule = /(?:^|\n)(\.btn\.primary):active\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'правило нажатия primary есть');
+  assert.match(rule[2], /background:\s*var\(--accent\)/);
+  assert.match(rule[2], /filter:\s*brightness\(/);
+  const base = rule[1];
+
+  const seen = new Map();
+  const scan = where => {
+    for (const el of document.querySelectorAll('section.screen:not([hidden]) .primary, #update-note:not([hidden]) .primary')) {
+      assert.ok(el.matches(base), `primary вне правила нажатия: <${el.tagName.toLowerCase()} class="${el.className}"> — ${where}`);
+      assert.equal(el.tagName, 'BUTTON', 'primary — кнопка');
+      if (!seen.has(el.dataset.act)) seen.set(el.dataset.act, el.textContent.trim());
+    }
+  };
+  const click = sel => {
+    const b = document.querySelector(sel);
+    assert.ok(b, 'есть: ' + sel);
+    b.click();
+  };
+
+  scan('полоса обновления');
+  click('#tabs button[data-tab="settings"]');
+  [...document.querySelectorAll('#scr-settings details.sect')].forEach(d => { if (!d.open) d.querySelector('summary').click(); });
+  click('#scr-settings [data-act="update-check"]');
+  await waitFor(() => document.querySelector('#update-check [data-act="update-apply"]'), 'результат проверки');
+  scan('«Система»');
+  const quick = document.querySelector('#scr-settings [data-act="quick-open"]');
+  assert.equal(quick.textContent, 'Добавить действия');
+  assert.ok(quick.matches('.btn') && !quick.matches('.primary'), '«Добавить действия» — .btn без акцента: отклик общий, --accent-weak');
+  for (const open of ['[data-act="edit-open"][data-id="it1"]', '[data-act="quick-open"]', '[data-act="group-open"]',
+    '[data-act="group-add-open"]', '[data-act="add-open"]', '[data-act="ex-open"][data-id="sx"]', '[data-act="ex-add-open"]']) {
+    click('#scr-settings ' + open);
+    assert.ok(document.querySelector('#scr-settings [data-form]'), 'форма открыта: ' + open);
+    scan(open);
+  }
+  click('#scr-settings [data-act="mode-list"]');
+  for (const open of ['mode-rename-open', 'mode-add-open']) {
+    click(`#scr-settings [data-act="${open}"]`);
+    scan(open);
+  }
+  for (const open of ['train-inc', 'goto-review']) {
+    click('#tabs button[data-tab="today"]');
+    click(`#scr-today [data-act="${open}"]`);
+    scan(open);
+  }
+
+  // список не ветшает: каждая primary из исходника встречена на экране
+  const inSource = new Set([...APP.matchAll(/class="btn primary[^"]*" data-act="([\w-]+)"/g)].map(x => x[1]));
+  assert.ok(inSource.size >= 12, `primary в app.js: ${[...inSource].join(', ')}`);
+  for (const act of inSource) assert.ok(seen.has(act), `primary «${act}» из app.js на экранах не встречена — обход её не проверил`);
+  for (const text of ['Обновить', 'Сохранить', 'Записать', 'Добавить']) {
+    assert.ok([...seen.values()].includes(text), `«${text}» среди проверенных`);
+  }
+});
+
+/* п. 3. Полоса обновления без сдвига. В потоке (Р3) #update-note вставал над
+   экраном и сдвигал его вниз посреди чтения. Теперь — фиксированная полоса
+   над таб-баром; пока показана, body.has-update даёт прокрутке отступ на
+   её высоту.
+
+   jsdom раскладки не считает, поэтому «экран не сдвигается» проверяется
+   каскадом: правила верхнего уровня styles.css, которые матчат узел (тем же
+   el.matches, что у браузера), до и после показа полосы. Прибавиться имеет
+   право ОДНО объявление — нижний отступ main; всё, что двигает верх экрана
+   (поля, отступы, позиция), валит тест. */
+function topRules(css) {
+  const out = [];
+  let i = 0;
+  while (i < css.length) {
+    const open = css.indexOf('{', i);
+    if (open < 0) break;
+    const selector = css.slice(i, open).trim();
+    let depth = 0, close = -1;
+    for (let j = open; j < css.length; j++) {
+      if (css[j] === '{') depth++;
+      else if (css[j] === '}') { depth--; if (depth === 0) { close = j; break; } }
+    }
+    if (close < 0) break;
+    if (!selector.startsWith('@')) out.push({ selector, body: css.slice(open + 1, close) });
+    i = close + 1;
+  }
+  return out;
+}
+/* Селектор списком — по запятым вне скобок */
+const selectorList = sel => {
+  const parts = [];
+  let depth = 0, buf = '';
+  for (const ch of sel) {
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) { parts.push(buf.trim()); buf = ''; } else buf += ch;
+  }
+  parts.push(buf.trim());
+  return parts;
+};
+const rulesMatching = (el, rules) => rules.filter(r => selectorList(r.selector).some(s => {
+  try { return el.matches(s); } catch { return false; } // :has и прочее, чего jsdom не знает
+}));
+const declsOf = body => body.split(';').map(d => d.trim()).filter(Boolean)
+  .map(d => [d.slice(0, d.indexOf(':')).trim(), d.slice(d.indexOf(':') + 1).trim()]);
+
+test('Р4/3: #update-note — фиксированная полоса над таб-баром вне потока; safe-area учтена; высота фиксированная, «Обновить» ≥ 44 px; отступ прокрутки ровно на высоту полосы — последняя строка не прячется', () => {
+  const css = CSS_SRC();
+  // разметка: узел прежний, вне экранов, но без .screen-note — её поля в потоке и сдвигали экран
+  const note = /<div id="update-note" class="([^"]*)"/.exec(HTML);
+  assert.ok(note, '#update-note в index.html');
+  assert.deepEqual(note[1].split(/\s+/).sort(), ['upd', 'upd-bar'], 'классы полосы; .screen-note снят');
+
+  const bar = ruleOf(css, '.upd-bar');
+  assert.ok(bar, 'правило .upd-bar');
+  assert.match(bar, /position:\s*fixed/, 'вне потока документа');
+  assert.match(bar, /(^|[;\s])left:\s*0/);
+  assert.match(bar, /(^|[;\s])right:\s*0/);
+  assert.match(bar, /z-index:\s*1\b/, 'над содержимым экранов: узел стоит в DOM раньше них');
+
+  // низ полосы — верх таб-бара: рамка + поля + кнопка #tabs, над safe-area
+  const tabs = ruleOf(css, '#tabs');
+  assert.match(tabs, /position:\s*fixed/);
+  assert.match(tabs, /bottom:\s*0/);
+  const tabPad = /padding:\s*([\d.]+)px\s+[\d.]+px\s+calc\(([\d.]+)px \+ env\(safe-area-inset-bottom\)\)/.exec(tabs);
+  assert.ok(tabPad, 'поля таб-бара: верх и низ над safe-area');
+  const tabBorder = +(/border-top:\s*([\d.]+)px/.exec(tabs)[1]);
+  const tabBtn = px(ruleOf(css, '#tabs button'), 'min-height');
+  const tabH = tabBorder + (+tabPad[1]) + (+tabPad[2]) + tabBtn;
+  assert.equal(tabH, 59, 'таб-бар — 59 px над safe-area');
+  const bottom = /bottom:\s*calc\(([\d.]+)px \+ env\(safe-area-inset-bottom\)\)/.exec(bar);
+  assert.ok(bottom, 'низ полосы учитывает safe-area');
+  assert.equal(+bottom[1], tabH, 'низ полосы — ровно верх таб-бара');
+  assert.match(bar, /env\(safe-area-inset-left\)/, 'боковые поля — с safe-area, как у экрана');
+  assert.match(bar, /env\(safe-area-inset-right\)/);
+
+  // высота фиксированная, не замер JS; внутри — тач-цель ≥ 44 px
+  const H = px(bar, 'height');
+  assert.ok(H > 0, 'высота полосы задана в px');
+  const pad = /padding:\s*([\d.]+)px\s+max\(.*?\)\)\s+([\d.]+)px/.exec(bar);
+  assert.ok(pad, 'поля полосы: верх и низ в px');
+  const border = /border-top:\s*([\d.]+)px/.exec(bar);
+  assert.ok(border, 'рамка сверху');
+  const inner = H - (+pad[1]) - (+pad[2]) - (+border[1]);
+  const btnMin = px(ruleOf(css, '.btn'), 'min-height');
+  assert.equal(btnMin, 44, '«Обновить» — .btn, не ниже 44 px');
+  assert.ok(inner >= btnMin, `внутри полосы ${inner} px — «Обновить» (${btnMin} px) помещается целиком`);
+  assert.match(ruleOf(css, '.upd-bar > .btn'), /flex:\s*none/, 'кнопку не сжимает текст');
+
+  // отступ прокрутки на время показа — ровно высота полосы
+  const shown = ruleOf(css, 'body.has-update main');
+  assert.ok(shown, 'правило отступа при показе');
+  assert.deepEqual(declsOf(shown).map(d => d[0]), ['padding-bottom'], 'только нижний отступ — верх экрана не трогается');
+  assert.equal(px(shown, 'padding-bottom'), H, 'отступ = высота полосы');
+  // последняя строка экрана (недельный счётчик «Сегодня») над полосой — с тем же
+  // запасом, что над таб-баром без полосы
+  const screenPad = /padding:\s*[\d.]+px\s+[\d.]+px\s+calc\(([\d.]+)px \+ env\(safe-area-inset-bottom\)\)/.exec(ruleOf(css, '.screen'));
+  assert.ok(screenPad, 'нижнее поле экрана');
+  const clear = +screenPad[1] - tabH;
+  assert.ok(clear >= 0, 'без полосы последняя строка над таб-баром');
+  assert.equal((+screenPad[1] + H) - (tabH + H), clear, 'с полосой запас над ней тот же');
+});
+
+test('Р4/3: одна строка на 375 px — без переноса, текст обрезается многоточием, а не уводит кнопку; самый длинный текст с кнопкой помещается с запасом', () => {
+  const css = CSS_SRC();
+  const bar = ruleOf(css, '.upd-bar');
+  assert.match(bar, /flex-wrap:\s*nowrap/, 'ряд не переносится (у .upd в «Системе» перенос остаётся)');
+  assert.match(bar, /white-space:\s*nowrap/);
+  const span = ruleOf(css, '.upd-bar > span');
+  assert.match(span, /text-overflow:\s*ellipsis/);
+  assert.match(span, /overflow:\s*hidden/);
+  assert.match(span, /min-width:\s*0/);
+  assert.match(ruleOf(css, '.upd'), /flex-wrap:\s*wrap/, 'строка результата в «Системе» переносится по-прежнему');
+
+  // арифметика ширины: 375 − поля 2 × 20 = 335 px. Кириллица системного шрифта
+  // на кегле 15 px — не шире 0,62 em на знак (с запасом к SF Pro и Segoe UI),
+  // «Обновить» 550 — не шире 0,66 em плюс поля 16 + 16 и рамка 1 + 1
+  const fs15 = 15;
+  assert.match(ruleOf(css, '.upd'), /font-size:\s*var\(--text-sm\)/);
+  assert.equal(px(ruleOf(css, '.btn'), 'font-size'), fs15);
+  const gap = +(/gap:\s*[\d.]+px\s+([\d.]+)px/.exec(ruleOf(css, '.upd'))[1]);
+  const longest = ['Доступна новая версия', 'Доступна версия v999', 'Обновляю…'].reduce((a, b) => (b.length > a.length ? b : a));
+  const text = longest.length * fs15 * 0.62;
+  const button = 'Обновить'.length * fs15 * 0.66 + 16 * 2 + 2;
+  const need = text + gap + button;
+  assert.ok(need <= 375 - 20 * 2, `нужно ${need.toFixed(0)} px из 335`);
+});
+
+test('Р4/3: показ полосы ставит body.has-update, скрытие снимает — той же точечной функцией; по каскаду прибавляется только нижний отступ main, экран не сдвигается', async () => {
+  const sw = fakeSW();
+  const { document, window } = await bootSw({ sw, seed: sheetSeed() });
+  const body = document.body;
+  const note = noteEl(document);
+  await wait(T.VERSION_ASK_MS + 20);
+  assert.equal(note.hidden, true);
+  assert.equal(body.classList.contains('has-update'), false, 'без предложения класса нет');
+
+  const rules = topRules(CSS_SRC());
+  const scr = document.getElementById('scr-today');
+  const first = scr.firstElementChild;
+  assert.ok(first, 'у «Сегодня» есть первый узел');
+  const main = document.querySelector('main');
+  const snap = () => [body, main, scr, first, note].map(el => rulesMatching(el, rules).map(r => r.selector + '{' + r.body + '}'));
+  const before = snap();
+
+  // найдена новая версия: полоса и класс — одним вызовом updateNote()
+  const w = installNew(sw, 'minimum-v50');
+  finishInstall(sw, w);
+  await waitFor(() => offerShown(document), 'предложение');
+  assert.equal(body.classList.contains('has-update'), true, 'полоса показана — отступ включён');
+  assert.equal(note.closest('section.screen'), null, 'узел вне экранов');
+  assert.equal(scr.firstElementChild, first, 'первый узел экрана тот же — перерисовки не было');
+  const after = snap();
+
+  const added = i => after[i].filter(r => !before[i].includes(r));
+  const removed = i => before[i].filter(r => !after[i].includes(r));
+  // body, экран и его первый узел: ни одно правило не прибавилось и не ушло
+  for (const [i, what] of [[0, 'body'], [2, '«Сегодня»'], [3, 'первый узел экрана']]) {
+    assert.deepEqual([added(i), removed(i)], [[], []], `${what}: каскад не изменился`);
+  }
+  // main: ровно одно правило — нижний отступ
+  assert.equal(removed(1).length, 0);
+  assert.equal(added(1).length, 1, 'у main прибавилось одно правило');
+  const rule = added(1)[0];
+  assert.deepEqual(declsOf(rule.slice(rule.indexOf('{') + 1, -1)).map(d => d[0]), ['padding-bottom'], 'и оно двигает только низ прокрутки');
+  // сама полоса вне потока: в её каскаде position только fixed
+  const pos = rulesMatching(note, rules).flatMap(r => declsOf(r.body)).filter(d => d[0] === 'position').map(d => d[1]);
+  assert.deepEqual(pos, ['fixed'], 'положение полосы — только fixed');
+  assert.equal(rulesMatching(note, rules).some(r => selectorList(r.selector).includes('.screen-note')), false, 'поля .screen-note к полосе не применяются');
+
+  // «Обновляю…» — полоса на месте, класс тоже
+  note.querySelector('[data-act="update-apply"]').click();
+  assert.equal(note.textContent, 'Обновляю…');
+  assert.equal(body.classList.contains('has-update'), true);
+  // смена вкладок класс не трогает: рендер экранов о полосе не знает
+  for (const t of ['habits', 'settings', 'today']) {
+    document.querySelector(`#tabs button[data-tab="${t}"]`).click();
+    assert.equal(body.classList.contains('has-update'), true, t);
+  }
+  window.renderAll();
+  assert.equal(body.classList.contains('has-update'), true, 'renderAll класс не снимает');
+
+  // вытеснен — полоса скрыта, отступ снят тем же вызовом
+  w.setState('redundant');
+  assert.equal(note.hidden, true);
+  assert.equal(body.classList.contains('has-update'), false, 'полоса скрыта — отступа нет');
+  assert.deepEqual(snap().slice(0, 2), before.slice(0, 2), 'каскад body и main вернулся к исходному');
+
+  // класс ставит и снимает одна функция — других мест в app.js нет
+  assert.equal((APP.match(/['"`]has-update['"`]/g) || []).length, 1, 'имя класса в коде — одно место, updateNote()');
+  const fnAt = APP.indexOf('function updateNote()');
+  assert.ok(fnAt >= 0);
+  assert.match(APP.slice(fnAt, APP.indexOf('\nfunction ', fnAt + 1)), /classList\.toggle\('has-update', on\)/, 'и это место — updateNote(), тем же on, что hidden');
+});
+
+test('Р4/3: появление полосы — только прозрачность, ease-out, в окне движения и без задержки; ни выезда, ни смены раскладки; reduced-motion — мгновенно', () => {
+  const css = CSS_SRC();
+  const bar = ruleOf(css, '.upd-bar');
+  const anim = declValues(bar, 'animation').flatMap(motionParts);
+  assert.equal(anim.length, 1, 'одна анимация у полосы');
+  assert.equal(anim[0].name, 'upd-fade');
+  assert.ok(anim[0].dur >= 180 && anim[0].dur <= 260, `длительность ${anim[0].dur} мс — в окне 180–260`);
+  assert.equal(anim[0].delay, 0, 'без задержки: задержка законна только в сцене закрытия дня');
+  assert.match(anim[0].raw, /\bease-out\b/, 'появление — ease-out');
+  assert.doesNotMatch(bar, /transition/, 'переходов у полосы нет');
+
+  const at = css.indexOf('@keyframes upd-fade');
+  assert.ok(at >= 0, 'кадры upd-fade');
+  let depth = 0, end = -1;
+  for (let j = css.indexOf('{', at); j < css.length; j++) {
+    if (css[j] === '{') depth++;
+    else if (css[j] === '}') { depth--; if (depth === 0) { end = j; break; } }
+  }
+  const frames = css.slice(at, end + 1);
+  const props = [...frames.matchAll(/([a-z-]+)\s*:/g)].map(m => m[1]);
+  assert.ok(props.length >= 2, 'кадры не пустые');
+  assert.deepEqual([...new Set(props)], ['opacity'], 'в кадрах только opacity — ни transform, ни высоты, ни полей');
+  assert.match(frames, /from\s*\{\s*opacity:\s*0/);
+  assert.match(frames, /to\s*\{\s*opacity:\s*1/);
+
+  // reduced-motion гасит все animation глобальным блоком: полоса видна сразу,
+  // и отдельного исключения у неё нет
+  const rm = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(rm, /animation: none !important/);
+  assert.doesNotMatch(rm, /upd/, 'полоса в блоке reduced-motion не исключена');
+  // покой полосы — видимая: прозрачность в самом правиле не задана, конечное
+  // состояние даёт разметка (hidden снят), а не последний кадр
+  assert.doesNotMatch(bar, /opacity/);
+  assert.doesNotMatch(bar, /animation-fill-mode|forwards|both/);
+});
+
+/* п. 4. Сорвавшаяся установка. update() нашёл новую версию (updatefound), но
+   её воркер стал redundant, не дойдя до installed. До Р4 ручная проверка
+   говорила «Это последняя версия» — неправду: версия есть, не загрузилась. */
+const LOST = 'Новая версия найдена, но не загрузилась — попробуйте позже';
+
+test('Р4/4: ручная проверка — «найдена, но не загрузилась» приглушённо, в том числе когда установка сорвалась раньше, чем update() разрешился; нашлась и встала — предложение; ничего не нашлось — последняя; рендер = точечный путь', async () => {
+  const { document, window, sw, reloads } = await bootSw();
+  toSystem(document);
+  const btn = () => document.querySelector('#scr-settings [data-act="update-check"]');
+  const line = () => checkLine(document);
+  const check = async (text, what) => {
+    btn().click();
+    await waitFor(() => line().textContent === text, what);
+    assert.equal(btn().disabled, false, what + ': кнопка снова активна');
+    const html = versionBlockHtml(document);
+    window.renderSettings();
+    assert.equal(versionBlockHtml(document), html, what + ': перерисовка печатает то же');
+  };
+
+  // 1) установка началась и оборвалась после того, как update() разрешился
+  let w1;
+  sw.reg.onUpdate = reg => {
+    w1 = installNew(sw, 'minimum-v50');
+    setTimeout(() => { sw.reg.installing = null; w1.setState('redundant'); }, 5);
+    return Promise.resolve(reg);
+  };
+  await check(LOST, 'сорвалась после update()');
+  assert.equal(line().hidden, false);
+  assert.ok(line().classList.contains('muted'), 'приглушённо — не тревога');
+  assert.equal(line().querySelector('button'), null, 'обновляться нечем — кнопки нет');
+  assert.equal(line().querySelector('span').textContent, LOST);
+  assert.equal(offerShown(document), false, 'предложения нет');
+  assert.deepEqual(w1.sent, [], 'сорвавшийся воркер никто не спрашивал и не активировал');
+  assert.equal(document.getElementById('live').textContent, '', 'объявляет строка статуса, а не область отказов формы');
+
+  // 2) оборвалась ещё ДО того, как update() разрешился: reg.installing уже
+  // пуст, найденное узнаётся по updatefound, пришедшему во время проверки
+  sw.reg.onUpdate = reg => {
+    const w = installNew(sw, 'minimum-v50');
+    sw.reg.installing = null;
+    w.setState('redundant');
+    return Promise.resolve(reg);
+  };
+  btn().click();
+  assert.equal(line().textContent, 'Проверяю…', 'проверка пошла заново — прежний исход снят');
+  await waitFor(() => line().textContent === LOST, 'сорвалась до update()');
+  assert.equal(offerShown(document), false);
+
+  // 3) ничего не нашлось — «последняя», и прошлый исход не прилипает
+  sw.reg.onUpdate = null;
+  await check('Это последняя версия', 'обновлений нет');
+
+  // 4) нашлась и встала — предложение, строка «не загрузилась» не показывается
+  let w2;
+  sw.reg.onUpdate = reg => {
+    w2 = installNew(sw, 'minimum-v50');
+    setTimeout(() => finishInstall(sw, w2), 5);
+    return Promise.resolve(reg);
+  };
+  btn().click();
+  await waitFor(() => /^Доступна v50/.test(line().textContent), 'нашлась и встала');
+  assert.equal(offerShown(document), true);
+
+  // 5) ожидающий v50 предложен, следующая v51 сорвалась: строка — предложение
+  // v50, а не «не загрузилась»: обновиться владельцу есть чем
+  sw.reg.onUpdate = reg => {
+    const w = installNew(sw, 'minimum-v51');
+    setTimeout(() => { sw.reg.installing = null; w.setState('redundant'); }, 5);
+    return Promise.resolve(reg);
+  };
+  btn().click();
+  await waitFor(() => line().textContent !== 'Проверяю…', 'исход при ожидающем');
+  assert.equal(line().querySelector('span').textContent, 'Доступна v50', 'предложение ожидающего перебивает сорвавшуюся следующую');
+  assert.equal(line().querySelector('[data-act="update-apply"]').classList.contains('primary'), true);
+  assert.equal(noteEl(document).querySelector('span').textContent, 'Доступна версия v50');
+
+  // 6) ожидающий v50 вытеснен — предложения нет, и та же сорвавшаяся установка
+  // снова читается «не загрузилась»
+  sw.reg.waiting = null;
+  w2.setState('redundant');
+  assert.equal(offerShown(document), false);
+  sw.reg.onUpdate = reg => {
+    const w = installNew(sw, 'minimum-v52');
+    setTimeout(() => { sw.reg.installing = null; w.setState('redundant'); }, 5);
+    return Promise.resolve(reg);
+  };
+  btn().click();
+  await waitFor(() => line().textContent === LOST, 'после снятого предложения — снова «не загрузилась»');
+  assert.deepEqual(reloads, []);
+});
+
+test('Р4/4: автопроверка при сорвавшейся установке молчит — ни строки, ни предложения, ни объявления; ответ ручной проверки не переписывает', async () => {
+  const { document, window, sw, reloads } = await bootSw();
+  const visible = () => document.dispatchEvent(new window.Event('visibilitychange'));
+  const lose = version => reg => {
+    const w = installNew(sw, version);
+    setTimeout(() => { sw.reg.installing = null; w.setState('redundant'); }, 5);
+    return Promise.resolve(reg);
+  };
+  const here = () => assert.equal(window.eval('ui').tab, 'settings', 'владелец не уходил с «Настроек»');
+  toSystem(document);
+  assert.equal(checkLine(document).hidden, true);
+
+  // строка пуста — автопроверка с тем же исходом её не заполняет
+  sw.reg.onUpdate = lose('minimum-v50');
+  shiftWindowDate(window, 11 * 60000);
+  visible();
+  await waitFor(() => sw.reg.updates === 2, 'автопроверка');
+  await wait(40);
+  here();
+  assert.equal(checkLine(document).hidden, true, 'автопроверка результата в «Системе» не пишет');
+  assert.equal(checkLine(document).textContent, '');
+  assert.equal(offerShown(document), false);
+  assert.equal(document.getElementById('live').textContent, '');
+  assert.equal(document.querySelector('#scr-settings [data-act="update-check"]').disabled, false, 'и кнопку не запирает');
+
+  // ответ ручной проверки стоит — автопроверка с сорвавшейся установкой его не переписывает
+  sw.reg.onUpdate = null;
+  document.querySelector('#scr-settings [data-act="update-check"]').click();
+  await waitFor(() => checkLine(document).textContent === 'Это последняя версия', 'ручная — последняя');
+  sw.reg.onUpdate = lose('minimum-v51');
+  shiftWindowDate(window, 11 * 60000);
+  visible();
+  await waitFor(() => sw.reg.updates === 4, 'вторая автопроверка');
+  await wait(40);
+  here();
+  assert.equal(checkLine(document).textContent, 'Это последняя версия', 'автопроверка молчит и поверх ответа ручной');
+  assert.equal(offerShown(document), false);
+  assert.deepEqual(reloads, []);
+});
+
+/* ── Р4/рецензия: ремонт после рецензии ─────────────────────── */
+
+/* Полоса обновления при вытеснении ожидающего. По спецификации ожидающий
+   v50 становится redundant, когда v51 УЖЕ установился: statechange v50
+   приходит раньше, чем регистрация переписала installing/waiting и v51 стал
+   installed, а номер v51 приходит ещё через обмен сообщениями. Прежде
+   dropOffer прятал полосу и снимал has-update в этом промежутке: у нижнего
+   края прокрутки документ укорачивался на 56 px, прокрутка прижималась, и
+   экран уезжал вниз (замер рецензии в Chromium: «Проверить обновления»
+   585 → 641 px), а вернувшаяся полоса заново проигрывала появление. Раскладку
+   jsdom не считает, поэтому сторож держит причину сдвига: в промежутке ни
+   hidden, ни класс body, ни узлы полосы не меняются вовсе. Записи копятся
+   и в обратном вызове наблюдателя: доставленные между ожиданиями из
+   takeRecords() уже не вернулись бы, и пустой ответ был бы пустым даром. */
+const watchBar = (window, document) => {
+  const seen = [];
+  const mo = new window.MutationObserver(list => { seen.push(...list); });
+  mo.observe(document.body, { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+  mo.observe(noteEl(document), { attributes: true, attributeFilter: ['hidden'], attributeOldValue: true, childList: true, subtree: true, characterData: true });
+  return {
+    take: () => seen.splice(0).concat(mo.takeRecords()),
+    disconnect: () => mo.disconnect()
+  };
+};
+const hasUpdate = document => document.body.classList.contains('has-update');
+const attrRecords = mo => mo.take().filter(r => r.type === 'attributes').map(r => r.attributeName);
+
+test('Р4/рецензия: ожидающий вытеснен установившимся преемником — полоса и отступ удерживаются теми же узлами до его предложения: ни скрытия, ни снятия has-update, ни повторного появления; «Система» печатает то же точечно и перерисовкой', async () => {
+  const { document, window, sw, reloads } = await bootSw({ timing: { VERSION_ASK_MS: 1500 } });
+  const note = noteEl(document);
+  const w50 = installNew(sw, 'minimum-v50');
+  finishInstall(sw, w50);
+  await waitFor(() => offerShown(document), 'предложение v50');
+  // ручная проверка — строка результата «Системы» тоже говорит о предложении
+  toSystem(document);
+  document.querySelector('#scr-settings [data-act="update-check"]').click();
+  await waitFor(() => checkLine(document).textContent === 'Доступна v50Обновить', 'результат ручной проверки');
+  assert.equal(hasUpdate(document), true);
+
+  const span = note.querySelector('span');
+  const button = note.querySelector('[data-act="update-apply"]');
+  const lineHtml = versionBlockHtml(document);
+  const mo = watchBar(window, document);
+
+  // v51 установился: вытесненный v50 — redundant, регистрация ещё держит v51 в installing
+  const w51 = installNew(sw, 'minimum-v51', 'hold');
+  w50.setState('redundant');
+  assert.deepEqual(mo.take().map(r => r.type + ':' + (r.attributeName || '')), [],
+    'вытеснение не трогает ни полосу, ни её узлы, ни класс body');
+  assert.equal(note.hidden, false, 'полоса на месте');
+  assert.equal(hasUpdate(document), true, 'отступ прокрутки на месте — документ не укорачивается');
+  assert.equal(note.querySelector('span'), span, 'тот же узел текста');
+  assert.equal(note.querySelector('[data-act="update-apply"]'), button, 'та же кнопка');
+  assert.equal(span.textContent, 'Доступна версия v50', 'текст прежний до предложения преемника');
+  assert.equal(window.eval('ui').updateArmed, false);
+  assert.equal(versionBlockHtml(document), lineHtml, '«Система» — то же предложение');
+  window.renderSettings();
+  assert.equal(versionBlockHtml(document), lineHtml, 'перерисовка печатает то же, что точечный путь');
+
+  // удержанная «Обновить» — ничего: взвод принадлежал вытесненному
+  button.click();
+  assert.equal(window.eval('ui').updateArmed, false, 'удержанная кнопка не взводит');
+  assert.deepEqual(w50.sent.map(m => m.type), ['version'], 'вытесненному skipWaiting не шлют');
+  assert.deepEqual(mo.take(), [], 'и полосу не переписывает');
+
+  // установка v51 закончилась, номер ещё не пришёл — полоса прежняя
+  finishInstall(sw, w51);
+  await waitFor(() => w51.held.length === 1, 'вопрос о номере v51');
+  await wait(10);
+  assert.deepEqual(mo.take(), [], 'пока номер не пришёл — полоса прежняя');
+  assert.equal(note.querySelector('span'), span);
+
+  // номер пришёл — текст переписан на месте: ни hidden, ни класса body
+  w51.answer();
+  await wait(0);
+  const recs = mo.take();
+  assert.ok(recs.length > 0, 'текст сменился');
+  assert.deepEqual(recs.filter(r => r.type === 'attributes').map(r => r.attributeName), [],
+    'полоса не пряталась и отступ не снимался ни на миг');
+  assert.equal(note.hidden, false);
+  assert.equal(hasUpdate(document), true);
+  assert.equal(note.querySelector('span').textContent, 'Доступна версия v51');
+  assert.equal(checkLine(document).querySelector('span').textContent, 'Доступна v51');
+  mo.disconnect();
+
+  // новая «Обновить» — предложение преемника: взвод и skipWaiting v51
+  note.querySelector('[data-act="update-apply"]').click();
+  assert.equal(window.eval('ui').updateArmed, true);
+  assert.deepEqual(w51.sent.map(m => m.type), ['version', 'skipWaiting']);
+  assert.deepEqual(reloads, []);
+});
+
+test('Р4/рецензия: окончательный исход снимает удержанную полосу — установка преемника сорвалась, предложить его некому; преемник уже ожидает — предлагается без updatefound; полосы на экране не было — удерживать нечего', async () => {
+  // 1) установка преемника сорвалась (регистрация снята, данные стёрты) — полоса и отступ сняты
+  {
+    const { document, window, sw } = await bootSw();
+    const w50 = installNew(sw, 'minimum-v50');
+    finishInstall(sw, w50);
+    await waitFor(() => offerShown(document), 'предложение v50');
+    toSystem(document);
+    document.querySelector('#scr-settings [data-act="update-check"]').click();
+    await waitFor(() => checkLine(document).textContent === 'Доступна v50Обновить', 'результат ручной проверки');
+    const w51 = installNew(sw, 'minimum-v51');
+    w50.setState('redundant');
+    assert.equal(offerShown(document), true, 'удержана');
+    sw.reg.installing = null;
+    w51.setState('redundant');
+    await waitFor(() => !offerShown(document), 'снятие полосы');
+    assert.equal(noteEl(document).innerHTML, '');
+    assert.equal(hasUpdate(document), false, 'отступ снят тем же вызовом');
+    assert.equal(checkLine(document).textContent, 'Это последняя версия', 'предлагать нечего — строка «Системы» без предложения');
+    const html = versionBlockHtml(document);
+    window.renderSettings();
+    assert.equal(versionBlockHtml(document), html, 'перерисовка печатает то же');
+    assert.deepEqual(w51.sent, [], 'сорвавшийся преемник не спрошен');
+  }
+  // 2) преемник установился, но предложить его некому — контроллера нет
+  {
+    const { document, sw } = await bootSw();
+    const w50 = installNew(sw, 'minimum-v50');
+    finishInstall(sw, w50);
+    await waitFor(() => offerShown(document), 'предложение v50');
+    const w51 = installNew(sw, 'minimum-v51');
+    w50.setState('redundant');
+    assert.equal(offerShown(document), true, 'удержана');
+    sw.controller = null;
+    finishInstall(sw, w51);
+    await waitFor(() => !offerShown(document), 'снятие полосы');
+    assert.equal(hasUpdate(document), false);
+    assert.deepEqual(w51.sent, [], 'без контроллера преемника не спрашивают');
+  }
+  // 3) регистрация уже переписана до statechange: преемник ожидает, updatefound не было —
+  // удержание предлагает его само
+  {
+    const { document, window, sw } = await bootSw();
+    const w50 = installNew(sw, 'minimum-v50');
+    finishInstall(sw, w50);
+    await waitFor(() => offerShown(document), 'предложение v50');
+    const span = noteEl(document).querySelector('span');
+    const mo = watchBar(window, document);
+    const w51 = new FakeWorker('minimum-v51', 'installed');
+    sw.reg.waiting = w51;
+    w50.setState('redundant');
+    await waitFor(() => noteEl(document).querySelector('span').textContent === 'Доступна версия v51', 'предложение v51');
+    assert.deepEqual(attrRecords(mo), [], 'ни hidden, ни класса body');
+    assert.notEqual(noteEl(document).querySelector('span'), span, 'текст переписан предложением преемника');
+    assert.equal(hasUpdate(document), true);
+    mo.disconnect();
+  }
+  // 4) полоса ещё не встала (номер v50 не пришёл), а v50 вытеснен — удерживать нечего:
+  // полосы нет до предложения преемника, «новая версия» не мелькает
+  {
+    const { document, sw } = await bootSw({ timing: { VERSION_ASK_MS: 1500 } });
+    const w50 = installNew(sw, 'minimum-v50', 'hold');
+    finishInstall(sw, w50);
+    await waitFor(() => w50.held.length === 1, 'вопрос о номере v50');
+    assert.equal(offerShown(document), false);
+    const w51 = installNew(sw, 'minimum-v51');
+    w50.setState('redundant');
+    assert.equal(offerShown(document), false, 'полосы, которой не было, не удерживают');
+    assert.equal(hasUpdate(document), false);
+    finishInstall(sw, w51);
+    await waitFor(() => offerShown(document), 'предложение v51');
+    assert.equal(noteEl(document).querySelector('span').textContent, 'Доступна версия v51');
+    w50.answer();
+    await wait(10);
+    assert.equal(noteEl(document).querySelector('span').textContent, 'Доступна версия v51', 'поздний ответ вытесненного не переписывает');
+  }
 });
