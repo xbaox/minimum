@@ -2,6 +2,7 @@ process.env.TZ = 'America/Toronto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as D from '../domain.js';
+import { ICON_IDS } from '../icons.js';
 
 const ids = () => { let n = 0; return () => 'i' + ++n; };
 const mk = createdAt => D.seed(createdAt, ids());
@@ -49,7 +50,14 @@ test('шаблон валиден: 8 + 1, id уникальны, цвета из
   const all = [...s.items, ...s.weekly];
   assert.equal(new Set(all.map(i => i.id)).size, 9);
   for (const i of all) assert.ok(D.COLORS.includes(i.color), i.color);
-  assert.deepEqual(s.items.map(i => i.emoji), ['🌅', '💪', '📖', '🎧', '🛋️', '🚿', '🖐️', '📱']);
+  for (const i of all) assert.ok(ICON_IDS.includes(i.icon), i.icon);
+  assert.deepEqual(s.items.map(i => i.icon), ['sunrise', 'dumbbell', 'book', 'headphones', 'bed', 'drop', 'bottle', 'phone']);
+  assert.deepEqual(s.items.map(i => i.color), ['orange', 'red', 'purple', 'blue', 'mint', 'teal', 'pink', 'indigo']);
+  assert.deepEqual([s.weekly[0].icon, s.weekly[0].color], ['pulse', 'green']);
+  assert.ok(all.every(i => !('emoji' in i)));
+  // число с единицей не разрывается переносом
+  assert.equal(s.items[2].note, '10\u00a0минут · книга, вникай в суть');
+  assert.match(s.weekly[0].note, /бег 1\u00a0км/);
   assert.equal(s.items[7].beforeBed, 30);
   assert.equal(s.weekly[0].perWeek, 3);
   assert.equal(s.sleep.targets[0].bed, '01:00');
@@ -116,7 +124,8 @@ test('живой план сегодня, замороженный — поза�
   const today = '2026-09-10';
   D.syncToday(s, '2026-09-08');
   const before = s.days['2026-09-08'].plan.slice();
-  const it = D.addItem(s, { name: 'Вода', emoji: '💧', color: 'sky' }, false, today, () => 'new');
+  const it = D.addItem(s, { name: 'Вода', icon: 'glass', color: 'teal' }, false, today, () => 'new');
+  assert.deepEqual([it.icon, it.color], ['glass', 'teal']);
   assert.ok(D.planOf(s, today, today).includes(it.id));
   assert.deepEqual(D.planOf(s, '2026-09-08', today), before);
   D.archiveItem(s, s.items[0].id, today);
@@ -293,6 +302,7 @@ test('пункты: добавить, переименовать, ↑↓, убр
   const it = D.addItem(s, { name: 'x'.repeat(80), color: 'nope', beforeBed: '15' }, false, '2026-09-02');
   assert.equal(it.name.length, 60);
   assert.equal(it.color, 'blue');
+  assert.equal(it.icon, 'star'); // значок по умолчанию
   assert.equal(it.beforeBed, 15);
   assert.ok(D.updateItem(s, it.id, { ...it, name: 'Вода' }));
   assert.equal(it.name, 'Вода');
@@ -311,7 +321,9 @@ test('нормализация: битые поля → по умолчанию,
   const raw = JSON.parse(JSON.stringify(s));
   raw.junk = 1;
   raw.items[0].extra = 'x';
-  raw.items[1].color = 'purple';
+  raw.items[1].color = 'violet'; // имя из старой палитры
+  raw.items[1].icon = 'rocket';
+  raw.items[1].emoji = '💪';
   raw.items.push({ id: raw.items[2].id, name: 'дубль' }, { name: 'без id' }, null);
   raw.days = { '2026-09-02': { plan: ['i1', 'i1', 5], done: 'bad' }, 'не дата': {} };
   raw.sleep.nights = { '2026-09-03': { bed: '25:00', wake: '07:30' }, '2026-09-04': { bed: 'x' } };
@@ -322,6 +334,8 @@ test('нормализация: битые поля → по умолчанию,
   assert.equal(n.items.length, 8);
   assert.equal(n.items[0].extra, undefined);
   assert.equal(n.items[1].color, 'blue');
+  assert.equal(n.items[1].icon, 'star');
+  assert.equal(n.items[1].emoji, undefined);
   assert.deepEqual(n.days, { '2026-09-02': { plan: ['i1'], done: [] } });
   assert.deepEqual(n.sleep.nights, { '2026-09-03': { wake: '07:30' } });
   assert.deepEqual(n.sleep.targets, [{ from: '2026-09-01', bed: '01:00' }]);
@@ -331,7 +345,7 @@ test('нормализация: битые поля → по умолчанию,
   assert.equal(D.normalize([]), null);
 });
 
-test('итоги недели: дни, сетка, тренировки, сон', () => {
+test('итоги недели: дни, кольца, сон', () => {
   const s = sleepWeek(5);
   closeDay(s, '2026-09-21'); closeDay(s, '2026-09-22'); missDay(s, '2026-09-23');
   D.toggleWeekMark(s, s.weekly[0].id, '2026-09-22');
@@ -339,9 +353,10 @@ test('итоги недели: дни, сетка, тренировки, сон'
   const w = D.weekSummary(s, MON, SUN);
   assert.equal(w.closed, 2);
   assert.equal(w.total, 7);
-  assert.equal(w.rows.length, 8);
-  assert.deepEqual(w.rows[0].cells.slice(0, 3), ['done', 'done', 'miss']);
-  assert.equal(w.weekly[0].count, 1);
+  assert.equal(w.days.length, 7);
+  assert.deepEqual(D.dayRings(s, '2026-09-22', SUN), { min: 1, sleep: true, week: true });
+  assert.equal(D.dayRings(s, '2026-09-23', SUN).min, 0);
+  assert.equal(D.weekCount(s, s.weekly[0].id, MON), 1);
   assert.equal(w.K, 5);
   assert.deepEqual(w.missingNights, ['2026-09-26']);
   assert.equal(w.avgBed, '01:01'); // (5 × 00:50 + 2 × 01:30) / 7
@@ -357,4 +372,36 @@ test('доля пунктов за 4 недели — только по дням
   // 01–22 сентября; дни без записи восстановлены по addedAt, 22-го пункта не было в плане
   assert.equal(r.planned, 21);
   assert.equal(r.done, 1);
+});
+
+test('утра для показа: пустое — не в цель, но день посева и сегодня без записи не считаются', () => {
+  const s = mk('2026-09-30');
+  const nightAt = (d, bed) => (s.sleep.nights[d] = { bed, wake: '07:30' });
+  // четверг 1 октября, утро ещё не отмечено
+  assert.deepEqual(D.knownMornings(s, '2026-09-28', '2026-10-04', '2026-10-01'), []);
+  nightAt('2026-09-30', '00:50'); // утро дня посева отмечено — считается
+  assert.deepEqual(D.knownMornings(s, '2026-09-28', '2026-10-04', '2026-10-01'), ['2026-09-30']);
+  nightAt('2026-10-01', '01:40');
+  const m = D.knownMornings(s, '2026-09-28', '2026-10-04', '2026-10-01');
+  assert.deepEqual(m, ['2026-09-30', '2026-10-01']);
+  assert.deepEqual(D.sleepHits(s, m), { k: 1, n: 2 });
+  // пятница: пустой четверг уже не отмечен — считается «не в цель»
+  delete s.sleep.nights['2026-10-01'];
+  assert.deepEqual(D.knownMornings(s, '2026-09-28', '2026-10-04', '2026-10-02'), ['2026-09-30', '2026-10-01']);
+});
+
+test('кольца дня: минимум, ночь, первый недельный счётчик', () => {
+  const s = mk('2026-09-28');
+  const [a, b] = D.activeIds(s);
+  s.days['2026-09-29'] = { plan: D.activeIds(s), done: [a, b] };
+  s.sleep.nights['2026-09-29'] = { bed: '00:40', wake: '07:30' };
+  D.toggleWeekMark(s, s.weekly[0].id, '2026-09-29');
+  assert.deepEqual(D.dayRings(s, '2026-09-29', '2026-09-30'), { min: 2 / 8, sleep: true, week: true });
+  s.sleep.nights['2026-09-30'] = { bed: '02:00' };
+  assert.deepEqual(D.dayRings(s, '2026-09-30', '2026-09-30'), { min: 0, sleep: false, week: false });
+  assert.deepEqual(D.dayRings(s, '2026-10-01', '2026-09-30'), { min: null, sleep: null, week: null }); // будущее
+  assert.deepEqual(D.dayRings(s, '2026-09-27', '2026-09-30'), { min: null, sleep: null, week: null }); // до посева
+  s.weekly[0].archivedAt = '2026-09-30';
+  assert.equal(D.firstWeekly(s), null);
+  assert.equal(D.dayRings(s, '2026-09-29', '2026-09-30').week, null);
 });

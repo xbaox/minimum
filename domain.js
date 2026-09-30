@@ -1,9 +1,13 @@
 // Минимум v2 — чистая логика: даты, план дня, серия, сон, итоги недели. Без DOM.
 
+import { ICON_IDS, DEFAULT_ICON } from './icons.js';
+
 export const DAY_START_HOUR = 4;
 export const MAX_DAILY = 10;
 export const SINCE = '2026-07-20';
-export const COLORS = ['coral', 'orange', 'amber', 'lime', 'green', 'teal', 'sky', 'blue', 'indigo', 'violet', 'pink'];
+// Палитра плиток: под белый значок, контраст ≥ 3:1 (считает tests/style.test.js).
+export const COLORS = ['red', 'orange', 'yellow', 'green', 'mint', 'teal', 'blue', 'indigo', 'purple', 'pink', 'brown', 'gray'];
+export const DEFAULT_COLOR = 'blue';
 export const LATEST_BED = '03:00';
 export const CHOICES = ['earlier30', 'earlier15', 'keep', 'later15'];
 
@@ -60,27 +64,29 @@ export const activeItems = s => s.items.filter(i => !i.archivedAt);
 export const activeIds = s => activeItems(s).map(i => i.id);
 export const findItem = (s, id) => s.items.find(i => i.id === id) || s.weekly.find(i => i.id === id);
 
+// Неразрывный пробел держит число с единицей и «до» со временем на одной строке.
+const NB = '\u00a0';
 const TEMPLATE_ITEMS = [
-  ['🌅', 'Шторы + умыться', 'сразу как встал', 'amber', null],
-  ['💪', 'Спорт', '5 отжиманий · 5 подтягиваний · вис', 'coral', null],
-  ['📖', 'Развитие', '10 минут · книга, вникай в суть', 'violet', null],
-  ['🎧', 'Vocabulary', '10 минут · плейлист лексики', 'sky', null],
-  ['🛋️', 'Лежка', '15 минут', 'teal', null],
-  ['🚿', 'Душ', 'вечером', 'blue', null],
-  ['🖐️', 'Лак на ногти', 'после душа', 'pink', null],
-  ['📱', 'Телефон на кухню', 'будильник заведён — и на кухню', 'indigo', 30],
+  ['sunrise', 'Шторы + умыться', 'сразу как встал', 'orange', null],
+  ['dumbbell', 'Спорт', `5${NB}отжиманий · 5${NB}подтягиваний · вис`, 'red', null],
+  ['book', 'Развитие', `10${NB}минут · книга, вникай в суть`, 'purple', null],
+  ['headphones', 'Vocabulary', `10${NB}минут · плейлист лексики`, 'blue', null],
+  ['bed', 'Лежка', `15${NB}минут`, 'mint', null],
+  ['drop', 'Душ', 'вечером', 'teal', null],
+  ['bottle', 'Лак на ногти', 'после душа', 'pink', null],
+  ['phone', 'Телефон на кухню', 'будильник заведён — и на кухню', 'indigo', 30],
 ];
-const TEMPLATE_WEEKLY = [['🏋️', 'Тренировка', 'подтягивания · брусья · уголок · бег 1 км · подъём ног', 'green', 3]];
+const TEMPLATE_WEEKLY = [['pulse', 'Тренировка', `подтягивания · брусья · уголок · бег 1${NB}км · подъём ног`, 'green', 3]];
 
 export function seed(today, id = makeId) {
   return {
     schema: 1,
     createdAt: today,
     since: SINCE,
-    items: TEMPLATE_ITEMS.map(([emoji, name, note, color, beforeBed]) =>
-      ({ id: id(), emoji, name, note, color, beforeBed, addedAt: today, archivedAt: null })),
-    weekly: TEMPLATE_WEEKLY.map(([emoji, name, note, color, perWeek]) =>
-      ({ id: id(), emoji, name, note, color, perWeek, addedAt: today, archivedAt: null })),
+    items: TEMPLATE_ITEMS.map(([icon, name, note, color, beforeBed]) =>
+      ({ id: id(), icon, name, note, color, beforeBed, addedAt: today, archivedAt: null })),
+    weekly: TEMPLATE_WEEKLY.map(([icon, name, note, color, perWeek]) =>
+      ({ id: id(), icon, name, note, color, perWeek, addedAt: today, archivedAt: null })),
     days: {},
     weekMarks: {},
     sleep: { goalBed: '23:30', goalWake: '07:30', targets: [{ from: today, bed: '01:00' }], nights: {} },
@@ -94,10 +100,10 @@ export function cleanFields(f, weekly) {
   const name = String(f.name ?? '').trim().slice(0, 60);
   if (!name) return null;
   const out = {
-    emoji: String(f.emoji ?? '').trim().slice(0, 16) || '•',
+    icon: ICON_IDS.includes(f.icon) ? f.icon : DEFAULT_ICON,
     name,
     note: String(f.note ?? '').trim().slice(0, 120),
-    color: COLORS.includes(f.color) ? f.color : 'blue',
+    color: COLORS.includes(f.color) ? f.color : DEFAULT_COLOR,
   };
   if (weekly) out.perWeek = Math.min(7, Math.max(1, Math.round(+f.perWeek) || 3));
   else {
@@ -302,6 +308,19 @@ export function sleepStats(s, dates) {
   return { avgBed: b == null ? null : fmtTime(b), avgBedNorm: b, avgDur: du == null ? null : Math.round(du) };
 }
 
+// Утра для показа (кольцо «Сон», «Прогресс»): пустое утро — не в цель, но утро дня посева
+// и сегодняшнее утро без записи не считаются — их ещё не успели отметить.
+export function knownMornings(s, from, to, today) {
+  const a = maxD(from, s.createdAt), b = minD(to, today);
+  if (a > b) return [];
+  return range(a, b).filter(d => (d !== today && d !== s.createdAt) || !!s.sleep.nights[d]?.bed);
+}
+
+// → { k, n }: сколько утр из показываемых — «в цель».
+export function sleepHits(s, dates) {
+  return { k: dates.filter(d => onTarget(s, d)).length, n: dates.length };
+}
+
 // ---------- итоги недели
 
 // Учитываемые утра недели: не раньше дня после посева и не позже сегодня.
@@ -378,22 +397,11 @@ export function closeWeek(s, monday, draft, choice, today, nowISO = new Date().t
 export function weekSummary(s, monday, today) {
   const days = range(monday, addDays(monday, 6));
   const counted = days.filter(d => status(s, d, today) !== 'none');
-  const ids = new Set(days.filter(d => d <= today && d >= s.createdAt).flatMap(d => planOf(s, d, today)));
-  const rows = s.items.filter(i => ids.has(i.id)).map(item => ({
-    item,
-    cells: days.map(d => {
-      if (d > today || d < s.createdAt) return 'off';
-      if (!planOf(s, d, today).includes(item.id)) return 'off';
-      return doneOf(s, d).includes(item.id) ? 'done' : 'miss';
-    }),
-  }));
   const E = weekMornings(s, monday, today);
   return {
     days,
     closed: counted.filter(d => status(s, d, today) === 'closed').length,
     total: counted.length,
-    rows,
-    weekly: activeItems({ items: s.weekly }).map(item => ({ item, count: weekCount(s, item.id, monday) })),
     mornings: E,
     K: E.filter(d => onTarget(s, d)).length,
     missingNights: E.filter(d => duration(s.sleep.nights[d]) == null),
@@ -402,6 +410,21 @@ export function weekSummary(s, monday, today) {
 }
 
 // ---------- прогресс
+
+// Первый активный недельный счётчик — его показывают кольца.
+export const firstWeekly = s => s.weekly.find(i => !i.archivedAt) || null;
+
+// Три кольца дня: доля минимума, ночь «в цель», отметка первого недельного счётчика. null — нет данных.
+export function dayRings(s, date, today) {
+  if (date > today || date < s.createdAt) return { min: null, sleep: null, week: null };
+  const { k, n } = progress(s, date, today);
+  const w = firstWeekly(s);
+  return {
+    min: n ? k / n : null,
+    sleep: s.sleep.nights[date]?.bed ? onTarget(s, date) : null,
+    week: w ? (s.weekMarks[w.id] || []).includes(date) : null,
+  };
+}
 
 // Доля выполнения каждого активного пункта за 28 дней до сегодня — по дням, где он был в плане.
 export function itemRates(s, today) {
