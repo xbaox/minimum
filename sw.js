@@ -1,5 +1,5 @@
 // Минимум v2 — service worker. Формат VERSION строго minimum-vN: страница v50 читает номер регуляркой.
-const VERSION = 'minimum-v51';
+const VERSION = 'minimum-v52';
 const ASSETS = [
   './',
   './index.html',
@@ -7,6 +7,7 @@ const ASSETS = [
   './app.js',
   './domain.js',
   './store.js',
+  './icons.js',
   './manifest.json',
   './icon-180.png',
   './icon-192.png',
