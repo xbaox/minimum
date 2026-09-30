@@ -8,12 +8,13 @@ const ROOT = new URL('../', import.meta.url);
 const SRC = readFileSync(new URL('sw.js', ROOT), 'utf8');
 const SCOPE = 'https://xbaox.github.io/minimum/';
 
-function loadSW(cacheNames = []) {
+function loadSW(cacheNames = [], { online = false } = {}) {
   const handlers = {};
   const calls = { skipWaiting: 0, claim: 0, deleted: [], added: [] };
   const store = new Map(cacheNames.map(n => [n, new Map()]));
   const cacheObj = name => ({
     addAll: async reqs => { calls.added.push(...reqs); for (const r of reqs) store.get(name).set(new URL(r.url, SCOPE).href, 'cached:' + r.url); },
+    put: async (req, res) => { store.get(name).set(new URL(req.url, SCOPE).href, res.body); },
     match: async (req, opts) => {
       let url = new URL(typeof req === 'string' ? req : req.url, SCOPE);
       if (opts?.ignoreSearch) url.search = '';
@@ -33,7 +34,11 @@ function loadSW(cacheNames = []) {
       delete: async n => { calls.deleted.push(n); return store.delete(n); },
     },
     Request: class { constructor(url, init) { this.url = url; this.cache = init?.cache; } },
-    fetch: async () => { throw new TypeError('offline'); },
+    fetch: async req => {
+      if (!online) throw new TypeError('offline');
+      const res = { ok: true, body: 'net:' + req.url };
+      return { ...res, clone: () => res };
+    },
     URL,
   };
   vm.createContext(ctx);
@@ -102,4 +107,18 @@ test('cache-first, навигация без сети — index.html, чужой
   await assert.rejects(respond(get(SCOPE + 'nope.js')));
   assert.equal(await respond(get('https://xbaox.github.io/oborot/app.js')), undefined);
   assert.equal(await respond({ ...get(SCOPE + 'app.js'), method: 'POST' }), undefined);
+});
+
+test('кэш стёрли соседи — промахи докладываются обратно, офлайн возвращается', async () => {
+  const sw = loadSW([], { online: true });
+  const respond = req => new Promise(ok => {
+    const waits = [];
+    sw.fire('fetch', { request: req, waitUntil: p => waits.push(p), respondWith: p => p.then(r => Promise.all(waits).then(() => ok(r))) });
+  });
+  const res = await respond({ url: SCOPE + 'app.js', method: 'GET', mode: 'no-cors' });
+  assert.equal(res.body, 'net:' + SCOPE + 'app.js');
+  assert.equal(sw.store.get(sw.VERSION).get(SCOPE + 'app.js'), 'net:' + SCOPE + 'app.js');
+  await respond({ url: SCOPE, method: 'GET', mode: 'navigate' });
+  assert.equal(sw.calls.added.length, sw.ASSETS.length); // навигация без кэша перекладывает всё
+  assert.ok(sw.store.get(sw.VERSION).get(SCOPE + 'index.html'));
 });

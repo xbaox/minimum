@@ -97,14 +97,17 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function toast(msg) {
     ui.toast = msg;
     win.clearTimeout(toastTimer);
+    // Убираем полосу без перерисовки: не сбивать фокус, если владелец уже печатает в листе.
     toastTimer = win.setTimeout(() => {
       ui.toast = '';
-      render();
+      root.querySelector('.bar-toast')?.remove();
     }, 2200);
   }
 
   function render() {
-    today = D.logicalDate(now());
+    const day = D.logicalDate(now());
+    if (today && day !== today) Object.assign(ui, { sleepEdit: false, yOpen: false });
+    today = day;
     if (D.syncToday(S, today)) save();
     const panel = root.querySelector('.sheet-panel');
     const keep = panel && !ui.fresh ? panel.scrollTop : 0;
@@ -128,7 +131,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   }
 
   function openTab(id) {
-    Object.assign(ui, { tab: id, ask: null, resetArmed: false, dataMsg: '', updMsg: '' });
+    Object.assign(ui, { tab: id, ask: null, resetArmed: false, dataMsg: '', updMsg: '', sleepEdit: false });
     render();
     doc.documentElement.scrollTop = 0;
   }
@@ -221,6 +224,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const n = S.sleep.nights[date] || {};
     const step = D.targetFor(S, date), wake = S.sleep.goalWake;
     const set = (field, v) => {
+      if (stale()) return;
       D.setNight(S, date, field, v);
       const m = S.sleep.nights[date];
       if (m?.bed && m?.wake) ui.sleepEdit = false;
@@ -323,7 +327,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('button', {
         class: 'btn btn-primary btn-wide', disabled: !opt,
         onclick: () => {
-          if (!D.closeWeek(S, W, dr, sh.choice, today, now().toISOString())) return;
+          if (stale() || !D.closeWeek(S, W, dr, sh.choice, today, now().toISOString())) return;
           ui.sheet = null;
           toast('Неделя закрыта');
           commit();
@@ -620,19 +624,26 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const ch = new win.MessageChannel();
     ch.port1.onmessage = e => {
       const m = /^minimum-(v\d+)$/.exec(e.data?.version || '');
-      if (m) { ui.version = m[1]; render(); }
+      if (m && m[1] !== ui.version) {
+        ui.version = m[1];
+        if (ui.tab === 'settings' && !ui.sheet) render();
+      }
     };
     c.postMessage({ type: 'version' }, [ch.port2]);
   }
 
   function watchUpdate() {
-    const sw = win.navigator.serviceWorker;
-    const check = () => { if (reg.waiting && sw.controller && !ui.update) { ui.update = true; render(); } };
-    reg.addEventListener('updatefound', () => {
-      const w = reg.installing;
-      w?.addEventListener('statechange', () => w.state === 'installed' && check());
-    });
-    check();
+    const track = w => w?.addEventListener('statechange', () => w.state === 'installed' && checkWaiting());
+    reg.addEventListener('updatefound', () => track(reg.installing));
+    track(reg.installing); // проверка при навигации могла начаться до регистрации слушателя
+    checkWaiting();
+  }
+
+  function checkWaiting() {
+    if (reg?.waiting && win.navigator.serviceWorker.controller && !ui.update) {
+      ui.update = true;
+      render();
+    }
   }
 
   function applyUpdate() {
@@ -648,6 +659,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     try {
       await reg.update();
       lastCheck = Date.now();
+      checkWaiting();
       ui.updMsg = reg.installing || reg.waiting ? 'Нашлась новая версия — внизу появится «Обновить»' : 'Установлена последняя версия';
     } catch {
       ui.updMsg = 'Нет связи — попробуй позже';
@@ -667,6 +679,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     }
     watchUpdate();
     askVersion();
+    reg.update().catch(() => {});
   }
 
   doc.addEventListener('visibilitychange', () => {

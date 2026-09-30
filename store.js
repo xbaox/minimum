@@ -127,6 +127,10 @@ export function createStore({ ls, idb, today, onSaveError = () => {} }) {
       } catch {
         ok = false;
         onSaveError();
+        // Старую копию убираем: иначе при следующем старте она победит более свежее зеркало.
+        try {
+          ls.removeItem(KEY);
+        } catch {}
       }
       clearTimeout(timer);
       timer = setTimeout(flushMirror, MIRROR_DELAY);

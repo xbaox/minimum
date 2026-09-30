@@ -238,8 +238,8 @@ test('предложение: |E| = 0 → только «Оставить», м�
 
 test('предложение: не раньше цели и не позже 03:00', () => {
   let p = D.proposal(sleepWeek(7, '2026-09-01', '23:45'), MON, SUN);
-  assert.deepEqual(opts(p), ['earlier30:23:30', 'keep:23:45']);
-  assert.equal(p.recommended, 'earlier30');
+  assert.deepEqual(opts(p), ['earlier15:23:30', 'keep:23:45']);
+  assert.equal(p.recommended, 'earlier15');
   p = D.proposal(sleepWeek(7, '2026-09-01', '23:30'), MON, SUN);
   assert.equal(p.atGoal, true);
   assert.deepEqual(opts(p), ['keep:23:30']);

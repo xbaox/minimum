@@ -329,6 +329,12 @@ export function proposal(s, monday, today) {
     keep: from,
     later15: f >= latest ? from : fmtTime(Math.min(latest, f + 15)),
   };
+  // У цели «−30» и «−15» совпали — оставляем честное «−15».
+  if (to.earlier30 === to.earlier15 && opts.includes('earlier30')) {
+    opts = opts.filter(c => c !== 'earlier30');
+    if (!opts.includes('earlier15')) opts.unshift('earlier15');
+    if (rec === 'earlier30') rec = 'earlier15';
+  }
   // Упёрлись в границу — одинаковое время даёт одну кнопку, первую по порядку.
   const options = [];
   for (const c of opts) {

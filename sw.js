@@ -43,8 +43,12 @@ self.addEventListener('fetch', e => {
     const cache = await caches.open(VERSION);
     const hit = await cache.match(req, { ignoreSearch: nav });
     if (hit) return hit;
+    // Промах — кэш могли стереть соседние PWA домена: докладываем, чтобы офлайн вернулся сам.
+    if (nav) e.waitUntil(cache.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' }))).catch(() => {}));
     try {
-      return await fetch(req);
+      const res = await fetch(req);
+      if (res.ok && !nav) e.waitUntil(cache.put(req, res.clone()).catch(() => {}));
+      return res;
     } catch (err) {
       const page = nav && (await cache.match('./index.html'));
       if (page) return page;
