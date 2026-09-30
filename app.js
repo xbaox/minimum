@@ -44,6 +44,8 @@ const plural = (n, [one, few, many]) => {
 };
 const clock = t => t.replace(/^0(?=\d:)/, ''); // 07:30 → 7:30
 const tint = c => `--item:var(--c-${c});--bar:var(--b-${c})`;
+// Название пункта внутри фразы: «Телефон на кухню» → «телефон на кухню», но «ЕГЭ» и «iPhone» не трогаем.
+const lcFirst = s => (/^\p{Lu}\p{Ll}/u.test(s) ? s[0].toLocaleLowerCase('ru') + s.slice(1) : s);
 
 export async function boot({ win = window, now = () => new Date(), idb = win.indexedDB } = {}) {
   const doc = win.document;
@@ -123,7 +125,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     { kind: 'sun', f: r.min }, { kind: 'sleep', f: r.sleep ? 1 : 0 }, w && { kind: 'train', f: r.week ? 1 : 0 },
   ].filter(Boolean), r.min == null ? `${day}: нет данных` : [
     `${day}: минимум ${Math.round(r.min * 100)}%`, r.sleep == null ? 'сон не отмечен' : r.sleep ? 'сон в цель' : 'сон позже шага',
-    w && (r.week ? `${w.name.toLowerCase()} — да` : `${w.name.toLowerCase()} — нет`),
+    w && (r.week ? `${lcFirst(w.name)} — да` : `${lcFirst(w.name)} — нет`),
   ].filter(Boolean).join(', '));
 
   const save = () => store.save(S);
@@ -338,7 +340,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         gl(ICONS.moon[1]),
         h('span', { class: 'sl' },
           h('span', { class: 'sl1' }, h('b', {}, `Отбой ${step}`), h('span', { class: 't2' }, atGoal ? ' · цель достигнута' : ` · цель ${goal}`)),
-          h('span', { class: 'sl2' }, [phone && `${phone.name.toLowerCase()} до${NB}${D.deadline(step, phone.beforeBed)}`, `подъём ${wake}`].filter(Boolean).join(' · ')),
+          h('span', { class: 'sl2' }, [phone && `${lcFirst(phone.name)} до${NB}${D.deadline(step, phone.beforeBed)}`, `подъём ${wake}`].filter(Boolean).join(' · ')),
           last)));
   }
 
@@ -462,7 +464,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
     const optSub = o => o.choice === 'keep'
       ? `отбой ${o.to} ещё на неделю`
-      : `отбой ${o.to}` + (phone ? ` · ${phone.name.toLowerCase()} до${NB}${D.deadline(o.to, phone.beforeBed)}` : '');
+      : `отбой ${o.to}` + (phone ? ` · ${lcFirst(phone.name)} до${NB}${D.deadline(o.to, phone.beforeBed)}` : '');
     const footer = opt
       ? opt.to === p.from
         ? `Отбой остаётся ${p.from}.`
@@ -477,7 +479,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         h('div', { class: 'stats' },
           h('p', { class: 'stat' }, h('b', {}, `${sum.closed} из ${sum.total}`), h('span', {}, 'дней закрыто')),
           h('p', { class: 'stat' }, h('b', {}, String(D.history(S, today).streak)), h('span', {}, 'серия')),
-          w && h('p', { class: 'stat' }, h('b', {}, `${wc} из ${w.perWeek}`), h('span', {}, w.name.toLowerCase())))),
+          w && h('p', { class: 'stat' }, h('b', {}, `${wc} из ${w.perWeek}`), h('span', {}, lcFirst(w.name))))),
       sum.missingNights.length > 0 && [
         secH('Ночи по памяти'),
         h('div', { class: 'stack stack-tight' }, sum.missingNights.map(d => h('section', { class: 'group sleep-card' },
@@ -649,7 +651,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           h('span', { class: 'wr-label' + (d === today ? ' today' : ''), 'aria-hidden': 'true' }, WDL[i]), miniRings(D.dayRings(S, d, today), w, WEEKDAYS[i])))),
         h('div', { class: 'dots-legend' },
           h('span', {}, h('i', { class: 'lg-dot min' }), 'минимум'), h('span', {}, h('i', { class: 'lg-dot' }), 'сон в цель'),
-          w && h('span', {}, h('i', { class: 'lg-dot train' }), w.name.toLowerCase()))),
+          w && h('span', {}, h('i', { class: 'lg-dot train' }), lcFirst(w.name)))),
       secH(`Сон · 14${NB}ночей`),
       sleepSection(),
       secH('Пункты · 4 недели'),

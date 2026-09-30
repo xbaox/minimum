@@ -124,6 +124,19 @@ test('у «Телефон на кухню» дедлайн от шага: до 0
   a.done();
 });
 
+test('название пункта внутри фразы: строчная первая буква, аббревиатуры не трогаем', async () => {
+  const a = await start(WED);
+  const S = a.app.state;
+  assert.match(a.text(), /телефон на кухню до 00:30/);
+  S.items.find(i => i.beforeBed).name = 'iPhone на кухню';
+  S.weekly[0].name = 'ЕГЭ-тренировка';
+  a.app.render();
+  assert.match(a.text(), /iPhone на кухню до 00:30/);
+  a.click('Прогресс', '.tab');
+  assert.match(a.doc.querySelector('.dots-legend').textContent, /ЕГЭ-тренировка/);
+  a.done();
+});
+
 test('герой: кольца минимума, сна и тренировок', async () => {
   const a = await start(WED);
   const S = a.app.state;
