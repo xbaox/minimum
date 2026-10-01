@@ -561,6 +561,28 @@ test('итоги: незаполненные ночи дозаполняются
   a.done();
 });
 
+test('итоги: выбранный шаг сна или «Notes разобраны» — тоже начатый разбор, тап мимо переспрашивает', async () => {
+  const a = await start(WED);
+  a.t.now = new Date(2026, 9, 4, 20, 0);
+  a.app.render();
+  a.click('Итоги недели', '.banner button');
+  a.sheet().querySelector('.opt').click();
+  a.doc.querySelector('.sheet-back').click();
+  assert.match(sp(a.alertBox().textContent), /Закрыть без сохранения\?/);
+  a.alertBtn('Отмена');
+  a.sheet().querySelector('.opt[aria-pressed="true"]').click(); // выбор остался
+  assert.ok(a.sheet());
+  a.done();
+  const b = await start(WED);
+  b.t.now = new Date(2026, 9, 4, 20, 0);
+  b.app.render();
+  b.click('Итоги недели', '.banner button');
+  b.sheet().querySelector('.switch-row').click();
+  b.doc.querySelector('.sheet-back').click();
+  assert.match(sp(b.alertBox().textContent), /Закрыть без сохранения\?/);
+  b.done();
+});
+
 test('Настройки: добавить (11-й — переспрос), переименовать, ↑↓, убрать и вернуть', async () => {
   const a = await start(WED);
   a.click('Настройки', '.tab');

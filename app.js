@@ -391,7 +391,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function sheetDirty() {
     const sh = ui.sheet;
     if (!sh) return false;
-    if (sh.kind === 'review') return ['good', 'bad', 'learned', 'improvement'].some(k => sh.draft[k].trim());
+    if (sh.kind === 'review') return !!sh.choice || sh.draft.notesDone || ['good', 'bad', 'learned', 'improvement'].some(k => sh.draft[k].trim());
     if (sh.kind === 'item') return JSON.stringify(sh.draft) !== sh.orig;
     return false;
   }
