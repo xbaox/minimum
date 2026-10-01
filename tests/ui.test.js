@@ -341,6 +341,20 @@ test('после удержания, чей клик съел фильтр, кл
   close();
 });
 
+test('палец держат дольше 2 с — клик при отпускании всё равно глотается', async () => {
+  const { M, root, win, close } = env();
+  const got = [];
+  M.patch(root, [M.h('button', { key: 'r', ...M.holdable(() => got.push('tap'), () => got.push('hold'), 20) }, 'строка'),
+    M.h('button', { key: 's', onclick: () => got.push('лист') }, 'лист под пальцем')]);
+  const [row, other] = root.querySelectorAll('button');
+  row.dispatchEvent(new win.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  await new Promise(r => setTimeout(r, 2100));
+  other.dispatchEvent(new win.MouseEvent('pointerup', { bubbles: true, button: 0 }));
+  other.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+  assert.deepEqual(got, ['hold']);
+  close();
+});
+
 test('перерисовка не снимает класс удержания и стиль, выставленный скриптом', () => {
   const { M, root, win, close } = env();
   const view = () => [M.h('button', { key: 'r', class: 'row', ...M.holdable(() => {}, () => {}, 5000) }, 'строка'), M.h('textarea', { key: 't', value: '' })];

@@ -365,7 +365,8 @@ export function createDOM(win) {
 
   // Короткое касание — onTap, удержание 450 мс — onHold (и отклик). Сдвиг пальца или прокрутка отменяют удержание.
   // После удержания палец отпускают уже над открывшимся листом: iOS может «кликнуть» туда.
-  // Такой клик глотаем — до следующего касания, 350 мс после отпускания или 1,5 с в худшем случае.
+  // Такой клик глотаем — до следующего касания или 350 мс после отпускания (палец могут держать долго);
+  // 10 с — на случай, если отпускания так и не пришло.
   let swallowing = false;
   function swallowNextClick() {
     if (swallowing) return;
@@ -382,6 +383,7 @@ export function createDOM(win) {
       doc.removeEventListener('click', eat, true);
       doc.removeEventListener('pointerdown', off, true);
       doc.removeEventListener('pointerup', later, true);
+      doc.removeEventListener('pointercancel', later, true);
     };
     const later = () => {
       win.clearTimeout(t);
@@ -390,7 +392,8 @@ export function createDOM(win) {
     doc.addEventListener('click', eat, true);
     doc.addEventListener('pointerdown', off, true);
     doc.addEventListener('pointerup', later, true);
-    t = win.setTimeout(off, 1500);
+    doc.addEventListener('pointercancel', later, true);
+    t = win.setTimeout(off, 10000);
   }
 
   function holdable(onTap, onHold, ms = 450) {
