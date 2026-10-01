@@ -339,7 +339,7 @@ test('нормализация: битые поля → по умолчанию,
   assert.deepEqual(n.days, { '2026-09-02': { plan: ['i1'], done: [] } });
   assert.deepEqual(n.sleep.nights, { '2026-09-03': { wake: '07:30' } });
   assert.deepEqual(n.sleep.targets, [{ from: '2026-09-01', bed: '01:00' }]);
-  assert.deepEqual(n.ui, { welcomeSeen: false });
+  assert.deepEqual(n.ui, { welcomeSeen: false, news: '', lastExport: '' });
   assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(n)), '2026-09-10'), n);
   assert.equal(D.normalize({ schema: 2, items: [], weekly: [], sleep: {} }), null);
   assert.equal(D.normalize([]), null);
@@ -404,4 +404,71 @@ test('кольца дня: минимум, ночь, первый недельн
   s.weekly[0].archivedAt = '2026-09-30';
   assert.equal(D.firstWeekly(s), null);
   assert.equal(D.dayRings(s, '2026-09-29', '2026-09-30').week, null);
+});
+
+test('ui: новости и дата экспорта переживают нормализацию, мусор — нет', () => {
+  const s = mk('2026-09-01');
+  s.ui = { welcomeSeen: true, news: 'v53', lastExport: '2026-09-20', junk: 1 };
+  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: 'v53', lastExport: '2026-09-20' });
+  s.ui = { welcomeSeen: true, news: 5, lastExport: '2026-02-30' };
+  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: '', lastExport: '' });
+});
+
+test('время до отбоя: шкала ночи, через полночь', () => {
+  const at = (h, m) => new Date(2026, 9, 1, h, m);
+  assert.equal(D.nowNorm(at(21, 0)), 1260);
+  assert.equal(D.nowNorm(at(0, 40)), 1480);
+  assert.equal(D.untilMin(at(21, 0), '01:00'), 240);
+  assert.equal(D.untilMin(at(0, 20), '00:30'), 10);
+  assert.equal(D.untilMin(at(0, 40), '00:30'), -10);
+  assert.equal(D.untilMin(at(23, 50), '23:30'), -20);
+});
+
+test('круглые даты серии', () => {
+  for (const n of [3, 7, 14, 21, 30, 50, 66, 100, 150, 200]) assert.ok(D.isMilestone(n), n);
+  for (const n of [0, 1, 2, 8, 65, 101, 120]) assert.ok(!D.isMilestone(n), n);
+});
+
+test('пункт: статус по дням, серия «не пропускай дважды», рекорд, доля, сетка 6 недель', () => {
+  const s = mk('2026-09-01');
+  const [a, b] = D.activeIds(s);
+  const today = '2026-09-17';
+  const mark = (d, ids) => { s.days[d] = { plan: D.activeIds(s), done: ids }; };
+  // 01 — посев (не отмечен → none), 02–05 сделан, 06 пропуск, 07–09 сделан, 10–11 пропуски, 12–16 сделан, 17 — сегодня
+  for (const d of D.range('2026-09-02', '2026-09-16')) mark(d, [a]);
+  for (const d of ['2026-09-06', '2026-09-10', '2026-09-11']) mark(d, [b]);
+  assert.equal(D.itemStatus(s, a, '2026-09-01', today), 'none');
+  assert.equal(D.itemStatus(s, a, '2026-09-06', today), 'miss');
+  assert.equal(D.itemStatus(s, a, today, today), 'pending');
+  assert.equal(D.itemStatus(s, b, '2026-09-06', today), 'closed');
+  const st = D.itemStats(s, a, today);
+  assert.equal(st.weekly, false);
+  assert.equal(st.best, 7); // 02–09: 4 + прощённый пропуск + 3
+  assert.equal(st.streak, 5); // после двух пропусков подряд — с нуля: 12–16
+  assert.equal(st.cells.length, 42);
+  assert.equal(st.cells[0].date, '2026-08-10'); // пн за 5 недель до текущей
+  assert.equal(st.cells.find(c => c.date === '2026-09-06').st, 'miss');
+  assert.equal(st.cells.find(c => c.date === '2026-09-08').st, 'done');
+  assert.equal(st.cells.find(c => c.date === today).st, 'pending');
+  assert.equal(st.cells.find(c => c.date === '2026-09-20').st, 'future');
+  assert.equal(st.cells.find(c => c.date === '2026-08-31').st, 'off'); // до посева
+  assert.equal(st.planned, 16); // 01–16
+  assert.equal(st.done, 12);
+  // отметка сегодня продлевает серию
+  mark(today, [a]);
+  assert.equal(D.itemStats(s, a, today).streak, 6);
+  assert.equal(D.itemStats(s, 'нет такого', today), null);
+});
+
+test('недельный счётчик: эта неделя, 8 недель, завершённые недели в цель', () => {
+  const s = mk('2026-09-01'); // вт; неделя посева — с 31 августа
+  const w = s.weekly[0].id;
+  for (const d of ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-08', '2026-09-15', '2026-09-16', '2026-09-17', '2026-09-22']) D.toggleWeekMark(s, w, d);
+  const st = D.itemStats(s, w, '2026-09-23');
+  assert.equal(st.weekly, true);
+  assert.equal(st.thisWeek, 1);
+  assert.equal(st.weeks.length, 8);
+  assert.deepEqual(st.weeks.slice(-4).map(x => x.count), [3, 1, 3, 1]);
+  assert.equal(st.pastWeeks, 3); // 31.08, 07.09, 14.09
+  assert.equal(st.goalWeeks, 2);
 });

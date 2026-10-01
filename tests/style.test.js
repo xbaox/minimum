@@ -92,4 +92,35 @@ test('поля ввода ≥ 16 px, цели касания ≥ 44 px, стро
     assert.match(CSS, new RegExp(`\\.${cls}\\s*\\{[^}]*font-size:\\s*var\\(--fs-body\\)`), cls);
   assert.match(CSS, /\.row\s*\{[^}]*min-height:\s*var\(--row-h\)/);
   assert.match(CSS, /\.chip::after\s*\{[^}]*inset:/);
+  assert.ok(parseInt(light['row-rate']) >= 44, 'строка пункта на «Прогрессе»');
+  assert.ok(parseInt(light.chain) + 2 * parseInt(light.u4) >= 44 && parseInt(light['chain-gap']) >= 2 * parseInt(light.u4), 'клетка цепи с зоной касания');
+  // inset ::after считается от внутреннего края рамки: у каждой рамки клетки — своя поправка
+  assert.match(CSS, /button\.cell::after\s*\{[^}]*inset:\s*calc\(\(var\(--u4\) \+ var\(--hair\)\) \* -1\)/);
+  assert.match(CSS, /button\.cell\.forgiven::after\s*\{[^}]*inset:\s*calc\(\(var\(--u4\) \+ var\(--bw\)\) \* -1\)/);
+  assert.match(CSS, /button\.cell\.closed::after, button\.cell\.break::after\s*\{[^}]*inset:\s*calc\(var\(--u4\) \* -1\)/);
+});
+
+test('движение в CSS: переходы только по transform, opacity, stroke-dashoffset и цветам; без @keyframes', () => {
+  const ok = new Set(['transform', 'opacity', 'stroke-dashoffset', 'color', 'background-color', 'border-color']);
+  const decls = [...noComments.matchAll(/(?:^|[;{\s])transition(?:-property)?\s*:\s*([^;}]+)/g)].map(m => m[1].trim());
+  assert.ok(decls.length > 10);
+  for (const d of decls) {
+    if (d === 'none !important') continue;
+    for (const part of d.split(/,(?![^(]*\))/)) {
+      const prop = part.trim().split(/\s+/)[0];
+      assert.ok(ok.has(prop), `переход по «${prop}»: ${d}`);
+    }
+  }
+  assert.doesNotMatch(noComments, /@keyframes/);
+  assert.doesNotMatch(noComments.replace(/animation:\s*none\s*!important/g, ''), /(^|[;{\s])animation(-name)?\s*:/);
+  assert.match(noComments, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test('закрытый день: белый текст на всём закате ≥ 4.5:1', () => {
+  for (const [name, t] of themes) {
+    assert.equal(t['on-sun'].toUpperCase(), '#FFFFFF');
+    for (const k of ['sunset-1', 'sunset-2', 'sunset-3']) need(t, 'on-sun', k, 4.5, name + ' ' + k);
+    need(t, 'on-sun', mix(t['sunset-1'], t['sunset-2'], 0.5), 4.5, name + ' середина');
+    need(t, 'on-sun', mix(t['sunset-2'], t['sunset-3'], 0.5), 4.5, name + ' середина 2');
+  }
 });

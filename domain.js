@@ -10,6 +10,9 @@ export const COLORS = ['red', 'orange', 'yellow', 'green', 'mint', 'teal', 'blue
 export const DEFAULT_COLOR = 'blue';
 export const LATEST_BED = '03:00';
 export const CHOICES = ['earlier30', 'earlier15', 'keep', 'later15'];
+// Круглые даты серии — праздник закрытия дня чуть больше. 66 — средний срок, за который действие становится привычкой.
+export const MILESTONES = [3, 7, 14, 21, 30, 50, 66, 100];
+export const isMilestone = n => MILESTONES.includes(n) || (n > 100 && n % 50 === 0);
 
 // ---------- даты: календарная арифметика по YYYY-MM-DD через UTC, переходы времени не сдвигают дни
 
@@ -54,6 +57,13 @@ export const fmtTime = m => {
 };
 export const shiftTime = (t, d) => fmtTime(toMin(t) + d);
 export const deadline = (step, before) => shiftTime(step, -before);
+// Минуты «сейчас» в шкале norm(): после полуночи — продолжение вечера.
+export const nowNorm = d => {
+  const m = d.getHours() * 60 + d.getMinutes();
+  return m < 720 ? m + 1440 : m;
+};
+// Сколько минут до HH:MM этой ночью (меньше нуля — уже прошло).
+export const untilMin = (d, t) => norm(t) - nowNorm(d);
 
 // ---------- пункты
 
@@ -91,7 +101,7 @@ export function seed(today, id = makeId) {
     weekMarks: {},
     sleep: { goalBed: '23:30', goalWake: '07:30', targets: [{ from: today, bed: '01:00' }], nights: {} },
     reviews: {},
-    ui: { welcomeSeen: false },
+    ui: { welcomeSeen: false, news: '', lastExport: '' },
   };
 }
 
@@ -211,13 +221,12 @@ export function toggleDone(s, date, id, today) {
 
 // ---------- серия: «не пропускай дважды»
 
-// Проход вперёд от createdAt. Даёт текущую серию, рекорд и метку дня для цепи:
+// Проход вперёд по [дата, статус]. Даёт текущую серию, рекорд и метку дня для цепи:
 // closed | forgiven (одиночный пропуск) | break (два подряд) | pending | none.
-export function history(s, today) {
+function walkStreak(entries) {
   const marks = {};
   let run = 0, best = 0, misses = 0, firstMiss = null;
-  for (const d of range(s.createdAt, today)) {
-    const st = status(s, d, today);
+  for (const [d, st] of entries) {
     if (st === 'closed') {
       run++;
       misses = 0;
@@ -236,6 +245,16 @@ export function history(s, today) {
     } else marks[d] = st;
   }
   return { streak: run, best, marks };
+}
+
+export const history = (s, today) => walkStreak(range(s.createdAt, today).map(d => [d, status(s, d, today)]));
+
+// Статус одного пункта в день — по тем же правилам, что и статус дня.
+export function itemStatus(s, id, date, today) {
+  if (date < s.createdAt || date > today || !planOf(s, date, today).includes(id)) return 'none';
+  if (doneOf(s, date).includes(id)) return 'closed';
+  if (date === today) return 'pending';
+  return date === s.createdAt ? 'none' : 'miss';
 }
 
 // ---------- недельные счётчики
@@ -426,6 +445,38 @@ export function dayRings(s, date, today) {
   };
 }
 
+// Детали пункта. Ежедневный: серия и рекорд по правилу «не пропускай дважды», доля за 28 дней,
+// сетка 6 недель (пн–вс) — done | miss | pending | off | future.
+// Недельный: счёт этой недели и 8 недель, сколько завершённых недель в цель.
+export function itemStats(s, id, today) {
+  const item = findItem(s, id);
+  if (!item) return null;
+  const cur = weekStart(today);
+  if (s.weekly.includes(item)) {
+    const weeks = Array.from({ length: 8 }, (_, i) => addDays(cur, -7 * (7 - i)))
+      .map(monday => ({ monday, count: weekCount(s, id, monday) }));
+    const done = weeks.filter(w => w.monday < cur && w.monday >= weekStart(s.createdAt));
+    return {
+      weekly: true,
+      thisWeek: weekCount(s, id, today),
+      weeks,
+      goalWeeks: done.filter(w => w.count >= item.perWeek).length,
+      pastWeeks: done.length,
+    };
+  }
+  const h = walkStreak(range(s.createdAt, today).map(d => [d, itemStatus(s, id, d, today)]));
+  const MAP = { closed: 'done', miss: 'miss', pending: 'pending', none: 'off' };
+  const cells = range(addDays(cur, -35), addDays(cur, 6))
+    .map(d => ({ date: d, st: d > today ? 'future' : MAP[itemStatus(s, id, d, today)] }));
+  let planned = 0, done = 0;
+  for (const d of range(maxD(addDays(today, -28), s.createdAt), addDays(today, -1))) {
+    if (!planOf(s, d, today).includes(id)) continue;
+    planned++;
+    if (doneOf(s, d).includes(id)) done++;
+  }
+  return { weekly: false, streak: h.streak, best: h.best, planned, done, rate: planned ? done / planned : null, cells };
+}
+
 // Доля выполнения каждого активного пункта за 28 дней до сегодня — по дням, где он был в плане.
 export function itemRates(s, today) {
   const days = range(maxD(addDays(today, -28), s.createdAt), addDays(today, -1));
@@ -524,7 +575,11 @@ export function normalize(raw, today) {
       nights,
     },
     reviews,
-    ui: { welcomeSeen: raw.ui?.welcomeSeen === true },
+    ui: {
+      welcomeSeen: raw.ui?.welcomeSeen === true,
+      news: str(raw.ui?.news, 16),
+      lastExport: isDate(raw.ui?.lastExport) ? raw.ui.lastExport : '',
+    },
   };
 }
 
