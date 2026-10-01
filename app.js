@@ -950,7 +950,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('div', { class: 'stats' },
         stat(String(st.streak), `${plural(st.streak, ['день', 'дня', 'дней'])} подряд`),
         stat(String(st.best), 'рекорд'),
-        stat(st.rate == null ? '—' : `${Math.round(st.rate * 100)}%`, 'за 4 недели')),
+        stat(st.rate == null ? '—' : `${Math.round(st.rate * 100)}%`, `за 4${NB}недели`)),
       h('div', { class: 'heat-wd', 'aria-hidden': 'true' }, WDL.map(l => h('span', {}, l))),
       h('div', { class: 'heat', style: tint(sh.draft.color), role: 'img', 'aria-label': `6 недель: сделано ${st.cells.filter(c => c.st === 'done').length} дней`, 'data-stagger': 'pop', 'data-step': '14' },
         st.cells.map((c, i) => h('span', { class: `hc hc-${c.st}` + (c.date === today ? ' hc-today' : ''), 'data-d': String((i % 7) + Math.floor(i / 7)) }))),

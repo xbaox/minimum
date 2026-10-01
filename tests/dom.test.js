@@ -561,6 +561,20 @@ test('итоги: незаполненные ночи дозаполняются
   a.done();
 });
 
+test('детали пункта: «за 4 недели» — с неразрывным пробелом', async () => {
+  const a = await start(WED);
+  a.app.state.items[0].addedAt = '2026-09-01';
+  a.app.render();
+  const row = a.doc.querySelector('.list-min .row');
+  row.dispatchEvent(new a.win.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  await new Promise(r => setTimeout(r, 520));
+  row.dispatchEvent(new a.win.MouseEvent('pointerup', { bubbles: true, button: 0 }));
+  assert.ok(a.sheet(), 'лист «Пункт» открылся');
+  assert.ok(a.sheet().textContent.includes('за 4\u00a0недели'));
+  assert.ok(!a.sheet().textContent.includes('за 4 недели'));
+  a.done();
+});
+
 test('итоги: выбранный шаг сна или «Notes разобраны» — тоже начатый разбор, тап мимо переспрашивает', async () => {
   const a = await start(WED);
   a.t.now = new Date(2026, 9, 4, 20, 0);
