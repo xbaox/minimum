@@ -423,7 +423,12 @@ export function createDOM(win) {
       onpointermove(e) {
         if (this.__ht && Math.hypot(e.clientX - this.__hx, e.clientY - this.__hy) > 10) stop(this);
       },
-      onpointerup() { stop(this); },
+      onpointerup() {
+        stop(this);
+        // На iPhone клик после удержания съедает фильтр документа и до строки не доходит — флаг снимаем сами,
+        // иначе следующий клик с клавиатуры или VoiceOver пропал бы.
+        if (this.__held) { const el = this; win.setTimeout(() => (el.__held = false), 350); }
+      },
       onpointercancel() { stop(this); },
       onpointerleave() { stop(this); },
       oncontextmenu(e) { e.preventDefault(); },

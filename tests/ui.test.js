@@ -324,6 +324,23 @@ test('после удержания клик в месте отпускания 
   close();
 });
 
+test('после удержания, чей клик съел фильтр, клавиатура и VoiceOver снова отмечают строку', async () => {
+  const { M, root, win, close } = env();
+  const got = [];
+  M.patch(root, [M.h('button', { key: 'r', ...M.holdable(() => got.push('tap'), () => got.push('hold'), 20) }, 'строка')]);
+  const row = root.querySelector('button');
+  const ptr = type => row.dispatchEvent(new win.MouseEvent(type, { bubbles: true, button: 0 }));
+  ptr('pointerdown');
+  await new Promise(r => setTimeout(r, 40));
+  ptr('pointerup');
+  row.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })); // iOS: съеден фильтром документа
+  assert.deepEqual(got, ['hold']);
+  await new Promise(r => setTimeout(r, 400));
+  row.click(); // клавиатура / VoiceOver (detail 0)
+  assert.deepEqual(got, ['hold', 'tap']);
+  close();
+});
+
 test('перерисовка не снимает класс удержания и стиль, выставленный скриптом', () => {
   const { M, root, win, close } = env();
   const view = () => [M.h('button', { key: 'r', class: 'row', ...M.holdable(() => {}, () => {}, 5000) }, 'строка'), M.h('textarea', { key: 't', value: '' })];
