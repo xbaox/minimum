@@ -122,3 +122,24 @@ test('кэш стёрли соседи — промахи докладывают
   assert.equal(sw.calls.added.length, sw.ASSETS.length); // навигация без кэша перекладывает всё
   assert.ok(sw.store.get(sw.VERSION).get(SCOPE + 'index.html'));
 });
+
+test('иконки: index.html и manifest.json ссылаются на существующие PNG нужного размера, без прозрачности', () => {
+  // IHDR: ширина и высота — байты 16–23, тип цвета — байт 25 (2 — RGB без альфы; iOS заливает прозрачное чёрным)
+  const png = f => {
+    const b = readFileSync(new URL(f, ROOT));
+    assert.equal(b.toString('latin1', 1, 4), 'PNG', f);
+    return { w: b.readUInt32BE(16), h: b.readUInt32BE(20), color: b[25] };
+  };
+  const html = readFileSync(new URL('index.html', ROOT), 'utf8');
+  const touch = /<link rel="apple-touch-icon" href="\.\/([^"]+)">/.exec(html)[1];
+  assert.deepEqual(png(touch), { w: 180, h: 180, color: 2 });
+  const fav = /<link rel="icon" href="\.\/([^"]+)">/.exec(html)[1];
+  assert.equal(png(fav).w, 192);
+  const { icons } = JSON.parse(readFileSync(new URL('manifest.json', ROOT), 'utf8'));
+  assert.equal(icons.length, 4);
+  for (const i of icons) {
+    const [w, h] = i.sizes.split('x').map(Number);
+    assert.deepEqual(png(i.src.replace('./', '')), { w, h, color: 2 }, i.src);
+  }
+  assert.deepEqual(icons.map(i => i.purpose).sort(), ['any', 'any', 'maskable', 'maskable']);
+});

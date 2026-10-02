@@ -10,11 +10,11 @@ const ASSETS = [
   './store.js',
   './icons.js',
   './manifest.json',
-  './icon-180.png',
-  './icon-192.png',
-  './icon-512.png',
-  './icon-192-maskable.png',
-  './icon-512-maskable.png',
+  './minimum-180.png',
+  './minimum-192.png',
+  './minimum-512.png',
+  './minimum-192-maskable.png',
+  './minimum-512-maskable.png',
 ];
 
 // Без skipWaiting: новая версия ждёт, пока владелец нажмёт «Обновить».
