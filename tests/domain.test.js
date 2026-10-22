@@ -63,7 +63,9 @@ test('шаблон валиден: 8 + 1, id уникальны, цвета из
   assert.equal(s.sleep.targets[0].bed, '01:00');
   assert.equal(s.sleep.goalBed, '23:30');
   assert.equal(s.sleep.goalWake, '07:30');
-  assert.equal(s.since, '2026-07-20');
+  assert.equal(s.since, '2026-09-30', 'новый телефон — «в системе» с сегодня');
+  assert.equal(D.seed('2026-09-30', undefined, '2026-07-20').since, '2026-07-20', 'сброс передаёт прежнюю дату');
+  assert.equal(D.seed('2026-09-30', undefined, 'мусор').since, '2026-09-30');
   assert.deepEqual(D.normalize(s, '2026-09-30'), s);
 });
 

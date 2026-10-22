@@ -6,6 +6,8 @@ import * as D from './domain.js';
 import { ICONS, ICON_GROUPS, UI as G } from './icons.js';
 import { createDOM, EASE } from './dom.js';
 import { createStore, requestPersist, shareOrDownload, parseImport } from './store.js';
+import { createCloud, CODE_RE, cleanCode, cleanName, NAME_MAX, CloudError } from './cloud.js';
+import { shareOf, readShare, summaryOf, changes, deviceZone, HIDDEN_NAME } from './share.js';
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const WEEKDAYS = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье'];
@@ -17,24 +19,50 @@ const HINTS = [
   'Книга в кровать вместо телефона',
   'Карнеги: 1 приём в день на живом человеке',
 ];
-const RULES = [
+const RULES = S => [
   'Минимум — пол, а не план. Одинаков каждый день.',
   'Не пропускай дважды.',
   'Среда сильнее силы воли: телефон — на кухне, учёба — за обеденным столом, кровать — для сна.',
   'Одно улучшение в неделю — 1%.',
   'План дня — в Напоминаниях, не здесь.',
-  'Сон — главное: отбой шагами к 23:30, подъём 7:30.',
+  `Сон — главное: отбой шагами к${NB}${S.sleep.goalBed}, подъём ${clock(S.sleep.goalWake)}.`,
 ];
 const CHOICE = { earlier30: 'Раньше на 30 минут', earlier15: 'Раньше на 15 минут', keep: 'Оставить', later15: 'Позже на 15 минут' };
+const TAB_FRIENDS = ['friends', 'Друзья', ICONS.people[1]];
 const TABS = [['today', 'Сегодня', G.tabToday], ['progress', 'Прогресс', G.tabProgress], ['settings', 'Настройки', G.tabSettings]];
-const WELCOME = `8${NB}пунктов, одинаковых каждый день. Отбой — шагами от 01:00 к${NB}23:30, решаешь на итогах недели. Старые данные стёрты.`;
-const NEWS_ID = 'v53';
+// Новичку — шаблон, который правится в Настройках; цифры — из его же состояния.
+const WELCOME = (n, step, goal) =>
+  `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках. Отбой — шагами от ${step} к${NB}${goal}, решаешь на итогах недели.`;
+// «Что нового» — про друзей; без настроенного сервера карточки нет.
+const NEWS_ID = 'v55';
 const NEWS = [
-  'Отметки, кольца и листы теперь живые, а закрытый день — праздник',
-  `Удержи пункт — откроются его серия и 6${NB}недель истории`,
-  'Тапни день в «Прогрессе» — увидишь, что в нём было',
-  'Лист закрывается свайпом вниз',
+  'Друзья: обменяйтесь кодами — и видно кольца, серию, сон и изменения друг друга',
+  'Отметки по-прежнему живут на телефоне; другу уходит только снимок прогресса',
+  'Разбор недели не уходит никогда, личный пункт можно скрыть — Настройки → Друзья',
 ];
+const CODE_LEN = 5;
+const FRIENDS_EVERY = 60e3;
+// Ответы сервера на «Добавить» — человеческими словами.
+const ADD_RESULT = {
+  sent: 'Запрос отправлен — когда друг примет, вы увидите прогресс друг друга',
+  friends: 'Теперь вы друзья',
+  pending: 'Запрос уже отправлен — ждём ответа',
+  already: 'Вы уже друзья',
+  self: 'Это твой код — нужен код друга',
+  not_found: 'Такого кода нет — проверь буквы и цифры',
+  limit: 'Слишком много друзей и запросов',
+  rate_limited: 'Слишком много попыток — попробуй через час',
+};
+const FAIL = {
+  offline: 'Нет связи с сервером — попробуй, когда появится интернет',
+  down: 'Сервер не отвечает — попробуй позже',
+  config: 'Сервер друзей не настроен',
+  full: 'Сервер друзей заполнен — попробуй позже',
+  lost: 'Профиль на сервере не найден — включи друзей заново',
+  rate_limited: 'Слишком много попыток — попробуй через час',
+  bad_name: 'Нужно имя',
+};
+const failText = e => FAIL[e instanceof CloudError ? e.kind : ''] || 'Что-то пошло не так — попробуй ещё раз';
 const DAY_STATUS = { closed: 'День закрыт', forgiven: 'Пропуск — прощён', break: 'Пропуск', pending: 'Идёт сейчас', none: 'Без минимума' };
 const CELL = { closed: 'закрыт', forgiven: 'пропуск прощён', break: 'пропуск', pending: 'сегодня', none: 'без отметок', future: '' };
 const BEFORE = [15, 30, 45, 60];
@@ -66,7 +94,8 @@ const ago = (from, to) => {
   return n <= 0 ? 'сегодня' : n === 1 ? 'вчера' : `${days(n)} назад`;
 };
 
-export async function boot({ win = window, now = () => new Date(), idb = win.indexedDB } = {}) {
+// cloud — подмена сервера друзей в тестах и превью: { url, key, fetch }.
+export async function boot({ win = window, now = () => new Date(), idb = win.indexedDB, cloud: cloudOpts = {} } = {}) {
   const doc = win.document;
   const root = doc.getElementById('app');
   const M = createDOM(win);
@@ -74,9 +103,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   const ui = {
     tab: 'today', sheet: null, alert: null, yOpen: false, sleepOpen: false, edit: false, revOpen: new Set(), chartSel: null,
     dataMsg: '', updMsg: '', toast: '', saveFailed: false, restored: false, update: false, version: '', scrolled: false, scroll: {}, alertClosing: false,
+    joinName: null, joinErr: '', busy: false,
   };
   let S, today, reg = null, reloading = false, lastCheck = Date.now(), closing = false, pendingTime = null;
-  let dayTimer, tickTimer, toastTimer, nightTimer;
+  let dayTimer, tickTimer, toastTimer, nightTimer, friendsTimer, cloudTimer;
 
   let ls;
   try {
@@ -87,6 +117,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   S = loaded.state;
   ui.restored = loaded.restored;
   requestPersist(win.navigator);
+  // Друзья: снимок прогресса уходит в Supabase; без адреса и ключа вкладки нет.
+  const cloud = createCloud({ win, idb, getState: () => S, now, onChange: () => cloudChanged(), ...cloudOpts });
+  const tabs = () => (cloud.enabled ? [TABS[0], TABS[1], TAB_FRIENDS, TABS[2]] : TABS);
 
   // ---------- мелкие детали разметки
 
@@ -141,7 +174,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     w && `${lcFirst(w.name)} — ${r.week ? 'да' : 'нет'}`,
   ].filter(Boolean).join(', '));
 
-  const save = () => store.save(S);
+  const save = () => {
+    const ok = store.save(S);
+    cloud.changed(); // друзья увидят — снимок уйдёт, когда отметки улягутся
+    return ok;
+  };
   const commit = () => {
     save();
     render();
@@ -207,7 +244,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     today = day;
     if (D.syncToday(S, today)) save();
     const modal = !!(ui.sheet || ui.alert);
-    const screen = ui.tab === 'today' ? todayScreen() : ui.tab === 'progress' ? progressScreen() : settingsScreen();
+    if (ui.tab === 'friends' && !cloud.enabled) ui.tab = 'today';
+    const screen = ui.tab === 'today' ? todayScreen() : ui.tab === 'progress' ? progressScreen() : ui.tab === 'friends' ? friendsScreen() : settingsScreen();
+    const asks = cloud.joined ? cloud.cache?.incoming.length || 0 : 0;
     const before = M.measure(root);
     const entered = M.patch(root, [
       defs(),
@@ -216,8 +255,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         ui.saveFailed && h('div', { key: 'warn', class: 'bar bar-warn', role: 'alert', 'data-enter': 'bar' }, 'Не удалось сохранить — сделай экспорт в Настройках'),
         ui.update && h('button', { key: 'update', class: 'bar bar-update', 'data-enter': 'bar', onclick: applyUpdate }, 'Доступна новая версия · ', h('b', {}, 'Обновить')),
         ui.toast && h('div', { key: 'toast', class: 'bar bar-toast', role: 'status', 'data-enter': 'bar' }, ui.toast)),
-      h('nav', { key: 'tabbar', class: 'tabbar', 'aria-label': 'Разделы', 'aria-hidden': modal ? 'true' : null, inert: modal }, TABS.map(([id, label, d]) =>
-        h('button', { key: id, class: 'tab', 'aria-current': ui.tab === id ? 'page' : null, onclick: () => openTab(id) }, gl(d), h('span', {}, label)))),
+      h('nav', { key: 'tabbar', class: 'tabbar', style: `--tabs:${tabs().length}`, 'aria-label': 'Разделы', 'aria-hidden': modal ? 'true' : null, inert: modal }, tabs().map(([id, label, d]) => {
+        const dot = id === 'friends' && asks > 0; // входящий запрос в друзья — точка на вкладке
+        return h('button', { key: id, class: 'tab', 'aria-current': ui.tab === id ? 'page' : null, 'aria-label': dot ? `${label}, есть запросы` : null, onclick: () => openTab(id) },
+          h('span', { class: 'tab-ic' }, gl(d), dot && h('i', { key: 'dot', class: 'tab-dot', 'data-enter': 'pop' })), h('span', {}, label));
+      })),
       ui.sheet && sheetView(),
       ui.alert && alertView(),
     ].filter(Boolean));
@@ -317,8 +359,12 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (id === ui.tab) return scrollY(0, true); // повторный тап — наверх
     const se = doc.scrollingElement || doc.documentElement;
     ui.scroll[ui.tab] = se.scrollTop;
-    Object.assign(ui, { tab: id, alert: null, edit: false, sleepOpen: false, dataMsg: '', updMsg: '', chartSel: null, scrolled: false });
+    Object.assign(ui, { tab: id, alert: null, edit: false, sleepOpen: false, dataMsg: '', updMsg: '', chartSel: null, scrolled: false, joinErr: '' });
     render();
+    if (id === 'friends') {
+      cloud.sync();
+      pollFriends();
+    } else win.clearTimeout(friendsTimer);
     scrollY(ui.scroll[id] || 0);
     updateScrolled(); // сразу, до первого кадра: панель не «догоняет» прокрутку
     M.anim(root.querySelector('.tab[aria-current] .gl'), [{ transform: 'scale(0.78)' }, { transform: 'scale(1.14)' }, { transform: 'none' }],
@@ -392,7 +438,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const sh = ui.sheet;
     if (!sh) return false;
     if (sh.kind === 'review') return !!sh.choice || sh.draft.notesDone || ['good', 'bad', 'learned', 'improvement'].some(k => sh.draft[k].trim());
-    if (sh.kind === 'item') return JSON.stringify(sh.draft) !== sh.orig;
+    if (sh.kind === 'item' || sh.kind === 'name') return JSON.stringify(sh.draft) !== sh.orig;
     return false;
   }
   function guardDirty() {
@@ -429,10 +475,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   }
 
   function todayScreen() {
-    const { streak } = D.history(S, today);
-    const { plan, k, n } = D.progress(S, today, today);
-    const done = D.doneOf(S, today);
-    const closed = n > 0 && k === n;
+    const sum = summaryOf(S, today);
+    const { plan, k, n, closed, streak } = sum;
     const y = D.addDays(today, -1);
     const step = D.stepTonight(S, today);
     const improvement = D.weekImprovement(S, today);
@@ -455,13 +499,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       ui.restored && h('p', { key: 'restored', class: 'group notice-card', 'data-flip': '' }, 'Данные восстановлены из резервной копии'),
       !S.ui.welcomeSeen && h('section', { key: 'welcome', class: 'group card-pad welcome', 'data-flip': '' },
         h('div', { class: 'welcome-head' }, tile('sparkles', 'pink'), h('p', { class: 'name strong' }, 'Новый минимум')),
-        h('p', {}, WELCOME),
+        h('p', {}, WELCOME(D.activeItems(S).length, D.stepTonight(S, today), S.sleep.goalBed)),
         h('button', { class: 'btn-text', onclick: e => leave(e.currentTarget.closest('.group'), () => { S.ui.welcomeSeen = true; S.ui.news = NEWS_ID; commit(); }) }, 'Понятно')),
-      S.ui.welcomeSeen && S.ui.news !== NEWS_ID && h('section', { key: 'news', class: 'group card-pad welcome', 'data-flip': '' },
+      S.ui.welcomeSeen && S.ui.news !== NEWS_ID && cloud.enabled && h('section', { key: 'news', class: 'group card-pad welcome', 'data-flip': '' },
         h('div', { class: 'welcome-head' }, tile('star', 'purple'), h('p', { class: 'name strong' }, 'Что нового')),
         h('ul', { class: 'news' }, NEWS.map(t => h('li', {}, t))),
         h('button', { class: 'btn-text', onclick: e => leave(e.currentTarget.closest('.group'), () => { S.ui.news = NEWS_ID; commit(); }) }, 'Понятно')),
-      hero({ plan, done, k, n, closed, step, card, streak }),
+      heroView(sum, { foot: sleepLine(step, card) }),
       D.status(S, y, today) === 'miss' && !closed && h('p', { key: 'miss', class: 'notice-line', 'data-flip': '' }, 'Вчера пропуск — сегодня не пропускай дважды'),
       card && sleepCard(),
       stack.length > 0 && h('div', { key: 'stack', class: 'stack', 'data-flip': '' }, stack),
@@ -469,7 +513,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       n > 0
         ? h('section', { key: 'list-min', class: 'group list-min', 'data-flip': '' }, plan.map(id => {
           const it = D.findItem(S, id);
-          return itemRow(it, done.includes(id), today, it.beforeBed ? `до${NB}${D.deadline(step, it.beforeBed)}` : '');
+          return itemRow(it, sum.done.includes(id), today, it.beforeBed ? `до${NB}${D.deadline(step, it.beforeBed)}` : '');
         }))
         : h('p', { key: 'empty', class: 'group empty', 'data-flip': '' }, 'Минимум пуст — добавь пункты в Настройках'),
       weekly.length > 0 && [secH('h-week', 'На неделе'), h('section', { key: 'list-week', class: 'group list-week', 'data-flip': '' }, weekly.map(weekRow))],
@@ -478,33 +522,31 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
   }
 
-  function hero({ plan, done, k, n, closed, step, card, streak }) {
-    const mon = D.weekStart(today);
-    const sh = D.sleepHits(S, D.knownMornings(S, mon, D.addDays(mon, 6), today));
-    const w = D.firstWeekly(S);
-    const wc = w ? D.weekCount(S, w.id, today) : 0;
-    const label = [`Минимум ${k} из ${n}`, sh.n ? `сон ${sh.k} из ${sh.n} в цель` : 'сон — нет данных',
+  // Герой дня: кольца, «k из n», легенда, полоса минимума и строка снизу (сон). Тот же герой — у друга:
+  // sum — summaryOf его состояния, sleep: false — друг скрыл сон, кольца сна нет.
+  function heroView(sum, { sleep = true, foot = null } = {}) {
+    const { plan, done, k, n, closed, streak, sh, w, wc } = sum;
+    const label = [`Минимум ${k} из ${n}`, sleep && (sh.n ? `сон ${sh.k} из ${sh.n} в цель` : 'сон — нет данных'),
       w && `${w.name} ${wc} из ${w.perWeek}`].filter(Boolean).join(', ');
     const sub = closed ? (D.isMilestone(streak) ? `Серия ${days(streak)}` : 'День закрыт') : n ? `минимум · осталось ${n - k}` : 'минимум пуст';
     return h('section', { key: 'hero', class: 'hero' + (closed ? ' closed' : ''), style: `--p:${n ? (k / n).toFixed(3) : 0}`, 'data-flip': '' },
       h('span', { class: 'hero-sun', 'aria-hidden': 'true' }),
       h('div', { class: 'hero-top' },
         rings('rings', 132, [57, 41, 25], 13, [
-          { kind: 'sun', f: n ? k / n : 0 }, { kind: 'sleep', f: sh.n ? sh.k / sh.n : 0 }, w && { kind: 'train', f: wc / w.perWeek },
+          { kind: 'sun', f: n ? k / n : 0 }, sleep && { kind: 'sleep', f: sh.n ? sh.k / sh.n : 0 }, w && { kind: 'train', f: wc / w.perWeek },
         ].filter(Boolean), label, true),
         h('div', { class: 'hero-info' },
           h('div', {},
             h('p', { class: 'count', 'data-roll': '' }, n ? `${k} из ${n}` : '—'),
             h('p', { class: 'count-sub', 'data-roll': '' }, sub)),
           h('div', { class: 'legend' },
-            h('p', { class: 'lg' }, h('span', { class: 'lg-dot' }), h('span', { class: 'lg-label' }, 'Сон'),
+            sleep && h('p', { class: 'lg' }, h('span', { class: 'lg-dot' }), h('span', { class: 'lg-label' }, 'Сон'),
               h('span', { class: 'lg-val roll', 'data-roll': '' }, sh.n ? `${sh.k}/${sh.n} в${NB}цель` : 'нет данных')),
             w && h('p', { class: 'lg' }, h('span', { class: 'lg-dot train' }), h('span', { class: 'lg-label' }, w.name),
               h('span', { class: 'lg-val roll', 'data-roll': '' }, `${wc}/${w.perWeek}`))))),
       n > 0 && h('div', { key: 'segs', class: 'segs', 'aria-hidden': 'true' }, plan.map((id, i) =>
         h('span', { key: id, class: 'seg' + (done.includes(id) ? ' on' : ''), style: `--i:${i};--n:${plan.length}` }, h('i', { class: 'seg-fill' })))),
-      h('div', { key: 'line', class: 'hero-line' }),
-      sleepLine(step, card));
+      foot && [h('div', { key: 'line', class: 'hero-line' }), foot]);
   }
 
   // Строка сна в герое. Днём — цель и подъём, вечером — живой отсчёт до отбоя и до «телефона на кухню».
@@ -568,7 +610,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       pulse(dayRings, 120);
       return M.burst(dayRings, colors, { n: big ? 30 : 20, spread: 0.8, delay: 140 });
     }
-    const heroEl = root.querySelector('.hero:not(.hero-streak)');
+    const heroEl = root.querySelector('main .hero:not(.hero-streak)');
     const ringsEl = heroEl?.querySelector('.rings');
     if (!ringsEl) return;
     pulse(ringsEl, 300);
@@ -714,6 +756,27 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       left = h('span');
       right = h('button', { class: 'sheet-act right', onclick: () => closeSheet() }, 'Готово');
       body = daySheet(sh);
+    } else if (sh.kind === 'friend') {
+      const f = sh.id !== 'me' && cloud.cache?.friends.find(x => x.id === sh.id);
+      titleText = sh.id === 'me' ? cloud.me.name : f ? f.name : 'Друг';
+      left = h('span');
+      right = h('button', { class: 'sheet-act right', onclick: () => closeSheet() }, 'Готово');
+      body = friendSheet(sh);
+    } else if (sh.kind === 'add') {
+      titleText = 'Добавить друга';
+      right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: sh.busy || !CODE_RE.test(cleanCode(sh.code)), onclick: () => sendRequest(sh) },
+        sh.busy ? 'Отправляю…' : 'Отправить');
+      body = addSheet(sh);
+    } else if (sh.kind === 'privacy') {
+      titleText = 'Что видят друзья';
+      left = h('span');
+      right = h('button', { class: 'sheet-act right', onclick: () => closeSheet() }, 'Готово');
+      body = privacySheet();
+    } else if (sh.kind === 'name') {
+      titleText = 'Имя для друзей';
+      right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: sh.busy || !cleanName(sh.draft.name), onclick: () => saveName(sh) },
+        sh.busy ? 'Сохраняю…' : 'Готово');
+      body = nameSheet(sh);
     } else {
       titleText = sh.id ? (sh.weekly ? 'Счётчик' : 'Пункт') : sh.weekly ? 'Новый счётчик' : 'Новый пункт';
       right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: !sh.draft.name.trim(), onclick: () => saveItem(sh) }, 'Готово');
@@ -817,7 +880,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   }
 
   function rulesSheet() {
-    return h('section', { key: 'rules', class: 'group rules-list first', 'data-stagger': 'rise', 'data-step': '45' }, RULES.map((r, i) =>
+    return h('section', { key: 'rules', class: 'group rules-list first', 'data-stagger': 'rise', 'data-step': '45' }, RULES(S).map((r, i) =>
       h('div', { class: 'row' }, h('span', { class: 'rule-n' }, String(i + 1)), h('span', { class: 'txt' }, h('span', { class: 'name' }, r)))));
   }
 
@@ -867,6 +930,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const draft = it
       ? { icon: it.icon, name: it.name, note: it.note, color: it.color, beforeBed: it.beforeBed ?? null, perWeek: it.perWeek ?? 3 }
       : { icon: 'star', name: '', note: '', color: D.DEFAULT_COLOR, beforeBed: null, perWeek: 3 };
+    if (cloud.joined) draft.shared = !(it && cloud.prefs.hidden.includes(it.id));
     openSheet({ kind: 'item', id, weekly: !!weekly, draft, orig: JSON.stringify(draft), icons: !id });
   }
 
@@ -931,6 +995,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             h('div', { class: 'chips' }, mins.map(m => h('button', {
               key: m, class: 'chip', 'aria-pressed': pressed(+d.beforeBed === m), onclick: () => set('beforeBed', m),
             }, m % 60 === 0 ? `${m / 60}${NB}ч` : `${m}${NB}мин`))))),
+      'shared' in d && h('section', { key: 'shared', class: 'group group-gap-l', 'data-flip': '' }, h('button', {
+        class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.shared), onclick: () => set('shared', !d.shared),
+      }, txt('Видно друзьям', d.shared ? 'друзья видят название и отметки' : `друзья видят «${HIDDEN_NAME}» — отметки считаются`),
+      h('span', { class: 'switch', 'aria-hidden': 'true' }))),
       sh.id && h('section', { key: 'remove', class: 'group group-gap-l', 'data-flip': '' }, h('button', { class: 'row row-t row-danger', onclick: () => removeItem(sh) },
         sh.weekly ? 'Убрать из недельных' : 'Убрать из минимума')),
     ];
@@ -962,8 +1030,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
 
   function saveItem(sh) {
     if (closing || !D.cleanFields(sh.draft, sh.weekly)) return;
+    let id = sh.id;
     if (sh.id) D.updateItem(S, sh.id, sh.draft);
-    else D.addItem(S, sh.draft, sh.weekly, today);
+    else id = D.addItem(S, sh.draft, sh.weekly, today)?.id;
+    // Видимость — до сохранения: первый же снимок с этим пунктом уже его скрывает.
+    if (id && 'shared' in sh.draft && cloud.joined) cloud.setHidden(id, !sh.draft.shared);
     save();
     M.haptic();
     closeSheet();
@@ -1015,22 +1086,12 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
               h('span', { class: 'unit' }, `${plural(streak, ['день', 'дня', 'дней'])} подряд`))),
           h('p', { class: 'sh-rec' }, h('span', { class: 't2' }, 'рекорд'), h('b', {}, String(best)))),
         chain(marks),
-        h('div', { class: 'chain-legend' },
-          h('span', {}, h('i', { class: 'lsq closed' }), 'закрыт'), h('span', {}, h('i', { class: 'lsq forgiven' }), 'прощён'),
-          h('span', {}, h('i', { class: 'lsq break' }), 'разрыв'), h('span', {}, h('i', { class: 'lsq today' }), 'сегодня')),
+        chainLegend(),
         h('p', { class: 'rule' }, 'Один пропуск прощается, два подряд — серия с нуля. Тапни день — увидишь детали.')),
       secH('h-week', 'Эта неделя'),
-      h('section', { key: 'week', class: 'group rv-card', 'data-flip': '' },
-        h('div', { class: 'week-rings', 'data-reveal': '' }, D.range(mon, D.addDays(mon, 6)).map((d, i) => {
-          const tap = d <= today && d >= S.createdAt;
-          const kids = [h('span', { class: 'wr-label' + (d === today ? ' today' : ''), 'aria-hidden': 'true' }, WDL[i]), miniRings(D.dayRings(S, d, today), w, cap(WEEKDAYS[i]))];
-          return tap ? h('button', { key: d, class: 'wr-day', onclick: () => openDay(d) }, kids) : h('div', { key: d, class: 'wr-day' }, kids);
-        })),
-        h('div', { class: 'dots-legend' },
-          h('span', {}, h('i', { class: 'lg-dot min' }), 'минимум'), h('span', {}, h('i', { class: 'lg-dot' }), 'сон в цель'),
-          w && h('span', {}, h('i', { class: 'lg-dot train' }), lcFirst(w.name)))),
+      h('section', { key: 'week', class: 'group rv-card', 'data-flip': '' }, weekRings(), dotsLegend(w)),
       secH('h-sleep', `Сон · 14${NB}ночей`),
-      sleepSection(),
+      sleepSection({ sel: ui.chartSel, onPick: d => { ui.chartSel = ui.chartSel === d ? null : d; } }),
       secH('h-rates', 'Пункты · 4 недели'),
       h('section', { key: 'rates', class: 'group rates', 'data-flip': '', 'data-reveal': '', 'data-stagger': 'grow-x', 'data-stagger-sel': '.rate-fill', 'data-step': '50' },
         D.itemRates(S, today).map(r => h('button', { key: r.item.id, class: 'rate', style: tint(r.item.color), onclick: () => openItem(r.item.id, false) },
@@ -1059,22 +1120,42 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
   }
 
-  function chain(marks) {
-    const rows = 6, start = D.addDays(D.weekStart(today), -7 * (rows - 1));
+  // Цепь 6 недель. У друга (onTap: null) клетки не нажимаются.
+  function chain(marks, { st = S, day = today, onTap = openDay } = {}) {
+    const rows = 6, start = D.addDays(D.weekStart(day), -7 * (rows - 1));
     return h('div', { class: 'chain-wrap' },
       h('div', { class: 'chain', 'aria-hidden': 'true' }, WDL.map(l => h('span', { class: 'chain-wd' }, l))),
       h('div', { class: 'chain', role: 'group', 'aria-label': `Цепь дней за ${rows} недель`, 'data-stagger': 'pop', 'data-step': '24' },
-        D.range(start, D.addDays(D.weekStart(today), 6)).map((d, i) => {
-          const m = d > today ? 'future' : marks[d] || 'none';
+        D.range(start, D.addDays(D.weekStart(day), 6)).map((d, i) => {
+          const m = d > day ? 'future' : marks[d] || 'none';
           const attrs = {
-            key: d, class: `cell ${m}` + (d === today ? ' today' : ''), 'data-d': String((i % 7) + Math.floor(i / 7)),
+            key: d, class: `cell ${m}` + (d === day ? ' today' : ''), 'data-d': String((i % 7) + Math.floor(i / 7)),
             style: m === 'closed' ? `--col:${i % 7};--row:${Math.floor(i / 7)};--rows:${rows}` : null,
           };
-          return d <= today && d >= S.createdAt
-            ? h('button', { ...attrs, 'aria-label': `${cap(WEEKDAYS[i % 7])}, ${dm(d)}: ${CELL[m]}`, onclick: () => openDay(d) })
+          return onTap && d <= day && d >= st.createdAt
+            ? h('button', { ...attrs, 'aria-label': `${cap(WEEKDAYS[i % 7])}, ${dm(d)}: ${CELL[m]}`, onclick: () => onTap(d) })
             : h('span', { ...attrs, 'aria-hidden': 'true' });
         })));
   }
+
+  const chainLegend = () => h('div', { class: 'chain-legend' },
+    h('span', {}, h('i', { class: 'lsq closed' }), 'закрыт'), h('span', {}, h('i', { class: 'lsq forgiven' }), 'прощён'),
+    h('span', {}, h('i', { class: 'lsq break' }), 'разрыв'), h('span', {}, h('i', { class: 'lsq today' }), 'сегодня'));
+
+  // Неделя мини-колец пн–вс. У друга (onTap: null) дни не нажимаются.
+  function weekRings({ st = S, day = today, onTap = openDay } = {}) {
+    const mon = D.weekStart(day), w = D.firstWeekly(st);
+    return h('div', { class: 'week-rings', 'data-reveal': '' }, D.range(mon, D.addDays(mon, 6)).map((d, i) => {
+      const kids = [h('span', { class: 'wr-label' + (d === day ? ' today' : ''), 'aria-hidden': 'true' }, WDL[i]), miniRings(D.dayRings(st, d, day), w, cap(WEEKDAYS[i]))];
+      return onTap && d <= day && d >= st.createdAt
+        ? h('button', { key: d, class: 'wr-day', onclick: () => onTap(d) }, kids)
+        : h('div', { key: d, class: 'wr-day' }, kids);
+    }));
+  }
+
+  const dotsLegend = (w, sleep = true) => h('div', { class: 'dots-legend' },
+    h('span', {}, h('i', { class: 'lg-dot min' }), 'минимум'), sleep && h('span', {}, h('i', { class: 'lg-dot' }), 'сон в цель'),
+    w && h('span', {}, h('i', { class: 'lg-dot train' }), lcFirst(w.name)));
 
   function w8(weeks, perWeek, mon) {
     return h('div', { class: 'w8', 'data-reveal': '', 'data-stagger': 'pop', 'data-stagger-sel': '.w8-cell.on', 'data-step': '40' }, weeks.map(({ monday, count }) =>
@@ -1084,10 +1165,12 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         h('span', { class: 'w8-label' + (monday === mon ? ' now' : '') }, `${+monday.slice(8)}.${+monday.slice(5, 7)}`))));
   }
 
-  function sleepSection() {
-    const cur = D.knownMornings(S, D.addDays(today, -6), today, today);
-    const prev = D.knownMornings(S, D.addDays(today, -13), D.addDays(today, -7), today);
-    const a = D.sleepStats(S, cur), b = D.sleepStats(S, prev), hits = D.sleepHits(S, cur);
+  // Сон за 14 ночей: график, легенда или подпись выбранной ночи, средние, сдвиг к прошлой неделе.
+  // sel — выбранное утро, onPick(d) — выбрать/снять (своё — ui.chartSel, у друга — в листе).
+  function sleepSection({ st = S, day = today, sel = null, onPick } = {}) {
+    const cur = D.knownMornings(st, D.addDays(day, -6), day, day);
+    const prev = D.knownMornings(st, D.addDays(day, -13), D.addDays(day, -7), day);
+    const a = D.sleepStats(st, cur), b = D.sleepStats(st, prev), hits = D.sleepHits(st, cur);
     const delta = [];
     if (a.avgDur != null && b.avgDur != null) {
       const x = a.avgDur - b.avgDur;
@@ -1097,12 +1180,17 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       const x = Math.round(a.avgBedNorm - b.avgBedNorm);
       delta.push(x < 0 ? `отбой на${NB}${dur(-x)} раньше` : x > 0 ? `отбой на${NB}${dur(x)} позже` : 'отбой в то же время');
     }
-    const sel = ui.chartSel && S.sleep.nights[ui.chartSel]?.bed ? ui.chartSel : null;
+    sel = sel && st.sleep.nights[sel]?.bed ? sel : null;
+    const pick = d => {
+      onPick(d);
+      M.haptic();
+      render();
+    };
     return h('section', { key: 'sleep', class: 'group rv-card', 'data-flip': '' },
-      h('div', { class: 'chart-box', 'data-reveal': '', 'data-stagger': 'grow-y', 'data-stagger-sel': '.bar', 'data-step': '35' }, sleepChart(sel)),
-      sel ? nightCaption(sel) : h('div', { key: 'legend', class: 'chart-legend' },
+      h('div', { class: 'chart-box', 'data-reveal': '', 'data-stagger': 'grow-y', 'data-stagger-sel': '.bar', 'data-step': '35' }, sleepChart(st, day, sel, pick)),
+      sel ? nightCaption(st, sel, () => pick(sel)) : h('div', { key: 'legend', class: 'chart-legend' },
         h('span', {}, h('i', { class: 'cl-ok' }), 'в цель'), h('span', {}, h('i', { class: 'cl-late' }), 'позже'),
-        h('span', {}, h('i', { class: 'cl-step' }), 'шаг отбоя'), h('span', {}, h('i', { class: 'cl-goal' }), S.sleep.goalBed)),
+        h('span', {}, h('i', { class: 'cl-step' }), 'шаг отбоя'), h('span', {}, h('i', { class: 'cl-goal' }), st.sleep.goalBed)),
       h('div', { class: 'sc-sep' }),
       h('div', { class: 'stats' },
         stat(a.avgBed || '—', 'средний отбой'),
@@ -1111,47 +1199,564 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       delta.length > 0 && h('p', { class: 'delta' }, `7 ночей к прошлым 7: ${delta.join(', ')}`));
   }
 
-  function nightCaption(d) {
-    const n = S.sleep.nights[d], late = D.norm(n.bed) - D.norm(D.targetFor(S, d)), du = D.duration(n);
-    return h('button', { key: 'cap', class: 'strip chart-cap', 'data-flip': '', onclick: () => { ui.chartSel = null; render(); } },
+  function nightCaption(st, d, clear) {
+    const n = st.sleep.nights[d], late = D.norm(n.bed) - D.norm(D.targetFor(st, d)), du = D.duration(n);
+    return h('button', { key: 'cap', class: 'strip chart-cap', 'data-flip': '', onclick: clear },
       gl(ICONS.moon[1]), h('span', {}, h('b', {}, `${WD[D.weekday(d)]}, ${dm(d)}`),
         h('span', { class: 't2' }, ` · ${n.bed}${n.wake ? ` → ${clock(n.wake)}` : ''}${du ? ` · ${dur(du)}` : ''} · ${late > 0 ? `на${NB}${dur(late)} позже шага` : 'в цель'}`)));
   }
 
-  function sleepChart(sel) {
-    const range = D.range(D.addDays(today, -13), today);
+  function sleepChart(st, day, sel, pick) {
+    const range = D.range(D.addDays(day, -13), day);
     const W = 364, H = 236, L = 44, Y0 = 1380, K = 3, OFF = 8; // 23:00 сверху, 3 минуты на единицу
     const slot = (W - L) / range.length, bw = 10;
     const y = m => Math.max(0, Math.min(H, (m - Y0) / K + OFF));
     const steps = [];
     range.forEach((d, i) => {
-      if (d < S.createdAt) return; // до посева шага ещё не было
-      const t = D.targetFor(S, d), last = steps.at(-1);
+      if (d < st.createdAt) return; // до посева шага ещё не было
+      const t = D.targetFor(st, d), last = steps.at(-1);
       if (last && last.t === t && last.to === i) last.to = i + 1;
       else steps.push({ t, from: i, to: i + 1 });
     });
-    const pick = d => () => {
-      ui.chartSel = ui.chartSel === d ? null : d;
-      M.haptic();
-      render();
-    };
     return svg('svg', { class: 'chart' + (sel ? ' has-sel' : ''), viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Сон за 14 ночей' },
       ['23:00', '01:00', '03:00', '05:00', '07:00', '09:00'].map(t => {
         const yy = y(D.norm(t));
         return [svg('line', { class: 'grid', x1: L, x2: W, y1: yy, y2: yy }), svg('text', { class: 'axis', x: 0, y: yy + 4 }, t)];
       }),
-      svg('line', { class: 'goal', x1: L, x2: W, y1: y(D.norm(S.sleep.goalBed)), y2: y(D.norm(S.sleep.goalBed)) }),
+      svg('line', { class: 'goal', x1: L, x2: W, y1: y(D.norm(st.sleep.goalBed)), y2: y(D.norm(st.sleep.goalBed)) }),
       range.map((d, i) => {
-        const n = S.sleep.nights[d];
+        const n = st.sleep.nights[d];
         if (!n?.bed) return null;
-        const cls = 'bar ' + (D.onTarget(S, d) ? 'bar-ok' : 'bar-late') + (d === sel ? ' sel' : '');
+        const cls = 'bar ' + (D.onTarget(st, d) ? 'bar-ok' : 'bar-late') + (d === sel ? ' sel' : '');
         const x = L + slot * i + (slot - bw) / 2, top = y(D.norm(n.bed));
         if (!n.wake) return svg('circle', { key: d, class: cls, cx: x + bw / 2, cy: top + bw / 2, r: bw / 2 });
         const bottom = y(D.toMin(n.wake) + 1440);
         return svg('rect', { key: d, class: cls, x, y: top, width: bw, height: Math.max(bw, bottom - top), rx: bw / 2 });
       }),
       steps.map(s => svg('line', { class: 'step', x1: L + slot * s.from + 2, x2: L + slot * s.to - 2, y1: y(D.norm(s.t)), y2: y(D.norm(s.t)) })),
-      range.map((d, i) => S.sleep.nights[d]?.bed && svg('rect', { key: `hit-${d}`, class: 'hit', x: L + slot * i, y: 0, width: slot, height: H, onclick: pick(d) })));
+      range.map((d, i) => st.sleep.nights[d]?.bed && svg('rect', { key: `hit-${d}`, class: 'hit', x: L + slot * i, y: 0, width: slot, height: H, onclick: () => pick(d) })));
+  }
+
+  // ---------- Друзья: вкладка, лист друга, «Добавить», «Что видят друзья», имя
+
+  const pad2 = n => String(n).padStart(2, '0');
+  const calDate = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const AV = ['red', 'orange', 'green', 'teal', 'blue', 'indigo', 'purple', 'pink'];
+  // Аватар — первая буква имени; цвет — от кода, чтобы друзья различались и не менялись местами цветом.
+  const avatar = (name, code, cls = '') => h('span', {
+    class: 'avatar ' + cls, 'aria-hidden': 'true',
+    style: tint(AV[[...String(code || name || '?')].reduce((a, ch) => a + ch.charCodeAt(0), 0) % AV.length]),
+  }, (String(name || '?').trim().charAt(0) || '?').toLocaleUpperCase('ru'));
+  const lockTile = () => h('span', { class: 'tile', style: tint('gray') }, gl(G.lock));
+
+  // «только что», «5 мин назад», «в 18:52», «вчера в 23:10», «18 октября» — по часам сервера.
+  function seenText(iso) {
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) return '';
+    const diff = cloud.serverNow() - ms;
+    if (diff < 90e3) return 'только что';
+    if (diff < 3600e3) return `${Math.round(diff / 60e3)}${NB}мин назад`;
+    const d = new Date(ms), n = now();
+    const hm = `${d.getHours()}:${pad2(d.getMinutes())}`;
+    if (calDate(d) === calDate(n)) return `в${NB}${hm}`;
+    if (calDate(d) === D.addDays(calDate(n), -1)) return `вчера в${NB}${hm}`;
+    return dm(calDate(d));
+  }
+  const dayWord = (d, day) => (d === day ? 'сегодня' : d === D.addDays(day, -1) ? 'вчера' : dm(d));
+
+  // Снимок друга → вид для экрана; пересчёт — когда пришёл новый снимок или прошла минута (смена дня у друга).
+  const views = new Map();
+  function friendView(f) {
+    if (!f?.snapshot) return null;
+    const minute = Math.floor(now().getTime() / 60e3);
+    const hit = views.get(f.id);
+    if (hit && hit.snap === f.snapshot && hit.minute === minute) return hit.v;
+    const v = readShare(f.snapshot, now());
+    if (v) v.sum = summaryOf(v.F, v.today);
+    views.set(f.id, { snap: f.snapshot, minute, v });
+    return v;
+  }
+  // «Я» — через тот же снимок и то же чтение, что у друзей: что видишь, то и уходит.
+  function myView() {
+    const v = readShare(JSON.parse(JSON.stringify(shareOf(S, today, { tz: deviceZone(), ...cloud.prefs }))), now());
+    if (v) v.sum = summaryOf(v.F, v.today);
+    return v;
+  }
+
+  function friendsScreen() {
+    const c = cloud, cache = c.cache;
+    const over = !c.joined ? 'Прогресс вместе'
+      : c.status === 'offline' ? 'Нет связи с сервером' : c.status === 'down' ? 'Сервер не отвечает' : c.status === 'config' ? 'Сервер не настроен'
+        : cache?.now ? `Обновлено ${seenText(cache.now)}` : 'Обновляю…';
+    const head = topbar(h('p', { class: 'overline' }, over), h('span', {}, 'Друзья'),
+      c.joined && h('button', { class: 'icon-btn head-icon', 'aria-label': 'Добавить друга', onclick: openAdd }, gl(G.personAdd)));
+    if (!c.joined) return [head, title('Друзья'), joinView()];
+    const friends = cache?.friends || [], incoming = cache?.incoming || [], outgoing = cache?.outgoing || [];
+    return [
+      head,
+      title('Друзья'),
+      codeCard(),
+      incoming.length > 0 && [secH('h-asks', 'Запросы'), h('section', { key: 'asks', class: 'group', 'data-flip': '' }, incoming.map(askRow))],
+      secH('h-friends', 'Сегодня'),
+      h('section', { key: 'friends', class: 'group list-friends', 'data-flip': '' },
+        friendRow({ key: 'me', name: c.me.name, v: myView(), sub: 'это ты', onClick: () => openFriend('me') }),
+        friends.map(f => friendRow({ key: f.id, name: f.name, v: friendView(f), sub: seenText(f.seenAt), onClick: () => openFriend(f.id) })),
+        h('button', { key: 'add', class: 'row row-m plus-row', 'data-flip': '', onclick: openAdd },
+          h('span', { class: 'tile tile-round' }, gl(G.plus)), h('span', { class: 'name' }, 'Добавить друга'))),
+      friends.length === 0 && h('p', { key: 'f-hint', class: 'sec-foot', 'data-flip': '' }, !cache && c.status !== 'ok'
+        ? 'Нет связи — список друзей появится, когда сервер ответит.'
+        : 'Скинь другу свой код — он введёт его у себя в «Друзьях». Или введи его код сам.'),
+      outgoing.length > 0 && [secH('h-out', 'Ждут ответа'), h('section', { key: 'out', class: 'group', 'data-flip': '' }, outgoing.map(outRow))],
+      c.stuck && h('p', { key: 'f-stuck', class: 'sec-foot err', role: 'status', 'data-flip': '' },
+        'Сервер не принял твой прогресс — друзья видят прежний. Проверь названия пунктов.'),
+      h('p', { key: 'f-privacy', class: 'sec-foot', 'data-flip': '' },
+        'Друзья видят пункты и отметки, сон, недельные счётчики и серию. Разбор недели не уходит никогда. ',
+        h('button', { class: 'link', onclick: () => openSheet({ kind: 'privacy' }) }, 'Что видят друзья')),
+    ];
+  }
+
+  // Строка друга: его кольца на сегодня, «k из n» или «день закрыт», когда обновлялся, огонёк серии.
+  function friendRow({ key, name, v, sub, onClick }) {
+    const sum = v?.sum;
+    const parts = sum
+      ? [{ kind: 'sun', f: sum.n ? sum.k / sum.n : 0 }, v.sleep && { kind: 'sleep', f: sum.sh.n ? sum.sh.k / sum.sh.n : 0 }, sum.w && { kind: 'train', f: sum.wc / sum.w.perWeek }].filter(Boolean)
+      : [{ kind: 'sun', f: 0 }, { kind: 'sleep', f: 0 }, { kind: 'train', f: 0 }];
+    const line = !sum ? 'ещё нет данных' : sum.closed ? 'день закрыт' : sum.n ? `${sum.k} из ${sum.n}` : 'минимум пуст';
+    return h('button', {
+      key, class: 'row friend', 'data-flip': '', onclick: onClick,
+      'aria-label': [name, sum && !sum.closed && sum.n ? `минимум ${line}` : line, sum && `серия ${sum.streak}`, sub].filter(Boolean).join(', '),
+    },
+    rings('f-rings', 44, [18.5, 12.5, 6.5], 5, parts),
+    h('span', { class: 'txt' }, h('span', { class: 'name strong' }, name),
+      h('span', { class: 'note' }, h('span', { class: sum?.closed ? 'f-closed' : '' }, line), sub && ` · ${sub}`)),
+    sum && h('span', { class: 'f-streak', 'aria-hidden': 'true' }, gl(G.flame), h('span', {}, String(sum.streak))),
+    chev());
+  }
+
+  function codeCard() {
+    const code = cloud.me.code;
+    return h('section', { key: 'code', class: 'group code-card', 'data-flip': '' },
+      h('button', { class: 'code-main', 'aria-label': `Твой код: ${code.split('').join(' ')}. Скопировать`, onclick: copyCode },
+        h('span', { class: 'code-over' }, 'Твой код'),
+        h('span', { class: 'code-big' }, code),
+        h('span', { class: 'code-hint' }, 'друг вводит его у себя · тапни — скопируется')),
+      h('button', { class: 'code-share', 'aria-label': 'Поделиться кодом', onclick: shareCode }, gl(G.share)));
+  }
+
+  async function copyCode() {
+    const code = cloud.me.code;
+    try {
+      await win.navigator.clipboard.writeText(code);
+      M.haptic();
+      toast('Код скопирован');
+    } catch {
+      toast(`Твой код: ${code}`);
+    }
+  }
+
+  async function shareCode() {
+    const code = cloud.me.code;
+    const link = String(win.location.href).split(/[?#]/)[0];
+    try {
+      if (typeof win.navigator.share === 'function') return void (await win.navigator.share({ text: `Добавь меня в «Минимуме»: мой код ${code}\n${link}` }));
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+    }
+    copyCode();
+  }
+
+  const askRow = f => h('div', { key: f.id, class: 'row row-s ask', 'data-flip': '' },
+    avatar(f.name, f.code),
+    txt(f.name, `хочет дружить · код ${f.code}`),
+    h('span', { class: 'ask-btns' },
+      h('button', { class: 'pill-btn', onclick: () => askAccept(f) }, 'Принять'),
+      h('button', { class: 'icon-btn', 'aria-label': `Отклонить запрос: ${f.name}`, onclick: () => answer(f, false) }, gl(G.cross))));
+
+  // Имя в запросе друг пишет сам — назваться «Сашей» может кто угодно, у кого есть твой код. Код подделать нельзя.
+  function askAccept(f) {
+    showAlert({
+      title: `Принять запрос от «${f.name}»?`, msg: `Его код — ${f.code}. Сверь с другом: после «Принять» вы оба видите прогресс друг друга.`,
+      yes: 'Принять', action: () => answer(f, true),
+    });
+  }
+
+  async function answer(f, yes) {
+    M.haptic();
+    try {
+      if (yes) toast((await cloud.accept(f.id)) ? `${f.name} — теперь в друзьях` : 'Запрос уже отменили');
+      else await cloud.remove(f.id);
+    } catch (e) {
+      toast(failText(e));
+    }
+  }
+
+  const outRow = f => h('div', { key: f.id, class: 'row row-s', 'data-flip': '' },
+    h('span', { class: 'avatar avatar-wait', 'aria-hidden': 'true' }, gl(ICONS.hourglass[1])),
+    txt(`Код ${f.code}`, `запрос отправлен ${seenText(f.at)}`),
+    h('button', { class: 'restore', 'aria-label': `Отменить запрос по коду ${f.code}`, onclick: () => cancelOut(f) }, 'Отменить'));
+
+  async function cancelOut(f) {
+    M.haptic();
+    try {
+      await cloud.remove(f.id);
+    } catch (e) {
+      toast(failText(e));
+    }
+  }
+
+  // Друзья ещё не включены: что это, имя и одна кнопка. Слева — твои кольца, справа — место для друга.
+  function joinView() {
+    const mine = summaryOf(S, today);
+    if (ui.joinName == null) ui.joinName = cloud.me.name; // профиль «потерялся» — имя уже знаем
+    const name = ui.joinName;
+    return [
+      cloud.notice === 'lost' && h('p', { key: 'lost', class: 'group notice-card', role: 'status', 'data-flip': '' }, FAIL.lost),
+      h('section', { key: 'join', class: 'hero join', 'data-flip': '' },
+        h('div', { class: 'join-art', 'aria-hidden': 'true' },
+          rings('join-rings', 96, [41, 28.5, 16], 10, [
+            { kind: 'sun', f: mine.n ? mine.k / mine.n : 0 }, { kind: 'sleep', f: mine.sh.n ? mine.sh.k / mine.sh.n : 0 }, mine.w && { kind: 'train', f: mine.wc / mine.w.perWeek },
+          ].filter(Boolean)),
+          rings('join-rings ghost', 96, [41, 28.5, 16], 10, [{ kind: 'sun', f: 0.64 }, { kind: 'sleep', f: 0.82 }, { kind: 'train', f: 0.34 }])),
+        h('p', { class: 'join-title' }, 'Прогресс вместе'),
+        h('p', { class: 'join-text' }, 'Обменяйтесь кодами — и видно кольца, серию, сон и изменения друг друга. Отметки остаются на телефоне, другу уходит только снимок прогресса.')),
+      secH('h-join', 'Как тебя зовут'),
+      h('section', { key: 'join-form', class: 'group', 'data-flip': '' },
+        h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Имя'),
+          h('input', {
+            class: 'form-input', name: 'friend-name', value: name, maxlength: NAME_MAX, placeholder: 'так тебя увидят друзья',
+            autocomplete: 'nickname', enterkeyhint: 'done',
+            oninput: e => {
+              ui.joinName = e.target.value;
+              ui.joinErr = '';
+              const b = root.querySelector('#join-btn');
+              if (b) b.disabled = ui.busy || !cleanName(ui.joinName);
+            },
+            onkeydown: e => e.key === 'Enter' && doJoin(),
+          }))),
+      ui.joinErr && h('p', { key: 'join-err', class: 'sec-foot err', role: 'alert', 'data-flip': '' }, ui.joinErr),
+      h('button', { key: 'join-btn', class: 'btn-primary', id: 'join-btn', disabled: ui.busy || !cleanName(name), 'data-flip': '', onclick: doJoin },
+        ui.busy ? 'Включаю…' : 'Включить друзей'),
+      h('p', { key: 'join-foot', class: 'sec-foot', 'data-flip': '' },
+        'Друг видит твой прогресс, только когда вы оба согласились: один вводит код, другой принимает. Разбор недели не уходит никогда, личный пункт можно скрыть.'),
+    ];
+  }
+
+  async function doJoin() {
+    const name = cleanName(ui.joinName);
+    if (!name || ui.busy) return;
+    ui.busy = true;
+    ui.joinErr = '';
+    render();
+    try {
+      await cloud.join(name);
+      ui.joinName = null;
+      M.haptic();
+      toast('Друзья включены — скинь другу свой код');
+    } catch (e) {
+      ui.joinErr = failText(e);
+    } finally {
+      ui.busy = false;
+      render();
+    }
+  }
+
+  function openAdd() {
+    if (!cloud.joined) return;
+    openSheet({ kind: 'add', code: '', err: '', busy: false });
+  }
+
+  function addSheet(sh) {
+    const ok = () => {
+      const b = root.querySelector('#sheet-done');
+      if (b) b.disabled = sh.busy || !CODE_RE.test(cleanCode(sh.code));
+    };
+    return [
+      h('div', { key: 'add-pv', class: 'preview' },
+        h('span', { class: 'avatar avatar-l avatar-add', 'aria-hidden': 'true' }, gl(G.personAdd)),
+        h('p', { class: 'pv-name' }, 'Код друга'),
+        h('p', { class: 'pv-note' }, `${CODE_LEN}${NB}букв и цифр — он в «Друзьях» у друга`)),
+      h('section', { key: 'add-code', class: 'group code-field group-gap-l' },
+        h('input', {
+          class: 'code-input', id: 'add-code', value: sh.code, maxlength: 12, placeholder: 'K7M2P', 'aria-label': 'Код друга',
+          autocapitalize: 'characters', autocomplete: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'send',
+          oninput: e => {
+            sh.code = e.target.value;
+            if (sh.err) {
+              sh.err = '';
+              render();
+            }
+            ok();
+          },
+          onkeydown: e => e.key === 'Enter' && sendRequest(sh),
+        })),
+      sh.err ? h('p', { key: 'add-err', class: 'sec-foot err', role: 'alert' }, sh.err)
+        : h('p', { key: 'add-foot', class: 'sec-foot' }, 'Когда друг примет запрос, вы увидите прогресс друг друга. Если он уже ввёл твой код — вы друзья сразу.'),
+      secH('h-mine', 'Твой код'),
+      h('section', { key: 'add-mine', class: 'group' },
+        h('button', { class: 'row row-t', onclick: shareCode },
+          h('span', { class: 'txt' }, h('span', { class: 'name code-inline' }, cloud.me.code)), h('span', { class: 'value accent' }, 'Поделиться'))),
+    ];
+  }
+
+  async function sendRequest(sh) {
+    const code = cleanCode(sh.code);
+    if (!CODE_RE.test(code) || sh.busy || closing) return;
+    sh.busy = true;
+    sh.err = '';
+    render();
+    try {
+      const r = await cloud.request(code);
+      sh.busy = false;
+      if (r === 'sent' || r === 'friends') {
+        M.haptic();
+        // Пока ждали ответ, могли закрыть лист и открыть другой — его не трогаем.
+        return ui.sheet === sh ? closeSheet(() => toast(ADD_RESULT[r])) : toast(ADD_RESULT[r]);
+      }
+      sh.err = ADD_RESULT[r] || FAIL.down;
+    } catch (e) {
+      sh.busy = false;
+      if (e instanceof CloudError && e.kind === 'lost') {
+        if (ui.sheet === sh) closeSheet(); // «Друзья» сами предложат включить заново
+        return;
+      }
+      sh.err = failText(e);
+    }
+    if (ui.sheet === sh) render();
+    else if (sh.err) toast(sh.err);
+  }
+
+  function openFriend(id) {
+    openSheet({ kind: 'friend', id, chartSel: null });
+  }
+
+  // Лист друга (или «Я» — как тебя видят друзья): тот же герой, неделя, цепь и сон, что у тебя, — только из его снимка.
+  function friendSheet(sh) {
+    const me = sh.id === 'me';
+    const f = me ? null : cloud.cache?.friends.find(x => x.id === sh.id);
+    if (!me && !f) return h('p', { key: 'gone', class: 'group empty first' }, 'Этого друга больше нет в списке');
+    const v = me ? myView() : friendView(f);
+    const sub = me ? 'так тебя видят друзья'
+      : [`обновлено ${seenText(f.seenAt)}`, f.since && `друзья с${NB}${dm(calDate(new Date(f.since)))}`].filter(Boolean).join(' · ');
+    if (!v) {
+      return [
+        h('p', { key: 'sub', class: 'sheet-sub' }, sub),
+        h('p', { key: 'none', class: 'group empty first' }, 'Друг ещё не открывал приложение после добавления — прогресс появится, когда откроет.'),
+        removeFriendRow(f),
+      ];
+    }
+    const { F, today: day, sum } = v;
+    const { marks } = D.history(F, day);
+    const step = D.stepTonight(F, day);
+    const weekly = F.weekly.filter(i => !i.archivedAt);
+    const feed = changes(v);
+    const total = Math.max(1, D.diffDays(F.since, day) + 1);
+    const locked = id => v.hidden.has(id);
+    return [
+      h('p', { key: 'sub', class: 'sheet-sub' }, sub),
+      heroView(sum, { sleep: v.sleep, foot: v.sleep && friendSleepLine(F, day, step) }),
+      h('section', { key: 'f-stats', class: 'group rv-card group-gap', 'data-flip': '' }, h('div', { class: 'stats' },
+        stat(String(sum.streak), `${plural(sum.streak, ['день', 'дня', 'дней'])} подряд`),
+        stat(String(sum.best), 'рекорд'),
+        stat(String(total), `${plural(total, ['день', 'дня', 'дней'])} в${NB}системе`))),
+      secH('f-h-min', 'Минимум сегодня'),
+      sum.n > 0
+        ? h('section', { key: 'f-min', class: 'group', 'data-flip': '' }, sum.plan.map(id => D.findItem(F, id)).filter(Boolean).map(it =>
+          staticRow(it, sum.done.includes(it.id), locked(it.id), v.sleep && !locked(it.id) && it.beforeBed ? `до${NB}${D.deadline(step, it.beforeBed)}` : '')))
+        : h('p', { key: 'f-empty', class: 'group empty' }, 'Минимум пуст'),
+      weekly.length > 0 && [secH('f-h-week', 'На неделе'), h('section', { key: 'f-week', class: 'group', 'data-flip': '' }, weekly.map(it => staticWeekRow(it, F, day, locked(it.id))))],
+      secH('f-h-days', 'Эта неделя'),
+      h('section', { key: 'f-days', class: 'group rv-card', 'data-flip': '' }, weekRings({ st: F, day, onTap: null }), dotsLegend(D.firstWeekly(F), v.sleep)),
+      secH('f-h-chain', 'Серия · 6 недель'),
+      h('section', { key: 'f-chain', class: 'group rv-card chain-card', 'data-flip': '' }, chain(marks, { st: F, day, onTap: null }), chainLegend()),
+      v.sleep && [secH('f-h-sleep', `Сон · 14${NB}ночей`), sleepSection({ st: F, day, sel: sh.chartSel, onPick: d => { sh.chartSel = sh.chartSel === d ? null : d; } })],
+      feed.length > 0 && [secH('f-h-feed', 'Изменения'), h('section', { key: 'f-feed', class: 'group', 'data-flip': '' }, feed.map((e, i) => feedRow(e, i, day)))],
+      me
+        ? [h('p', { key: 'me-foot', class: 'sec-foot' }, 'Разбор недели сюда не попадает. Скрытый пункт друзья видят как «Личный пункт».'),
+          h('section', { key: 'me-privacy', class: 'group group-gap-l' }, h('button', { class: 'row row-t row-accent', onclick: () => openSheet({ kind: 'privacy' }) }, 'Что видят друзья'))]
+        : removeFriendRow(f),
+    ];
+  }
+
+  // Строка сна у друга: без отсчёта до отбоя — только шаг, цель, подъём и прошлая ночь.
+  function friendSleepLine(F, day, step) {
+    const goal = F.sleep.goalBed, night = F.sleep.nights[day] || {};
+    let last;
+    if (night.bed && night.wake) {
+      const late = D.norm(night.bed) - D.norm(D.targetFor(F, day)), d = D.duration(night);
+      last = h('span', { class: 'sl2' }, `прошлая ночь ${d ? dur(d) : '—'} · `, late > 0 ? `на${NB}${dur(late)} позже шага` : h('span', { class: 'ok' }, 'в цель'));
+    } else last = h('span', { class: 'sl2' }, night.bed || night.wake ? 'прошлая ночь отмечена не полностью' : 'прошлая ночь не отмечена');
+    return h('div', { key: 'sleep', class: 'sleep-line' }, gl(ICONS.moon[1]), h('span', { class: 'sl' },
+      h('span', { class: 'sl1' }, h('b', {}, `Отбой ${step}`), h('span', { class: 't2' }, D.norm(step) <= D.norm(goal) ? ' · цель достигнута' : ` · цель ${goal}`)),
+      h('span', { class: 'sl2' }, `подъём ${clock(F.sleep.goalWake)}`),
+      last));
+  }
+
+  const staticRow = (it, isDone, locked, extra) => h('div', { key: it.id, class: 'row static' + (isDone ? ' done' : ''), style: tint(it.color) },
+    locked ? lockTile() : tile(it.icon), txt(it.name, [it.note, extra].filter(Boolean).join(' · ')),
+    h('span', { class: 'check', role: 'img', 'aria-label': isDone ? 'сделано' : 'ещё не сделано' }, gl(G.check, '', 1)));
+
+  function staticWeekRow(it, st, day, locked) {
+    const c = D.weekCount(st, it.id, day), mark = (st.weekMarks[it.id] || []).includes(day);
+    return h('div', { key: it.id, class: 'row static', style: tint(it.color) },
+      locked ? lockTile() : tile(it.icon), txt(it.name, it.note),
+      h('span', { class: 'wk' },
+        h('span', { class: 'wk-label' + (mark ? ' today' : '') }, mark ? `✓ ${c} из ${it.perWeek}` : `${c} из ${it.perWeek}`),
+        h('span', { class: 'pills', 'aria-hidden': 'true' }, Array.from({ length: Math.min(7, Math.max(it.perWeek, c)) }, (_, i) =>
+          h('span', { class: 'pill' + (i < c ? ' on' : '') })))));
+  }
+
+  // Событие ленты: без глаголов в прошедшем времени — пол друга неизвестен.
+  function feedRow(e, i, day) {
+    const name = e.item?.name;
+    let node, text;
+    if (e.kind === 'streak') {
+      node = h('span', { class: 'tile tile-sun' }, gl(G.flame));
+      text = `Серия ${days(e.n)}`;
+    } else if (e.kind === 'step') {
+      node = h('span', { class: 'tile', style: tint('indigo') }, icon('moon'));
+      text = `Шаг отбоя ${e.from} → ${e.to}`;
+    } else if (e.kind === 'onepct') {
+      node = h('span', { class: 'tile', style: tint('yellow') }, icon('sparkles'));
+      text = `1% недели: ${e.text}`;
+    } else {
+      node = e.hidden ? lockTile() : h('span', { class: 'tile', style: tint(e.kind === 'remove' ? 'gray' : e.item.color) }, icon(e.item.icon));
+      text = e.kind === 'add' ? (e.hidden ? (e.weekly ? 'Новый личный счётчик' : 'Новый личный пункт') : `${e.weekly ? 'Новый счётчик' : 'Новый пункт'} «${name}»`)
+        : e.kind === 'remove' ? (e.hidden ? 'Личный пункт убран' : `«${name}» убран${e.weekly ? ' из недельных' : ' из минимума'}`)
+          : `${e.hidden ? 'Личный счётчик' : name}: неделя в${NB}цель`;
+    }
+    return h('div', { key: `${e.kind}-${e.date}-${i}`, class: 'row row-s feed' }, node, txt(text, dayWord(e.date, day)));
+  }
+
+  const removeFriendRow = f => f && h('section', { key: 'f-remove', class: 'group group-gap-l' },
+    h('button', { class: 'row row-t row-danger', onclick: () => askUnfriend(f) }, 'Удалить из друзей'));
+
+  function askUnfriend(f) {
+    showAlert({
+      title: 'Удалить из друзей?', msg: `${f.name} и ты перестанете видеть прогресс друг друга. Вернуть — только снова по коду.`,
+      yes: 'Удалить', danger: true,
+      action: () => closeSheet(async () => {
+        try {
+          await cloud.remove(f.id);
+        } catch (e) {
+          toast(failText(e));
+        }
+      }),
+    });
+  }
+
+  // Что видят друзья: каждый пункт — переключатель; выключенный уходит «Личным пунктом», отметки считаются.
+  function privacySheet() {
+    const p = cloud.prefs, hid = new Set(p.hidden);
+    const itemSwitch = it => h('button', {
+      key: it.id, class: 'switch-row item-switch', role: 'switch', 'aria-checked': pressed(!hid.has(it.id)), style: tint(it.color),
+      onclick: () => {
+        cloud.setHidden(it.id, !hid.has(it.id));
+        M.haptic();
+        render();
+      },
+    }, tile(it.icon), txt(it.name, hid.has(it.id) ? `друзья видят «${HIDDEN_NAME}»` : 'друзья видят название и отметки'), h('span', { class: 'switch', 'aria-hidden': 'true' }));
+    const shareSwitch = (what, on, label, note) => h('button', {
+      key: what, class: 'switch-row', role: 'switch', 'aria-checked': pressed(on),
+      onclick: () => {
+        cloud.setShare(what, !on);
+        M.haptic();
+        render();
+      },
+    }, txt(label, note), h('span', { class: 'switch', 'aria-hidden': 'true' }));
+    const wact = S.weekly.filter(i => !i.archivedAt);
+    const arch = [...S.items, ...S.weekly].filter(i => i.archivedAt); // и они видны другу в прошлых днях и ленте
+    return [
+      h('p', { key: 'sub', class: 'sheet-sub' }, 'Выключенный пункт друзья видят как «Личный пункт»'),
+      secH('p-h-min', 'Минимум'),
+      h('section', { key: 'p-min', class: 'group' }, D.activeItems(S).map(itemSwitch)),
+      wact.length > 0 && [secH('p-h-week', 'Каждую неделю'), h('section', { key: 'p-week', class: 'group' }, wact.map(itemSwitch))],
+      arch.length > 0 && [secH('p-h-arch', 'Убранные'), h('section', { key: 'p-arch', class: 'group' }, arch.map(itemSwitch))],
+      secH('p-h-more', 'Ещё'),
+      h('section', { key: 'p-more', class: 'group' },
+        shareSwitch('sleep', p.sleep, 'Сон', 'отбой, подъём, шаг отбоя и график ночей'),
+        shareSwitch('onepct', p.onepct, '1% недели', 'улучшение, которое выбираешь на итогах')),
+      h('p', { key: 'p-foot', class: 'sec-foot' }, 'Разбор недели — «что получилось», «что нет», «чему научился» — друзьям не уходит никогда. Ещё друзья видят, когда твой прогресс обновлялся, и твой часовой пояс — по нему считается твой день.'),
+      h('section', { key: 'p-me', class: 'group group-gap-l' }, h('button', { class: 'row row-t row-accent', onclick: () => openFriend('me') }, 'Как меня видят друзья')),
+    ];
+  }
+
+  function openName() {
+    const draft = { name: cloud.me.name };
+    openSheet({ kind: 'name', draft, orig: JSON.stringify(draft), busy: false, err: '' });
+  }
+
+  function nameSheet(sh) {
+    return [
+      h('div', { key: 'n-pv', class: 'preview' }, avatar(sh.draft.name, cloud.me.code, 'avatar-l'),
+        h('p', { class: 'pv-name' }, sh.draft.name.trim() || 'Имя'), h('p', { class: 'pv-note' }, 'так тебя видят друзья')),
+      h('section', { key: 'n-form', class: 'group group-gap-l' }, h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Имя'),
+        h('input', {
+          class: 'form-input', name: 'friend-name', value: sh.draft.name, maxlength: NAME_MAX, autocomplete: 'nickname', enterkeyhint: 'done',
+          oninput: e => {
+            sh.draft.name = e.target.value;
+            const pv = root.querySelector('.sheet .pv-name');
+            if (pv) pv.textContent = sh.draft.name.trim() || 'Имя';
+            const b = root.querySelector('#sheet-done');
+            if (b) b.disabled = sh.busy || !cleanName(sh.draft.name);
+          },
+          onkeydown: e => e.key === 'Enter' && saveName(sh),
+        }))),
+      sh.err && h('p', { key: 'n-err', class: 'sec-foot err', role: 'alert' }, sh.err),
+    ];
+  }
+
+  async function saveName(sh) {
+    const name = cleanName(sh.draft.name);
+    if (!name || sh.busy || closing) return;
+    if (name === cloud.me.name) return closeSheet();
+    sh.busy = true;
+    sh.err = '';
+    render();
+    try {
+      await cloud.rename(name);
+      M.haptic();
+      sh.busy = false;
+      return ui.sheet === sh ? closeSheet(() => toast('Имя для друзей сохранено')) : toast('Имя для друзей сохранено');
+    } catch (e) {
+      sh.err = failText(e);
+    }
+    sh.busy = false;
+    if (ui.sheet === sh) render();
+    else toast(sh.err);
+  }
+
+  function askLeave() {
+    showAlert({
+      title: 'Выключить друзей?', msg: 'Твой снимок и все дружбы сотрутся с сервера — друзья перестанут тебя видеть. Отметки на телефоне не изменятся.',
+      yes: 'Выключить', danger: true,
+      action: async () => {
+        try {
+          await cloud.leave();
+          toast('Друзья выключены');
+        } catch (e) {
+          toast(failText(e));
+        }
+      },
+    });
+  }
+
+  // Сервер ответил — перерисовать, но не посреди закрытия листа и не под открытым барабаном времени.
+  function cloudChanged(delay = 0) {
+    win.clearTimeout(cloudTimer);
+    cloudTimer = win.setTimeout(() => {
+      if (closing || ui.alertClosing || pickerOpen()) return cloudChanged(400);
+      render();
+    }, delay);
+  }
+
+  // Пока открыта вкладка «Друзья» и приложение на экране — свежие данные раз в минуту.
+  function pollFriends() {
+    win.clearTimeout(friendsTimer);
+    if (!cloud.joined || ui.tab !== 'friends' || doc.visibilityState === 'hidden') return;
+    friendsTimer = win.setTimeout(() => {
+      cloud.sync({ force: true });
+      pollFriends();
+    }, FRIENDS_EVERY);
   }
 
   // ---------- Настройки
@@ -1264,7 +1869,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     showAlert({
       title: 'Сбросить к шаблону?', msg: 'Все отметки, сон и итоги недель будут стёрты. Если нужна копия — сначала экспорт.', yes: 'Сбросить', danger: true,
       action: () => {
-        S = D.seed(today);
+        S = D.seed(today, undefined, S.since); // «в системе с» переживает сброс
         Object.assign(ui, { dataMsg: 'Сброшено к шаблону', yOpen: false, sleepOpen: false, edit: false });
         commit();
       },
@@ -1296,6 +1901,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         timeRow(ICONS.moon[1], 'Цель отбоя', null, S.sleep.goalBed, t => t, v => (S.sleep.goalBed = v)),
         timeRow(ICONS.alarm[1], 'Подъём', null, S.sleep.goalWake, clock, v => (S.sleep.goalWake = v)),
         timeRow(G.stairs, 'Текущий шаг', 'меняется на итогах недели', D.stepTonight(S, today), t => t, v => D.setStep(S, v, today))),
+      cloud.enabled && [secH('h-friends', 'Друзья'), h('section', { key: 'friends', class: 'group', 'data-flip': '' }, cloud.joined
+        ? [
+          h('button', { key: 'name', class: 'row row-s', style: tint('pink'), onclick: openName }, tile('people'), txt('Имя для друзей'), h('span', { class: 'value' }, cloud.me.name), chev()),
+          h('button', { key: 'privacy', class: 'row row-s', style: tint('indigo'), onclick: () => openSheet({ kind: 'privacy' }) }, lockTile(), txt('Что видят друзья'), chev()),
+          h('button', { key: 'leave', class: 'row row-t row-danger', onclick: askLeave }, 'Выключить друзей'),
+        ]
+        : h('button', { key: 'on', class: 'row row-s', style: tint('pink'), onclick: () => openTab('friends') }, tile('people'), txt('Друзья'), h('span', { class: 'value' }, 'выключены'), chev()))],
       secH('h-sys', 'Система'),
       h('section', { key: 'sys', class: 'group', 'data-flip': '' }, h('button', {
         class: 'row row-s', style: tint('gray'), onclick: () => openSheet({ kind: 'rules' }),
@@ -1390,23 +2002,36 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (doc.visibilityState === 'hidden') {
       flushTime();
       win.clearTimeout(tickTimer);
+      win.clearTimeout(friendsTimer);
+      cloud.flush(); // друзья увидят последние отметки, даже если приложение выгрузят
       return void store.flush();
     }
     // Вернулся: свежий день и отсчёт; раскрытая карточка ночи сворачивается в строку героя.
     if (ui.sleepOpen && !ui.sheet && !ui.alert) ui.sleepOpen = false;
     render();
+    cloud.sync();
+    pollFriends();
     if (reg && Date.now() - lastCheck > UPDATE_EVERY) {
       lastCheck = Date.now();
       reg.update().catch(() => {});
     }
   });
-  win.addEventListener('pagehide', () => store.flush());
+  win.addEventListener('pagehide', () => {
+    cloud.flush();
+    store.flush();
+  });
+  win.addEventListener('online', () => cloud.sync({ force: true }));
   win.addEventListener('scroll', onScroll, { passive: true });
   doc.addEventListener('touchstart', () => {}, { passive: true }); // без слушателя iOS не показывает :active
 
   render();
   initSW();
-  return { render, get state() { return S; } };
+  // Друзья подгружаются после первого кадра: зависшая IndexedDB не оставит экран пустым.
+  const cloudReady = cloud.load().then(() => {
+    render();
+    return cloud.sync({ force: true });
+  });
+  return { render, get state() { return S; }, cloud, cloudReady };
 }
 
 const COLOR_NAMES = {

@@ -9,6 +9,8 @@ const ASSETS = [
   './domain.js',
   './store.js',
   './icons.js',
+  './share.js',
+  './cloud.js',
   './manifest.json',
   './minimum-180.png',
   './minimum-192.png',

@@ -224,6 +224,12 @@
   --spark: 8px;
   --spark-w: 5px;
   --spark-h: 12px;
+  --row-friend: 64px;
+  --code-btn: 48px;
+  --tab-dot: 9px;
+  --join-overlap: 22px;
+  --track-code: 0.12em;
+  --font-code: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
   /* радиусы */
   --r-hero: 22px;
@@ -924,6 +930,136 @@ button.cell.closed::after, button.cell.break::after { inset: calc(var(--u4) * -1
 .rule-n { flex: none; display: grid; place-items: center; width: var(--tile); height: var(--tile); border-radius: 50%; background: var(--pill-bg); font-size: var(--fs-sub); font-weight: 600; color: var(--pill-text); }
 .hidden-input { position: absolute; width: var(--hair); height: var(--hair); opacity: 0; overflow: hidden; pointer-events: none; }
 
+
+/* ---------- друзья */
+
+.tab-ic { position: relative; display: grid; place-items: center; }
+.tab .tab-ic { line-height: 0; }
+.tab-dot {
+  position: absolute;
+  top: calc(var(--u1) * -1);
+  right: calc(var(--u3) * -1);
+  width: var(--tab-dot);
+  height: var(--tab-dot);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 var(--bw-s) var(--tab-bg);
+}
+.head-icon { margin-right: calc(var(--u10) * -1); }
+.head-icon .gl { width: var(--gl-m); height: var(--gl-m); stroke-width: 2; }
+
+/* мой код: крупно, моноширинно; тап — скопировать, круглая кнопка — поделиться */
+.code-card { display: flex; align-items: center; gap: var(--u12); margin-top: var(--u18); padding: var(--u14) var(--u16); }
+.code-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: var(--u2); text-align: left; transition: opacity var(--t-fast) var(--e-out); }
+.code-over { font-size: var(--fs-foot); line-height: var(--lh-foot); font-weight: 600; letter-spacing: var(--track-over); text-transform: uppercase; color: var(--accent-soft); }
+.code-big { font-family: var(--font-code); font-size: var(--fs-title); line-height: var(--lh-title); font-weight: 700; letter-spacing: var(--track-code); }
+.code-hint { font-size: var(--fs-foot); line-height: var(--lh-foot); color: var(--text-2); }
+.code-share {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--code-btn);
+  height: var(--code-btn);
+  border-radius: 50%;
+  background: var(--g-button);
+  color: var(--on-grad);
+  transition: transform var(--t) var(--e-spring), opacity var(--t) var(--e-out);
+}
+.code-share .gl { width: var(--gl-m); height: var(--gl-m); stroke-width: 2.1; }
+.code-inline { font-family: var(--font-code); font-weight: 700; letter-spacing: var(--track-code); }
+.value.accent { color: var(--accent); }
+
+/* друг в списке: его кольца, «k из n», огонёк серии */
+.friend { min-height: var(--row-friend); }
+.f-rings { flex: none; width: var(--mini); height: var(--mini); }
+.f-rings circle, .join-rings circle { fill: none; }
+.f-closed { color: var(--accent); font-weight: 600; }
+.list-friends .friend + .friend::before { left: calc(var(--u16) + var(--mini) + var(--u14)); }
+.f-streak {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--u4);
+  height: var(--u28);
+  padding: 0 var(--u10);
+  border-radius: var(--r-chip);
+  background: var(--fill);
+  font-size: var(--fs-sub);
+  font-weight: 600;
+}
+.f-streak .gl { width: var(--gl-check); height: var(--gl-check); fill: var(--flame); stroke: none; }
+
+/* запросы и аватары */
+.avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--tile);
+  height: var(--tile);
+  border-radius: 50%;
+  background: var(--item);
+  color: var(--on-tile);
+  font-size: var(--fs-sub);
+  line-height: var(--lh-sub);
+  font-weight: 700;
+}
+.avatar .gl { width: var(--gl-check); height: var(--gl-check); }
+.avatar-wait { background: var(--fill); color: var(--text-2); }
+.avatar-l { width: var(--tile-l); height: var(--tile-l); font-size: var(--fs-title); line-height: var(--lh-title); }
+.avatar-l .gl { width: var(--gl-l); height: var(--gl-l); stroke-width: 1.9; }
+.avatar-add { background: var(--g-button); color: var(--on-grad); }
+.ask-btns { flex: none; display: flex; align-items: center; gap: var(--u2); margin-right: calc(var(--u6) * -1); }
+.ask .icon-btn { color: var(--text-2); }
+.pill-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: var(--chip-h);
+  padding: 0 var(--u14);
+  border-radius: var(--r-chip);
+  background: var(--g-button);
+  color: var(--on-grad);
+  font-size: var(--fs-sub);
+  font-weight: 600;
+  transition: transform var(--t) var(--e-spring), opacity var(--t) var(--e-out);
+}
+.pill-btn::after { content: ""; position: absolute; inset: calc(var(--u4) * -1) calc(var(--u2) * -1); }
+
+/* друзья выключены: твои кольца и место для друга */
+.join { display: flex; flex-direction: column; align-items: center; gap: var(--u8); padding: var(--u24) var(--u20) var(--u22); text-align: center; }
+.join-art { display: flex; margin-bottom: var(--u8); }
+.join-rings { width: var(--day-ring); height: var(--day-ring); }
+.join-rings.ghost { margin-left: calc(var(--join-overlap) * -1); opacity: 0.4; }
+.join-title { font-size: var(--fs-stat); line-height: var(--lh-stat); font-weight: 700; }
+.join-text { font-size: var(--fs-sub); line-height: var(--lh-sub); color: var(--text-2); }
+.sec-foot.err { color: var(--accent); font-weight: 600; }
+
+/* «Добавить друга» */
+.code-field { padding: var(--u6) var(--u16); }
+.code-input {
+  width: 100%;
+  min-height: var(--row-friend);
+  font-family: var(--font-code);
+  font-size: var(--fs-title);
+  font-weight: 700;
+  letter-spacing: var(--track-code);
+  text-align: center;
+  text-transform: uppercase;
+}
+
+/* у друга: строки только для чтения, строка сна без отсчёта, лента */
+.row.static { cursor: default; }
+.sleep-line { position: relative; width: 100%; display: flex; align-items: flex-start; gap: var(--u10); text-align: left; }
+.sleep-line > .gl { margin-top: var(--u1); color: var(--sleep); transition: color var(--t-slow) var(--e-out); }
+.hero.closed .sleep-line > .gl { color: var(--on-sun); }
+.tile-sun { background: var(--g-sunset); }
+.tile-sun .gl { fill: var(--on-tile); stroke: none; }
+.chain-card .chain-wrap { margin-top: 0; }
+
+/* «Что видят друзья»: переключатели с разделителями */
+.switch-row + .switch-row::before { content: ""; position: absolute; top: 0; left: var(--u16); right: 0; height: var(--hair); background: var(--sep); }
+.item-switch + .item-switch::before { left: calc(var(--u16) + var(--tile) + var(--u12)); }
+
 /* ---------- лист */
 
 .sheet { position: fixed; inset: 0; z-index: 20; --cell: var(--cell-2); --sep: var(--sep-2); --text-2: var(--text-2-sheet); --fill: var(--fill-2); --press: var(--press-2); --danger: var(--danger-sheet); --track: var(--track-2); }
@@ -1075,9 +1211,10 @@ button.cell.closed::after, button.cell.break::after { inset: calc(var(--u4) * -1
 .alert-btn:active { background: var(--press-2); }
 
 /* Свой отклик на касание вместо системной подсветки. Мелкие кнопки пружинят, текстовые — гаснут. */
-.chip:active, .swatch:active, .ig-btn:active, button.cell:active, button.wr-day:active .mini { transform: scale(var(--press-s)); }
+.chip:active, .swatch:active, .ig-btn:active, button.cell:active, button.wr-day:active .mini,
+.code-share:active, .pill-btn:active { transform: scale(var(--press-s)); }
 .tab:active, .switch-row:active, .sleep-btn:active, .sheet-act:active:not(:disabled), .link:active, .restore:active,
-.head-action:active, .btn-text:active, .bar-update:active, .rate:active, .strip:active { opacity: 0.6; }
+.head-action:active, .btn-text:active, .bar-update:active, .rate:active, .strip:active, .code-main:active { opacity: 0.6; }
 
 /* ---------- полосы и таб-бар */
 
@@ -1116,7 +1253,7 @@ button.cell.closed::after, button.cell.break::after { inset: calc(var(--u4) * -1
   bottom: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(var(--tabs, 3), minmax(0, 1fr));
   padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   background: var(--tab-bg);
   -webkit-backdrop-filter: saturate(180%) blur(var(--blur));
@@ -1150,5 +1287,5 @@ button.cell.closed::after, button.cell.break::after { inset: calc(var(--u4) * -1
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .row.holding, .chip:active, .swatch:active, .ig-btn:active, button.cell:active, button.wr-day:active .mini,
-  .icon-btn:active:not(:disabled), .btn-primary:active:not(:disabled) { transform: none; }
+  .icon-btn:active:not(:disabled), .btn-primary:active:not(:disabled), .code-share:active, .pill-btn:active { transform: none; }
 }

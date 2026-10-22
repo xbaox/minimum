@@ -88,11 +88,12 @@ const TEMPLATE_ITEMS = [
 ];
 const TEMPLATE_WEEKLY = [['pulse', 'Тренировка', `подтягивания · брусья · уголок · бег 1${NB}км · подъём ног`, 'green', 3]];
 
-export function seed(today, id = makeId) {
+// since — «в системе с»: у нового телефона — сегодня; сброс к шаблону передаёт прежнюю дату.
+export function seed(today, id = makeId, since = today) {
   return {
     schema: 1,
     createdAt: today,
-    since: SINCE,
+    since: isDate(since) ? since : today,
     items: TEMPLATE_ITEMS.map(([icon, name, note, color, beforeBed]) =>
       ({ id: id(), icon, name, note, color, beforeBed, addedAt: today, archivedAt: null })),
     weekly: TEMPLATE_WEEKLY.map(([icon, name, note, color, perWeek]) =>
@@ -105,14 +106,20 @@ export function seed(today, id = makeId) {
   };
 }
 
+// Обрезка по длине без половинки эмодзи (суррогатной пары) на конце.
+const cut = (s, max) => {
+  s = s.slice(0, max);
+  return /[\uD800-\uDBFF]$/.test(s) ? s.slice(0, -1) : s;
+};
+
 // Поля формы → чистые значения; null, если название пустое.
 export function cleanFields(f, weekly) {
-  const name = String(f.name ?? '').trim().slice(0, 60);
+  const name = cut(String(f.name ?? '').trim(), 60);
   if (!name) return null;
   const out = {
     icon: ICON_IDS.includes(f.icon) ? f.icon : DEFAULT_ICON,
     name,
-    note: String(f.note ?? '').trim().slice(0, 120),
+    note: cut(String(f.note ?? '').trim(), 120),
     color: COLORS.includes(f.color) ? f.color : DEFAULT_COLOR,
   };
   if (weekly) out.perWeek = Math.min(7, Math.max(1, Math.round(+f.perWeek) || 3));

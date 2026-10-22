@@ -130,3 +130,28 @@ test('старый файл и мусор отклоняются', () => {
   assert.equal(parseImport('{"schema":1,"items":[]}', TODAY).error, 'Это файл старой версии — импорт не поддерживается');
   assert.match(parseImport('не json', TODAY).error, /не JSON/);
 });
+
+test('второй документ: localStorage отказал — старая копия убрана, верх берёт зеркало; зависшая база не держит', async () => {
+  const { createDoc } = await import('../store.js');
+  const ls = new MemoryStorage({ 'minimum.cloud': '{"old":1}' });
+  const idb = new IDBFactory();
+  const d = createDoc({ ls, idb, key: 'minimum.cloud' });
+  ls.setItem = () => { throw new Error('quota'); };
+  d.save('{"new":1}');
+  await d.flush();
+  assert.equal(ls.getItem('minimum.cloud'), null, 'устаревшая копия не победит зеркало');
+  delete ls.setItem;
+  const again = createDoc({ ls: new MemoryStorage(), idb, key: 'minimum.cloud' });
+  assert.equal(await again.load(), '{"new":1}');
+  // только IndexedDB — localStorage не трогается
+  const cache = createDoc({ ls, idb, key: 'minimum.cloud-cache', local: false });
+  cache.save('{"big":1}');
+  await cache.flush();
+  assert.equal(ls.getItem('minimum.cloud-cache'), null);
+  assert.equal(await createDoc({ idb, key: 'minimum.cloud-cache', local: false }).load(), '{"big":1}');
+  // база не отвечает — чтение сдаётся через wait мс
+  const hung = { open: () => ({}) };
+  const t0 = Date.now();
+  assert.equal(await createDoc({ ls: new MemoryStorage(), idb: hung, key: 'x' }).load(100), null);
+  assert.ok(Date.now() - t0 < 1000);
+});

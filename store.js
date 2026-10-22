@@ -43,11 +43,11 @@ function openDB(idb) {
   });
 }
 
-async function readMirror(idb) {
+async function readMirror(idb, doc = DOC) {
   const db = await openDB(idb);
   try {
     return await new Promise((ok, fail) => {
-      const r = db.transaction(STORE).objectStore(STORE).get(DOC);
+      const r = db.transaction(STORE).objectStore(STORE).get(doc);
       r.onsuccess = () => ok(r.result);
       r.onerror = () => fail(r.error);
     });
@@ -56,12 +56,13 @@ async function readMirror(idb) {
   }
 }
 
-async function writeMirror(idb, text) {
+async function writeMirror(idb, text, doc = DOC) {
   const db = await openDB(idb);
   try {
     await new Promise((ok, fail) => {
       const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).put(text, DOC);
+      if (text == null) tx.objectStore(STORE).delete(doc);
+      else tx.objectStore(STORE).put(text, doc);
       tx.oncomplete = () => ok();
       tx.onerror = tx.onabort = () => fail(tx.error);
     });
@@ -141,6 +142,66 @@ export function createStore({ ls, idb, today, onSaveError = () => {} }) {
     async flush() {
       clearTimeout(timer);
       await flushMirror();
+    },
+  };
+}
+
+// Отдельный документ рядом с состоянием (друзья): свой ключ localStorage и своя запись в том же зеркале
+// IndexedDB. Пишется целиком; null — стереть. local: false — только IndexedDB (большой кэш не теснит отметки
+// в localStorage, общем для всех PWA домена). IndexedDB может зависнуть — чтение и сброс ждут не дольше wait мс.
+export function createDoc({ ls, idb, key, mirror = true, local = true }) {
+  let timer = null, lastText;
+  const useLs = local && !!ls, useIdb = !!idb && (mirror || !local);
+  const within = (p, wait) => (wait ? Promise.race([p, new Promise(ok => setTimeout(ok, wait, undefined))]) : p);
+  const flushMirror = async () => {
+    timer = null;
+    if (!useIdb || lastText === undefined) return;
+    try {
+      await writeMirror(idb, lastText, key);
+    } catch {}
+  };
+  return {
+    // → текст или null
+    async load(wait = 0) {
+      if (useLs) {
+        try {
+          const text = ls.getItem(key);
+          if (text) return text;
+        } catch {}
+      }
+      if (!useIdb) return null;
+      try {
+        const m = await within(readMirror(idb, key), wait);
+        if (typeof m !== 'string' || !m) return null;
+        if (useLs) {
+          try {
+            ls.setItem(key, m);
+          } catch {}
+        }
+        return m;
+      } catch {
+        return null;
+      }
+    },
+    save(text) {
+      lastText = text;
+      if (useLs) {
+        try {
+          if (text == null) ls.removeItem(key);
+          else ls.setItem(key, text);
+        } catch {
+          // Старую копию убираем: иначе при следующем старте она победит более свежее зеркало.
+          try {
+            ls.removeItem(key);
+          } catch {}
+        }
+      }
+      clearTimeout(timer);
+      timer = setTimeout(flushMirror, MIRROR_DELAY);
+    },
+    async flush(wait = 0) {
+      clearTimeout(timer);
+      await within(flushMirror(), wait);
     },
   };
 }

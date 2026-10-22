@@ -6,6 +6,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { boot } from '../app.js';
 import { normalize, seed, addDays, range, activeIds } from '../domain.js';
+import { fakeSupabase } from './fake-supabase.js';
 
 const HTML = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const WED = new Date(2026, 8, 30, 9, 0); // среда 30 сентября, утро
@@ -48,7 +49,8 @@ function recordMotion(win, { hold = false } = {}) {
   return log;
 }
 
-async function start(when, { storage = {}, idb = new IDBFactory(), motion = false, holdMotion = false } = {}) {
+// cloud — сервер друзей: по умолчанию выключен (как без адреса и ключа), в тестах друзей — фейковый Supabase.
+async function start(when, { storage = {}, idb = new IDBFactory(), motion = false, holdMotion = false, cloud = { url: '', key: '' } } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on('jsdomError', e => { if (!/Not implemented: navigation/.test(e.message)) errors.push(e); });
@@ -59,7 +61,7 @@ async function start(when, { storage = {}, idb = new IDBFactory(), motion = fals
   for (const [k, v] of Object.entries(storage)) win.localStorage.setItem(k, v);
   const motionLog = motion || holdMotion ? recordMotion(win, { hold: holdMotion }) : null;
   const t = { now: when };
-  const app = await boot({ win, now: () => t.now, idb });
+  const app = await boot({ win, now: () => t.now, idb, cloud });
   const doc = win.document;
   const dump = () => {
     const o = {};
@@ -124,18 +126,21 @@ test('первый старт со старыми ключами: стёрто, 
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Новый минимум/);
   assert.doesNotMatch(a.text(), /Что нового/); // новичку «Что нового» не нужно
-  assert.equal(a.app.state.ui.news, 'v53');
+  assert.equal(a.app.state.ui.news, 'v55');
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Новый минимум|Что нового/);
   assert.equal(b.rows().length, 8);
   b.done();
 });
 
-test('«Что нового» — один раз для тех, кто уже пользовался', async () => {
-  const a = await start(WED, { storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: '', lastExport: '' } }) });
+test('«Что нового» — один раз для тех, кто уже пользовался, и только с сервером друзей', async () => {
+  const off = await start(WED, { storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v53', lastExport: '' } }) });
+  assert.doesNotMatch(off.text(), /Что нового/);
+  off.done();
+  const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v53', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
-  assert.equal(a.doc.querySelectorAll('.news li').length, 4);
-  assert.match(a.text(), /Удержи пункт — откроются его серия и 6 недель истории/);
+  assert.equal(a.doc.querySelectorAll('.news li').length, 3);
+  assert.match(a.text(), /Друзья: обменяйтесь кодами/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
   const b = await reboot(a);
@@ -777,7 +782,7 @@ test('Прогресс рисуется: серия, цепь 6 недель, н
   const a = await start(WED);
   a.app.state.sleep.nights['2026-09-30'] = { bed: '00:40', wake: '07:30' };
   a.click('Прогресс', '.tab');
-  assert.match(a.text(), /В системе с 20 июля · 73 дня/);
+  assert.match(a.text(), /В системе с 30 сентября · 1 день/); // новый телефон — «в системе» с сегодня
   assert.match(a.text(), /Один пропуск прощается, два подряд — серия с нуля/);
   assert.equal(a.doc.querySelectorAll('.chain .cell').length, 42);
   assert.equal(a.doc.querySelectorAll('.chain .cell.today').length, 1);
@@ -807,7 +812,7 @@ test('отказ записи → постоянная полоса', async () =
 });
 
 test('с движением: только transform, opacity и stroke-dashoffset; листы, подтверждения и карточки уходят анимацией', async () => {
-  const a = await start(WED, { motion: true, storage: stateWith('2026-09-30', 12, { closed: range('2026-09-24', '2026-09-29'), ui: { welcomeSeen: true, news: '', lastExport: '' } }) });
+  const a = await start(WED, { motion: true, cloud: fakeSupabase(), storage: stateWith('2026-09-30', 12, { closed: range('2026-09-24', '2026-09-29'), ui: { welcomeSeen: true, news: '', lastExport: '' } }) });
   const log = a.motionLog;
   const tick = () => wait(5);
   assert.ok(log.some(x => x.el.matches('main.screen')), 'экран появляется');
