@@ -25,7 +25,7 @@ afterEach(() => {
 function stateWith(today, back, { closed = [] } = {}) {
   let n = 0;
   const S = baoSeed(addDays(today, -back), () => 'i' + ++n);
-  S.ui = { welcomeSeen: true, news: 'v56', lastExport: today };
+  S.ui = { welcomeSeen: true, news: 'v57', lastExport: today };
   const ids = activeIds(S);
   for (const d of range(S.createdAt, addDays(today, -1))) S.days[d] = { plan: ids.slice(), done: closed.includes(d) ? ids.slice() : [] };
   return { 'minimum.v2': JSON.stringify(S) };

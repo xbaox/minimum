@@ -9,6 +9,7 @@ export const SINCE = '2026-07-20';
 export const COLORS = ['red', 'orange', 'yellow', 'green', 'mint', 'teal', 'blue', 'indigo', 'purple', 'pink', 'brown', 'gray'];
 export const DEFAULT_COLOR = 'blue';
 export const LATEST_BED = '03:00';
+export const EVENING_HOUR = 18; // вечер — с 18:00 до границы дня 04:00
 export const CHOICES = ['earlier30', 'earlier15', 'keep', 'later15'];
 // Круглые даты серии — праздник закрытия дня чуть больше. 66 — средний срок, за который действие становится привычкой.
 export const MILESTONES = [3, 7, 14, 21, 30, 50, 66, 100];
@@ -312,38 +313,47 @@ export function setNight(s, date, field, value) {
 }
 
 // Новый шаг действует с завтрашнего логического дня — то есть с ближайшей ночи (или с from, см. stepFrom).
+// Решение заменяет все шаги с from и дальше: последнее слово — за последним решением.
 export function setStep(s, bed, today, from = addDays(today, 1)) {
   if (!isTime(bed)) return false;
-  const ts = s.sleep.targets.filter(t => t.from !== from);
+  const ts = s.sleep.targets.filter(t => t.from < from);
   if (targetFor({ sleep: { targets: ts } }, from) !== bed) ts.push({ from, bed });
   ts.sort((a, b) => (a.from < b.from ? -1 : 1));
   s.sleep.targets = ts;
   return true;
 }
 
-// Сколько минут сна от отбоя bed до подъёма wake.
-export const sleepFor = (bed, wake) => toMin(wake) + 1440 - norm(bed);
+// Сколько минут сна от отбоя bed до подъёма wake (не меньше нуля — для странных пар времени).
+export const sleepFor = (bed, wake) => Math.max(0, toMin(wake) + 1440 - norm(bed));
 
-// С какой ночи действует новый отбой из Настроек: с ближайшей, но если этой ночью он уже прошёл —
-// со следующей: задним числом ночь «позже шага» не делаем. today — логический день, now — часы.
-export function stepFrom(today, bed, now) {
+// С какой ночи действует новый отбой: с ближайшей, но если этой ночью отбой уже прошёл — новый или прежний
+// (tonight), — со следующей. Задним числом ночь не становится ни «позже шага», ни «в цель».
+// today — логический день, now — часы.
+export function stepFrom(today, bed, now, tonight = bed) {
   const h = now.getHours();
-  const night = h >= 18 || h < DAY_START_HOUR;
-  return addDays(today, night && nowNorm(now) >= norm(bed) ? 2 : 1);
+  const night = h >= EVENING_HOUR || h < DAY_START_HOUR;
+  const passed = nowNorm(now) >= Math.min(norm(bed), norm(tonight));
+  return addDays(today, night && passed ? 2 : 1);
 }
 
 // Подъём меняется — часы сна те же: цель отбоя и шаги (с from) сдвигаются на ту же разницу.
 // from — с какой ночи сдвигать шаг (stepFrom для нового отбоя); прошлые ночи не трогаем.
+// Отбой не позже LATEST_BED: иначе «вечер» перевалил бы за границу дня 04:00.
 export function setWake(s, wake, today, from = addDays(today, 1)) {
   if (!isTime(wake)) return false;
   const d = ((((toMin(wake) - toMin(s.sleep.goalWake)) % 1440) + 1440 + 720) % 1440) - 720;
   s.sleep.goalWake = wake;
   if (!d) return true;
-  s.sleep.goalBed = shiftTime(s.sleep.goalBed, d);
+  const move = t => {
+    const m = shiftTime(t, d);
+    return norm(m) > norm(LATEST_BED) ? LATEST_BED : m;
+  };
+  s.sleep.goalBed = move(s.sleep.goalBed);
   const at = targetFor(s, from);
   const keep = s.sleep.targets.filter(t => t.from < from);
-  const later = s.sleep.targets.filter(t => t.from > from).map(t => ({ from: t.from, bed: shiftTime(t.bed, d) }));
-  s.sleep.targets = [...keep, { from, bed: shiftTime(at, d) }, ...later].sort((a, b) => (a.from < b.from ? -1 : 1));
+  const later = s.sleep.targets.filter(t => t.from > from).map(t => ({ from: t.from, bed: move(t.bed) }));
+  const ts = [...keep, { from, bed: move(at) }, ...later].sort((a, b) => (a.from < b.from ? -1 : 1));
+  s.sleep.targets = ts.filter((t, i) => i === 0 || t.bed !== ts[i - 1].bed); // A → B → A не копит лишних шагов
   return true;
 }
 
@@ -442,7 +452,8 @@ export function closeWeek(s, monday, draft, choice, today, nowISO = new Date().t
     improvement: txt(draft.improvement),
     sleep: { from: p.from, to: opt.to, choice },
   };
-  setStep(s, opt.to, today);
+  // Итоги закрывают ночью, когда отбой уже прошёл, — новый шаг со следующей ночи (stepFrom).
+  setStep(s, opt.to, today, stepFrom(today, opt.to, new Date(nowISO), stepTonight(s, today)));
   return true;
 }
 

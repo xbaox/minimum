@@ -94,7 +94,6 @@ export const UI = {
   minus: 'M5 12h14',
   up: 'M12 19V5M6 11l6-6 6 6',
   down: 'M12 5v14M6 13l6 6 6-6',
-  stairs: 'M4 19h4v-4h4v-4h4V7h4',
   tabToday: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8 12.3l2.8 2.8L16.2 9.6',
   tabProgress: 'M5 20v-7M12 20V5M19 20v-10',
   tabSettings: 'M4 7h9M17 7h3M15 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM4 17h3M11 17h9M9 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',

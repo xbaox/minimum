@@ -133,7 +133,7 @@ test('первый старт со старыми ключами: стёрто, 
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Новый минимум/);
   assert.doesNotMatch(a.text(), /Что нового/); // новичку «Что нового» не нужно
-  assert.equal(a.app.state.ui.news, 'v56');
+  assert.equal(a.app.state.ui.news, 'v57');
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Новый минимум|Что нового/);
   assert.equal(b.rows().length, 5);
@@ -147,7 +147,7 @@ test('«Что нового» — один раз для тех, кто уже �
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v53', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
   assert.equal(a.doc.querySelectorAll('.news li').length, 3);
-  assert.match(a.text(), /Гонка недели — прямо на «Сегодня»/);
+  assert.match(a.text(), /Сон — в часах/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
   const b = await reboot(a);
@@ -182,7 +182,7 @@ test('в разметке нет текста «null», «undefined», «NaN» �
 test('базовый шаблон с историей: нигде нет «null», «undefined», «NaN»; два кольца, первый счётчик даёт третье', async () => {
   let n = 0;
   const S = seed('2026-09-10', () => 'b' + ++n);
-  S.ui = { welcomeSeen: true, news: 'v56', lastExport: '' };
+  S.ui = { welcomeSeen: true, news: 'v57', lastExport: '' };
   const ids = activeIds(S);
   for (const d of range(S.createdAt, '2026-09-29')) S.days[d] = { plan: ids.slice(), done: ['2026-09-27', '2026-09-28'].includes(d) ? ids.slice() : [] };
   const a = await start(WED, { storage: { 'minimum.v2': JSON.stringify(S) } });
@@ -568,7 +568,7 @@ test('воскресенье: баннер → итоги → выбор → н�
   rec.click();
   assert.ok(rec.querySelector('.tick'));
   assert.equal(close().disabled, false);
-  assert.match(sp(a.sheet().textContent), /Со следующей ночи отбой 00:30\. Передвинь сигнал «Телефон на кухню» на 00:00\./);
+  assert.match(sp(a.sheet().textContent), /С ближайшей ночи отбой 00:30\. Передвинь сигнал «Телефон на кухню» на 00:00\./);
   a.type(a.sheet().querySelector('textarea'), 'держал отбой');
   a.click('Книга в кровать вместо телефона', '.sheet button');
   assert.equal(a.sheet().querySelector('input[aria-label="1% на следующую неделю"]').value, 'Книга в кровать вместо телефона');
@@ -729,47 +729,57 @@ test('Настройки: недельный счётчик — раз в нед
   a.done();
 });
 
-test('Настройки: сон в часах — «сон сейчас» и «цель» степпером, «сразу на цель»; подъём сдвигает отбой, часы те же', async () => {
+test('Настройки: сон в часах — шаг и цель степпером, «сразу на цель» с подтверждением; подъём сдвигает отбой, часы те же', async () => {
   const a = await start(WED); // 30 сентября, 9:00 — шаг 01:00, цель 23:30, подъём 7:30
   a.click('Настройки', '.tab');
   const S = a.app.state;
   const row = label => a.doc.querySelector(`.sleep-row [role=group][aria-label="${label}"]`).closest('.sleep-row');
   const btn = (label, more) => a.doc.querySelector(`[aria-label="${label}: ${more ? 'больше' : 'меньше'} на 15 минут"]`);
-  assert.match(sp(row('Сон сейчас').textContent), /^6 ч 30 мин\s*сон сейчас · отбой 01:00/);
-  assert.match(sp(row('Цель сна').textContent), /^8 ч\s*цель · отбой 23:30/);
-  assert.match(a.text(), /Сразу на цель — 8 ч/);
-  btn('Сон сейчас', true).click();
-  btn('Сон сейчас', true).click();
+  assert.match(sp(row('Текущий шаг').textContent), /^6 ч 30 мин\s*текущий шаг · отбой 01:00$/);
+  assert.match(sp(row('Цель сна').textContent), /^8 ч\s*цель · отбой 23:30$/);
+  assert.match(a.text(), /Новый отбой — с ближайшей ночи/);
+  btn('Текущий шаг', true).click();
+  btn('Текущий шаг', true).click();
   assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '00:30' }, 'днём — с ближайшей ночи');
-  assert.match(sp(row('Сон сейчас').textContent), /^7 ч\s*сон сейчас · отбой 00:30$/);
-  btn('Цель сна', false).click();
-  assert.equal(S.sleep.goalBed, '23:45');
-  assert.match(sp(row('Цель сна').textContent), /^7 ч 45 мин/);
-  a.click('Сразу на цель — 7 ч 45 мин');
-  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '23:45' });
+  assert.match(sp(row('Текущий шаг').textContent), /^7 ч\s*текущий шаг · отбой 00:30$/);
+  // цель ниже текущего шага — шаг опускается вместе с ней
+  for (let i = 0; i < 5; i++) btn('Цель сна', false).click();
+  assert.equal(S.sleep.goalBed, '00:45');
+  assert.match(sp(row('Цель сна').textContent), /^6 ч 45 мин/);
+  assert.match(sp(row('Текущий шаг').textContent), /^6 ч 45 мин\s*текущий шаг · отбой 00:45$/);
+  assert.equal(btn('Текущий шаг', true).disabled, true, 'больше цели — нельзя');
+  for (let i = 0; i < 5; i++) btn('Цель сна', true).click();
+  assert.equal(S.sleep.goalBed, '23:30');
+  // «Сразу на цель» — через подтверждение
+  a.click('Сразу на цель — 8 ч');
+  assert.match(sp(a.alertBox().textContent), /Сразу 8 ч сна\?Отбой 23:30 с ближайшей ночи, вместо шагов к цели\. Сейчас по шагу — 6 ч 45 мин\./);
+  a.alertBtn('Отмена');
+  assert.equal(S.sleep.targets.at(-1).bed, '00:45', 'отмена — шаг прежний');
+  a.click('Сразу на цель — 8 ч');
+  a.alertBtn('Поставить');
+  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '23:30' });
   assert.doesNotMatch(a.text(), /Сразу на цель/, 'уже на цели');
-  assert.equal(btn('Сон сейчас', true).disabled, true, 'больше цели — нельзя');
-  assert.equal(btn('Цель сна', false).disabled, true, 'цель не меньше «сейчас»');
   // подъём на полчаса раньше — отбой тоже, часы сна те же
   const wake = a.doc.querySelector('.time-row input[aria-label="Подъём"]');
   wake.value = '07:00';
   wake.dispatchEvent(new a.win.Event('change', { bubbles: true }));
   assert.equal(S.sleep.goalWake, '07:00');
-  assert.equal(S.sleep.goalBed, '23:15');
-  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '23:15' });
-  assert.match(sp(row('Сон сейчас').textContent), /^7 ч 45 мин/);
-  assert.match(sp(row('Цель сна').textContent), /^7 ч 45 мин/);
+  assert.equal(S.sleep.goalBed, '23:00');
+  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '23:00' });
+  assert.match(sp(row('Текущий шаг').textContent), /^8 ч/);
   a.click('Сегодня', '.tab');
-  assert.match(a.text(), /Отбой 23:15 · 7 ч 45 мин сна, цель/);
+  assert.match(a.text(), /Отбой 23:00 · 8 ч сна — цель достигнута/);
   assert.match(a.text(), /подъём 7:00/);
-  // ночью, когда новый отбой этой ночью уже прошёл, — со следующей ночи: задним числом «позже шага» не ставим
-  a.t.now = new Date(2026, 9, 1, 0, 30); // логически ещё 30 сентября
+  // ночью, когда отбой этой ночью уже прошёл, — с ночи на пятницу; передумал — «+» вернул прежний
+  a.t.now = new Date(2026, 9, 1, 0, 30); // логически ещё среда 30 сентября
   a.click('Настройки', '.tab');
-  btn('Сон сейчас', false).click(); // отбой 23:30
-  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-02', bed: '23:30' });
-  assert.match(sp(row('Сон сейчас').textContent), /отбой 23:30 со следующей ночи/);
-  a.click('Сегодня', '.tab');
-  assert.match(a.text(), /Отбой 23:15/, 'этой ночью — прежний отбой');
+  btn('Текущий шаг', false).click(); // 23:15
+  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-02', bed: '23:15' });
+  assert.match(sp(row('Текущий шаг').textContent), /отбой 23:15 с ночи на пятницу/);
+  assert.match(a.text(), /Этой ночью отбой прежний — 23:00/);
+  btn('Текущий шаг', true).click(); // снова 23:00 — запись на пятницу уходит, как не было
+  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '23:00' });
+  assert.match(sp(row('Текущий шаг').textContent), /^8 ч\s*текущий шаг · отбой 23:00$/);
   a.done();
 });
 

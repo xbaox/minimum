@@ -460,3 +460,12 @@ test('лист тянется вниз и закрывается; несохра
   assert.equal(s.panel.style.transform, 'translateY(60px)');
   s.close();
 });
+
+test('число перекатывается в свою сторону: «6 ч 45 мин» → «6 ч 30 мин» — вниз, «3 из 9» → «4 из 9» — вверх', () => {
+  const { M, root, calls, close } = env({ animate: true });
+  const view = v => [M.h('p', { key: 'n', 'data-roll': '' }, v)];
+  M.patch(root, view('6 ч 45 мин'));
+  for (const v of ['6 ч 30 мин', '7 ч', '3 из 9', '4 из 9']) M.patch(root, view(v));
+  assert.deepEqual(calls.map(a => a.frames[0].transform), ['translateY(-0.55em)', 'translateY(0.55em)', 'translateY(-0.55em)', 'translateY(0.55em)']);
+  close();
+});

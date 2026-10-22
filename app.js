@@ -12,12 +12,13 @@ import { shareOf, readShare, summaryOf, changes, deviceZone, weekScore, ranked, 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const WEEKDAYS = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье'];
 const WD = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
+const WD_ACC = ['понедельник', 'вторник', 'среду', 'четверг', 'пятницу', 'субботу', 'воскресенье']; // «с ночи на среду»
 const WDL = ['П', 'В', 'С', 'Ч', 'П', 'С', 'В'];
 const NB = ' '; // число с единицей и «до» со временем не разрываются переносом
 const HINTS = [
   'Книга в кровать вместо телефона',
   'Одежда и вода на завтра — с вечера',
-  'Телефон на кухню на 15 минут раньше',
+  `Телефон на кухню на 15${NB}минут раньше`,
 ];
 const RULES = S => [
   'Минимум — пол, а не план. Одинаков каждый день.',
@@ -34,11 +35,11 @@ const TABS = [['today', 'Сегодня', G.tabToday], ['progress', 'Прогр�
 const WELCOME = (n, now, goal) =>
   `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках. Сон — шагами от ${dur(now)} к${NB}${dur(goal)}: шаг выбираешь на итогах недели или в${NB}Настройках.`;
 // «Что нового» — про друзей; без настроенного сервера карточки нет.
-const NEWS_ID = 'v56';
+const NEWS_ID = 'v57';
 const NEWS = [
-  'Гонка недели — прямо на «Сегодня»: ты и друзья по местам',
-  'Счёт — закрытые дни + ночи в цель с понедельника; итоги — в понедельник',
-  'Новый телефон начинает с пяти базовых пунктов — свои каждый добавит сам',
+  'Сон — в часах: Настройки → «Сон», «−» и «+» по 15 минут, можно сразу на цель',
+  'Подъём меняется — часы сна остаются те же',
+  'Гонка недели — прямо на «Сегодня»: ты и друзья по местам, итоги в понедельник',
 ];
 const CODE_LEN = 5;
 const FRIENDS_EVERY = 60e3;
@@ -67,7 +68,6 @@ const failText = e => FAIL[e instanceof CloudError ? e.kind : ''] || 'Что-т�
 const DAY_STATUS = { closed: 'День закрыт', forgiven: 'Пропуск — прощён', break: 'Пропуск', pending: 'Идёт сейчас', none: 'Без минимума' };
 const CELL = { closed: 'закрыт', forgiven: 'пропуск прощён', break: 'пропуск', pending: 'сегодня', none: 'без отметок', future: '' };
 const BEFORE = [15, 30, 45, 60];
-const EVENING_HOUR = 18;
 const NIGHT_AUTOCLOSE = 1600;
 const UPDATE_EVERY = 10 * 60e3;
 
@@ -471,13 +471,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
 
   const evening = () => {
     const hr = now().getHours();
-    return hr >= EVENING_HOUR || hr < D.DAY_START_HOUR;
+    return hr >= D.EVENING_HOUR || hr < D.DAY_START_HOUR;
   };
 
   function sleepCardShown() {
     const n = S.sleep.nights[today] || {};
     const hr = now().getHours();
-    return ui.sleepOpen || (!(n.bed && n.wake) && hr >= D.DAY_START_HOUR && hr < EVENING_HOUR);
+    return ui.sleepOpen || (!(n.bed && n.wake) && hr >= D.DAY_START_HOUR && hr < D.EVENING_HOUR);
   }
 
   function todayScreen() {
@@ -556,14 +556,14 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       foot && [h('div', { key: 'line', class: 'hero-line' }), foot]);
   }
 
-  // Строка сна в герое. Днём — цель и подъём, вечером — живой отсчёт до отбоя и до «телефона на кухню».
+  // Строка сна в герое. Днём — сколько сна по шагу и подъём, вечером — живой отсчёт до отбоя и до «телефона на кухню».
   function sleepLine(step, card) {
     const goal = S.sleep.goalBed, wake = clock(S.sleep.goalWake), t = now(), eve = evening();
     const toBed = D.untilMin(t, step);
     const phone = D.activeItems(S).find(i => i.beforeBed);
     const night = S.sleep.nights[today] || {};
     const line1 = h('span', { class: 'sl1' }, h('b', {}, `Отбой ${step}`),
-      !eve ? h('span', { class: 't2' }, ` · ${dur(D.sleepFor(step, S.sleep.goalWake))} сна` + (D.norm(step) <= D.norm(goal) ? ', цель' : ''))
+      !eve ? h('span', { class: 't2' }, ` · ${dur(D.sleepFor(step, S.sleep.goalWake))} сна` + (D.norm(step) <= D.norm(goal) ? ' — цель достигнута' : ''))
         : toBed > 0 ? h('span', { class: toBed <= 30 ? 'warn' : 't2' }, ` · через${NB}${dur(toBed)}`)
           : h('span', { class: 'warn' }, ' · пора спать'));
     let line2 = h('span', { class: 'sl2' }, `подъём ${wake}`);
@@ -830,7 +830,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const footer = opt
       ? opt.to === p.from
         ? `Отбой остаётся ${p.from}.`
-        : `Со следующей ночи отбой ${opt.to}.` + (phone ? ` Передвинь сигнал «${phone.name}» на${NB}${D.deadline(opt.to, phone.beforeBed)}.` : '')
+        : `${cap(nightFrom(D.stepFrom(today, opt.to, now(), D.stepTonight(S, today))))} отбой ${opt.to}.` + (phone ? ` Передвинь сигнал «${phone.name}» на${NB}${D.deadline(opt.to, phone.beforeBed)}.` : '')
       : p.fewData ? 'Мало данных — шаг пока оставляем: выбери «Оставить», чтобы закрыть неделю.' : `Выбор нужен, чтобы закрыть неделю. Цель — ${S.sleep.goalBed}.`;
     return [
       h('p', { key: 'range', class: 'sheet-sub' }, weekRange(W)),
@@ -977,7 +977,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           h('textarea', {
             class: 'form-input form-area area', name: 'note', rows: 1, value: d.note, maxlength: 120, placeholder: 'когда / после чего', enterkeyhint: 'done',
             oninput: e => { onText('note', '.pv-note', 'когда / после чего')(e); autosize(e.target); },
-            onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } }, // подпись — одна строка, длинная переносится
+            autocapitalize: 'none',
+            onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.target.blur(); } }, // подпись — одна строка, длинная переносится
           }))),
       secH('h-color', 'Цвет'),
       h('section', { key: 'colors', class: 'group swatches', role: 'group', 'aria-label': 'Цвет', 'data-flip': '' }, D.COLORS.map(c => h('button', {
@@ -1577,7 +1578,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           onkeydown: e => e.key === 'Enter' && sendRequest(sh),
         })),
       sh.err ? h('p', { key: 'add-err', class: 'sec-foot err', role: 'alert' }, sh.err)
-        : h('p', { key: 'add-foot', class: 'sec-foot' }, 'Когда друг примет запрос, вы увидите прогресс друг друга. Если он уже ввёл твой код — вы друзья сразу.'),
+        : h('p', { key: 'add-foot', class: 'sec-foot' }, 'Когда друг примет запрос, вы увидите прогресс друг друга. Если от друга уже есть запрос по твоему коду — вы друзья сразу.'),
       secH('h-mine', 'Твой код'),
       h('section', { key: 'add-mine', class: 'group' },
         h('button', { class: 'row row-t', onclick: shareCode },
@@ -1627,7 +1628,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (!v) {
       return [
         h('p', { key: 'sub', class: 'sheet-sub' }, sub),
-        h('p', { key: 'none', class: 'group empty first' }, 'Друг ещё не открывал приложение после добавления — прогресс появится, когда откроет.'),
+        h('p', { key: 'none', class: 'group empty first' }, 'Данных пока нет — прогресс появится, когда друг откроет приложение.'),
         removeFriendRow(f),
       ];
     }
@@ -1671,9 +1672,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (night.bed && night.wake) {
       const late = D.norm(night.bed) - D.norm(D.targetFor(F, day)), d = D.duration(night);
       last = h('span', { class: 'sl2' }, `прошлая ночь ${d ? dur(d) : '—'} · `, late > 0 ? `на${NB}${dur(late)} позже шага` : h('span', { class: 'ok' }, 'в цель'));
-    } else last = h('span', { class: 'sl2' }, night.bed || night.wake ? 'прошлая ночь отмечена не полностью' : 'прошлая ночь не отмечена');
+    } else if (day !== F.createdAt) last = h('span', { class: 'sl2' }, night.bed || night.wake ? 'прошлая ночь отмечена не полностью' : 'прошлая ночь не отмечена');
     return h('div', { key: 'sleep', class: 'sleep-line' }, gl(ICONS.moon[1]), h('span', { class: 'sl' },
-      h('span', { class: 'sl1' }, h('b', {}, `Отбой ${step}`), h('span', { class: 't2' }, D.norm(step) <= D.norm(goal) ? ' · цель достигнута' : ` · цель ${goal}`)),
+      h('span', { class: 'sl1' }, h('b', {}, `Отбой ${step}`),
+        h('span', { class: 't2' }, ` · ${dur(D.sleepFor(step, F.sleep.goalWake))} сна` + (D.norm(step) <= D.norm(goal) ? ' — цель достигнута' : ''))),
       h('span', { class: 'sl2' }, `подъём ${clock(F.sleep.goalWake)}`),
       last));
   }
@@ -1762,7 +1764,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('section', { key: 'p-more', class: 'group' },
         shareSwitch('sleep', p.sleep, 'Сон', 'отбой, подъём, шаг отбоя и график ночей'),
         shareSwitch('onepct', p.onepct, '1% недели', 'улучшение, которое выбираешь на итогах')),
-      h('p', { key: 'p-foot', class: 'sec-foot' }, 'Разбор недели — «что получилось», «что нет», «чему научился» — друзьям не уходит никогда. Ещё друзья видят, когда твой прогресс обновлялся, и твой часовой пояс — по нему считается твой день.'),
+      h('p', { key: 'p-foot', class: 'sec-foot' }, 'Разбор недели — «что получилось», «что нет», «чему научила неделя» — друзьям не уходит никогда. Ещё друзья видят, когда твой прогресс обновлялся, и твой часовой пояс — по нему считается твой день.'),
       h('section', { key: 'p-me', class: 'group group-gap-l' }, h('button', { class: 'row row-t row-accent', onclick: () => openFriend('me') }, 'Как меня видят друзья')),
     ];
   }
@@ -1913,40 +1915,61 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     h('span', { class: 'st-sep', 'aria-hidden': 'true' }),
     h('button', { class: 'st-btn', 'aria-label': `${label}: больше на 15 минут`, disabled: !canUp, onclick: up }, gl(G.plus)));
 
-  // Сон в Настройках — в часах: «сон сейчас» (шаг отбоя → подъём) и «цель», −/+ по 15 минут; подъём — барабаном,
-  // часы сна при этом не меняются. Новый отбой — с ближайшей ночи; если этой ночью он уже прошёл — со следующей.
+  // С какой ночи: «с ближайшей ночи» или «с ночи на пятницу» (ночь называется по утру).
+  const nightFrom = from => (from === D.addDays(today, 1) ? 'с ближайшей ночи' : `с ночи на ${WD_ACC[D.weekday(from)]}`);
+
+  // Сон в Настройках — в часах: текущий шаг (отбой → подъём) и цель, −/+ по 15 минут; подъём — барабаном, часы сна
+  // при этом не меняются. Новый отбой — с ближайшей ночи; если этой ночью отбой уже прошёл — со следующей (stepFrom).
   const SLEEP_STEP = 15, SLEEP_MAX = 10 * 60;
   function sleepRows() {
-    const wake = S.sleep.goalWake, goal = S.sleep.goalBed;
+    const wake = S.sleep.goalWake, goal = S.sleep.goalBed, tonight = D.stepTonight(S, today);
     const planned = D.targetFor(S, D.addDays(today, 2)); // последний назначенный шаг — может начаться со следующей ночи
-    const later = planned !== D.stepTonight(S, today);
-    const cur = D.sleepFor(planned, wake), aim = D.sleepFor(goal, wake);
+    const cur = D.sleepFor(planned, wake), aim = D.sleepFor(goal, wake), least = D.sleepFor(D.LATEST_BED, wake);
+    const from = bed => D.stepFrom(today, bed, now(), tonight);
     const plan = bed => {
-      D.setStep(S, bed, today, D.stepFrom(today, bed, now()));
+      if (stale()) return;
+      D.setStep(S, bed, today, from(bed));
       M.haptic();
       commit();
     };
+    // Цель ниже текущего шага — шаг опускается вместе с ней: «сейчас» не больше цели.
     const aimAt = bed => {
+      if (stale()) return;
       S.sleep.goalBed = bed;
+      if (D.sleepFor(bed, wake) < cur) D.setStep(S, bed, today, from(bed));
       M.haptic();
       commit();
     };
+    const jump = () => showAlert({
+      title: `Сразу ${dur(aim)} сна?`, msg: `Отбой ${goal} ${nightFrom(from(goal))}, вместо шагов к цели. Сейчас по шагу — ${dur(cur)}.`,
+      yes: 'Поставить', action: () => plan(goal),
+    });
     const row = (key, glyph, value, note, ctl) => h('div', { key, class: 'row row-s sleep-row', style: tint('indigo') },
       h('span', { class: 'tile' }, gl(glyph)),
-      h('span', { class: 'txt' }, h('span', { class: 'name strong roll', 'data-roll': '' }, value), h('span', { class: 'note' }, note)), ctl);
+      h('span', { class: 'txt' }, h('span', { class: 'name strong roll', 'data-roll': '', 'aria-live': 'polite' }, value), h('span', { class: 'note' }, note)), ctl);
+    const later = planned !== tonight;
     return [
-      row('now', ICONS.moon[1], dur(cur), `сон сейчас · отбой ${planned}${later ? ' со следующей ночи' : ''}`,
-        stepper('Сон сейчас', D.norm(D.shiftTime(planned, SLEEP_STEP)) <= D.norm(D.LATEST_BED), cur + SLEEP_STEP <= aim,
+      row('now', ICONS.moon[1], dur(cur), `текущий шаг · отбой ${planned}${later ? ` ${nightFrom(D.addDays(today, 2))}` : ''}`,
+        stepper('Текущий шаг', cur - SLEEP_STEP >= least, cur + SLEEP_STEP <= aim,
           () => plan(D.shiftTime(planned, SLEEP_STEP)), () => plan(D.shiftTime(planned, -SLEEP_STEP)))),
       row('aim', ICONS.flag[1], dur(aim), `цель · отбой ${goal}`,
-        stepper('Цель сна', aim - SLEEP_STEP >= cur, aim + SLEEP_STEP <= SLEEP_MAX,
+        stepper('Цель сна', aim - SLEEP_STEP >= least, aim + SLEEP_STEP <= SLEEP_MAX,
           () => aimAt(D.shiftTime(goal, SLEEP_STEP)), () => aimAt(D.shiftTime(goal, -SLEEP_STEP)))),
       timeRow(ICONS.alarm[1], 'Подъём', 'часы сна сохранятся', wake, clock, v => {
-        const d = D.sleepFor(planned, v) - cur; // на сколько сдвинется отбой, чтобы сна было столько же
-        D.setWake(S, v, today, D.stepFrom(today, D.shiftTime(planned, d), now()));
+        if (stale()) return;
+        const moved = D.shiftTime(planned, D.sleepFor(planned, v) - cur); // отбой сдвигается вместе с подъёмом
+        D.setWake(S, v, today, from(moved));
       }),
-      cur < aim && h('button', { key: 'jump', class: 'row row-t row-accent', onclick: () => plan(goal) }, `Сразу на цель — ${dur(aim)}`),
+      cur < aim && h('button', { key: 'jump', class: 'row row-t row-accent', onclick: jump }, `Сразу на цель — ${dur(aim)}`),
     ];
+  }
+
+  // Подпись под «Сном»: этой ночью шаг прежний — сказать прямо.
+  function sleepFoot() {
+    const tonight = D.stepTonight(S, today), planned = D.targetFor(S, D.addDays(today, 2));
+    return planned !== tonight
+      ? `Этой ночью отбой прежний — ${tonight}. Шаг к цели предложат итоги недели.`
+      : 'Новый отбой — с ближайшей ночи. Шаг к цели предложат итоги недели.';
   }
 
   const readText = file => new Promise((ok, fail) => {
@@ -2030,7 +2053,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('section', { key: 'weekly', class: 'group', 'data-flip': '' }, listRows(S.weekly, true), !ui.edit && addRow(true)),
       secH('h-sleep', 'Сон'),
       h('section', { key: 'sleep', class: 'group', 'data-flip': '' }, sleepRows()),
-      h('p', { key: 'sleep-foot', class: 'sec-foot', 'data-flip': '' }, 'Новый отбой — с ближайшей ночи. Шаг к цели предложат итоги недели.'),
+      h('p', { key: 'sleep-foot', class: 'sec-foot', 'data-flip': '' }, sleepFoot()),
       cloud.enabled && [secH('h-friends', 'Друзья'), h('section', { key: 'friends', class: 'group', 'data-flip': '' }, cloud.joined
         ? [
           h('button', { key: 'name', class: 'row row-s', style: tint('pink'), onclick: openName }, tile('people'), txt('Имя для друзей'), h('span', { class: 'value' }, cloud.me.name), chev()),

@@ -147,10 +147,18 @@ export function createDOM(win) {
   }
   const done = a => (a ? a.finished.then(() => {}, () => {}) : Promise.resolve());
 
-  // Цифра «перекатывается»: больше — снизу вверх, меньше — сверху вниз.
+  // Цифра «перекатывается»: больше — снизу вверх, меньше — сверху вниз. Числа сравниваются по порядку:
+  // «6 ч 45 мин» → «6 ч 30 мин» — меньше, «3 из 9» → «4 из 9» — больше.
+  const nums = t => (String(t).match(/\d+/g) || []).map(Number);
   function roll(el, was, now) {
-    const a = parseFloat(was), b = parseFloat(now);
-    const dir = Number.isNaN(a) || Number.isNaN(b) || b >= a ? 1 : -1;
+    const a = nums(was), b = nums(now);
+    let dir = 1;
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if ((a[i] ?? 0) !== (b[i] ?? 0)) {
+        dir = (b[i] ?? 0) > (a[i] ?? 0) ? 1 : -1;
+        break;
+      }
+    }
     anim(el, [{ transform: `translateY(${dir * 0.55}em)`, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 340, easing: EASE.spring });
   }
 
