@@ -9,9 +9,9 @@ import { shareOf, deviceZone } from './share.js';
 import { createDoc } from './store.js';
 
 // Проект Supabase. Адрес и publishable-ключ публичны по замыслу: данные защищают функции базы, не ключ.
-// Пусто — «Друзей» в приложении нет.
-export const SUPABASE_URL = '';
-export const SUPABASE_KEY = '';
+// Пусто — «Друзей» в приложении нет. Secret-ключ (sb_secret_…) сюда не попадает никогда.
+export const SUPABASE_URL = 'https://yoefpifnclqsmcogrfcf.supabase.co';
+export const SUPABASE_KEY = 'sb_publishable_tSJvd-I_bXATaaYT2xYBdw_074BGarN';
 
 export const CLOUD_KEY = 'minimum.cloud';
 export const CACHE_KEY = 'minimum.cloud-cache';
