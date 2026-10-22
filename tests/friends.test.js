@@ -7,6 +7,8 @@ import { IDBFactory } from 'fake-indexeddb';
 import { boot } from '../app.js';
 import { seed, addDays, range, activeIds } from '../domain.js';
 import { fakeSupabase } from './fake-supabase.js';
+import { baoSeed } from './fixtures.js';
+import { shareOf } from '../share.js';
 
 const HTML = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const WED = new Date(2026, 9, 21, 18, 0); // среда 21 октября, вечер
@@ -22,14 +24,14 @@ afterEach(() => {
 // Своё состояние: посев за back дней, closed — закрытые дни.
 function stateWith(today, back, { closed = [] } = {}) {
   let n = 0;
-  const S = seed(addDays(today, -back), () => 'i' + ++n);
-  S.ui = { welcomeSeen: true, news: 'v55', lastExport: today };
+  const S = baoSeed(addDays(today, -back), () => 'i' + ++n);
+  S.ui = { welcomeSeen: true, news: 'v56', lastExport: today };
   const ids = activeIds(S);
   for (const d of range(S.createdAt, addDays(today, -1))) S.days[d] = { plan: ids.slice(), done: closed.includes(d) ? ids.slice() : [] };
   return { 'minimum.v2': JSON.stringify(S) };
 }
 
-async function start(server, { when = WED, storage = stateWith('2026-10-21', 10, { closed: range('2026-10-12', '2026-10-20') }), idb = new IDBFactory() } = {}) {
+async function start(server, { when = WED, storage = stateWith('2026-10-21', 10, { closed: range('2026-10-12', '2026-10-20') }), idb = new IDBFactory(), spy = false } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on('jsdomError', e => { if (!/Not implemented: navigation/.test(e.message)) errors.push(e); });
@@ -38,6 +40,18 @@ async function start(server, { when = WED, storage = stateWith('2026-10-21', 10,
   const win = dom.window;
   open.add(win);
   for (const [k, v] of Object.entries(storage)) win.localStorage.setItem(k, v);
+  // spy — живые таймеры окна по длительности: видно, взведён ли минутный опрос друзей.
+  const live = new Map();
+  if (spy) {
+    const st = win.setTimeout.bind(win), ct = win.clearTimeout.bind(win);
+    win.setTimeout = (f, ms, ...rest) => {
+      const id = st((...x) => { live.delete(id); f(...x); }, ms, ...rest);
+      live.set(id, ms);
+      return id;
+    };
+    win.clearTimeout = id => { live.delete(id); ct(id); };
+  }
+  const timers = ms => [...live.values()].filter(v => v === ms).length;
   const t = { now: when };
   const cloud = server ? { url: server.url, key: server.key, fetch: server.fetch } : { url: '', key: '' };
   const app = await boot({ win, now: () => t.now, idb, cloud });
@@ -69,7 +83,7 @@ async function start(server, { when = WED, storage = stateWith('2026-10-21', 10,
     await wait(60);
     return app.cloud.me.code;
   };
-  return { win, doc, app, t, all, find, click, type, text, sheetText, bars, visibility, tab, alertBtn, done, join, errors };
+  return { win, doc, app, t, all, find, click, type, text, sheetText, bars, visibility, tab, alertBtn, done, join, errors, timers };
 }
 
 const addFriend = async (a, code) => {
@@ -421,5 +435,190 @@ test('ответ на «Добавить» пришёл, когда открыт
   assert.equal(a.doc.querySelector('.sheet input[name="name"]').value, 'Черновик');
   assert.match(a.bars(), /Запрос отправлен/);
   a.done();
+  b.done();
+});
+
+// ---------- Гонка недели на «Сегодня»
+
+// Друг с прогрессом (базовый шаблон — 5 пунктов): closed — закрытые дни, done — отмечено сегодня, beds — отбой по утрам.
+function buddy({ createdAt = '2026-10-05', today = '2026-10-21', closed = [], done = 0, beds = {} } = {}) {
+  let n = 0;
+  const S = seed(createdAt, () => 'f' + ++n);
+  const ids = activeIds(S);
+  for (const d of range(createdAt, addDays(today, -1))) S.days[d] = { plan: ids.slice(), done: closed.includes(d) ? ids.slice() : [] };
+  S.days[today] = { plan: ids.slice(), done: ids.slice(0, done) };
+  for (const [d, bed] of Object.entries(beds)) S.sleep.nights[d] = { bed, wake: '07:30' };
+  return S;
+}
+const nightsAt = (dates, bed) => Object.fromEntries(dates.map(d => [d, bed]));
+
+// Вошёл, друзья на сервере уже приняты; → «Сегодня» с гонкой.
+async function racing(server, friends, opts = {}) {
+  const a = await start(server, opts);
+  await a.join('Бао');
+  const me = server.profiles.find(p => p.code === a.app.cloud.me.code);
+  for (const { name, S, today = '2026-10-21', sleep = true } of friends) {
+    server.befriend(me, server.addProfile({ name, snapshot: shareOf(S, today, { tz: 'America/Toronto', sleep }) }));
+  }
+  a.app.cloud.sync({ force: true });
+  await wait(60);
+  await a.tab('Сегодня');
+  return a;
+}
+const raceRows = a => a.all('.race .race-row').map(r => {
+  const t = sel => sp(r.querySelector(sel)?.textContent || '');
+  return [t('.race-place'), t('.name'), t('.race-a'), t('.race-b'), t('.race-score')];
+});
+
+test('гонка недели: без друзей карточки нет; с друзьями — над минимумом, по местам, корона у лидера', async () => {
+  const server = fakeSupabase();
+  const solo = await start(server);
+  await solo.join('Один');
+  await solo.tab('Сегодня');
+  assert.equal(solo.doc.querySelector('.race'), null, 'друзей нет — гонки нет');
+  solo.done();
+
+  // я: пн и вт закрыты, сегодня 0 из 8, сон не отмечен → 2
+  const sasha = buddy({ closed: ['2026-10-19', '2026-10-20'], done: 5, beds: nightsAt(['2026-10-19', '2026-10-20', '2026-10-21'], '00:30') }); // 3 + 3 = 6
+  const dima = buddy({ closed: ['2026-10-19'], done: 2, beds: nightsAt(['2026-10-20', '2026-10-21'], '01:30') }); // 1 + 0 = 1
+  const a = await racing(server, [{ name: 'Дима', S: dima }, { name: 'Саша', S: sasha }]);
+  const blocks = [...a.doc.querySelectorAll('.screen > *')];
+  const at = cls => blocks.findIndex(e => e.classList.contains(cls));
+  assert.ok(at('hero') >= 0 && at('hero') < at('race') && at('race') < at('list-min'), 'между героем и минимумом');
+  assert.match(a.text(), /Гонка неделиещё 5 дней/);
+  assert.deepEqual(raceRows(a), [
+    ['', 'Саша', '', '00:30', '6'], // корона вместо «1», день закрыт — галочка, отбой в цель
+    ['2', 'Ты', '0/8', '—', '2'],
+    ['3', 'Дима', '2/5', '01:30', '1'],
+  ]);
+  const rows = a.all('.race .race-row');
+  assert.ok(rows[0].querySelector('.race-crown'), 'корона у лидера');
+  assert.ok(rows[0].querySelector('.race-check'), 'закрытый день — галочка');
+  assert.ok(rows[0].querySelector('.race-b').classList.contains('ok'), 'отбой в цель — синим');
+  assert.ok(!rows[2].querySelector('.race-b').classList.contains('ok'), 'позже шага — серым');
+  assert.match(sp(rows[1].textContent), /до лидера 4/);
+  assert.equal(sp(rows[0].getAttribute('aria-label')), 'Саша: 1-е место, счёт 6: закрыто 3 дня, 3 ночи в цель, сегодня день закрыт, отбой 00:30, в цель');
+  assert.match(a.text(), /Счёт — закрытые дни \+ ночи в цель с понедельника\. Итоги — в понедельник\./);
+  // тап — лист друга; своя строка — «так тебя видят друзья»
+  rows[0].click();
+  await wait();
+  assert.match(a.sheetText(), /Саша/);
+  assert.match(a.sheetText(), /5 из 5/);
+  a.click('Готово', '.sheet-act');
+  await wait(400);
+  a.all('.race .race-row')[1].click();
+  await wait();
+  assert.match(a.sheetText(), /так тебя видят друзья/);
+  a.done();
+});
+
+test('гонка недели: обгон — закрыл день, и строки меняются местами; ничья — общее место и «вровень»', async () => {
+  const server = fakeSupabase();
+  const lesha = buddy({ closed: ['2026-10-19', '2026-10-20'] }); // 2 + 0 = 2, как у меня
+  const a = await racing(server, [{ name: 'Лёша', S: lesha }]);
+  assert.deepEqual(raceRows(a).map(r => [r[0], r[1], r[4]]), [['', 'Ты', '2'], ['', 'Лёша', '2']]);
+  assert.equal(a.all('.race .race-crown').length, 2, 'ничья наверху — корона у обоих');
+  assert.match(sp(a.all('.race .race-row')[0].textContent), /вровень/);
+  for (const row of [...a.doc.querySelectorAll('.list-min > .row')]) row.click(); // закрыл день
+  await wait();
+  assert.deepEqual(raceRows(a).map(r => [r[0], r[1], r[4]]), [['', 'Ты', '3'], ['2', 'Лёша', '2']]);
+  assert.match(sp(a.all('.race .race-row')[0].textContent), /впереди на 1/);
+  assert.ok(a.all('.race .race-row')[0].querySelector('.race-check'));
+  a.done();
+});
+
+test('гонка недели: в понедельник — итоги прошлой недели с победителем; скрытый сон — замок и ночи не в счёт', async () => {
+  const server = fakeSupabase();
+  const MON = new Date(2026, 9, 19, 9, 0);
+  const week = range('2026-10-12', '2026-10-18');
+  const sasha = buddy({ today: '2026-10-19', closed: week, beds: nightsAt(week, '00:30') }); // 7 + 7 = 14
+  const kostya = buddy({ today: '2026-10-19', closed: week.slice(0, 5), beds: nightsAt(week, '00:30') }); // 5 + 0 (сон скрыт)
+  const a = await racing(server, [{ name: 'Костя', S: kostya, today: '2026-10-19', sleep: false }, { name: 'Саша', S: sasha, today: '2026-10-19' }], {
+    when: MON, storage: stateWith('2026-10-19', 10, { closed: range('2026-10-12', '2026-10-17') }), // я: 6 + 0, неделей раньше — 0
+  });
+  assert.match(a.text(), /Итоги гонки12–18 октября/);
+  assert.deepEqual(raceRows(a), [
+    ['', 'Саша', '7', '7', '14'],
+    ['2', 'Ты', '6', '0', '6'],
+    ['3', 'Костя', '5', '', '5'],
+  ]);
+  const rows = a.all('.race .race-row');
+  assert.ok(rows[0].classList.contains('win'), 'победитель — на закатной полосе');
+  assert.equal(a.all('.race .win').length, 1);
+  assert.match(sp(rows[1].textContent), /\+6 к прошлой/);
+  assert.ok(rows[2].querySelector('.race-b svg'), 'сон скрыт — замок');
+  assert.equal(sp(rows[2].getAttribute('aria-label')), 'Костя: 3-е место, счёт 5: закрыто 5 дней, сон скрыт');
+  assert.match(a.text(), /Новая гонка уже идёт/);
+  a.done();
+});
+
+test('гонка недели: в воскресенье — «последний день»; друзей больше трёх — топ‑3 и ты', async () => {
+  const server = fakeSupabase();
+  const SUN = new Date(2026, 9, 25, 20, 0);
+  const days = range('2026-10-19', '2026-10-24');
+  const friends = ['Аня', 'Боря', 'Вика', 'Гоша'].map((name, i) => ({
+    name, today: '2026-10-25', S: buddy({ today: '2026-10-25', closed: days.slice(0, 6 - i), beds: nightsAt(days, '00:30') }),
+  }));
+  const a = await racing(server, friends, { when: SUN, storage: stateWith('2026-10-25', 10, { closed: ['2026-10-19'] }) });
+  assert.match(a.text(), /Гонка неделипоследний день/);
+  assert.deepEqual(raceRows(a).map(r => [r[0], r[1]]), [['', 'Аня'], ['2', 'Боря'], ['3', 'Вика'], ['5', 'Ты']]);
+  a.done();
+});
+
+test('гонка недели: друзья обновляются раз в минуту, пока гонка на экране; на других вкладках и без снимков — нет', async () => {
+  const server = fakeSupabase();
+  const a = await racing(server, [{ name: 'Саша', S: buddy({ closed: ['2026-10-19'] }) }], { spy: true });
+  assert.ok(a.doc.querySelector('.race'));
+  assert.equal(a.timers(60e3), 1, 'на «Сегодня» с гонкой — один минутный опрос');
+  await a.tab('Прогресс');
+  assert.equal(a.timers(60e3), 0, 'на «Прогрессе» — нет');
+  await a.tab('Сегодня');
+  assert.equal(a.timers(60e3), 1);
+  await a.visibility('hidden');
+  assert.equal(a.timers(60e3), 0, 'в фоне — нет');
+  await a.visibility('visible');
+  assert.equal(a.timers(60e3), 1);
+  a.done();
+
+  // друг без снимка: гонки нет — и опроса на «Сегодня» нет
+  const lone = fakeSupabase();
+  const b = await start(lone, { spy: true });
+  await b.join('Бао');
+  lone.befriend(lone.profiles[0], lone.addProfile({ name: 'Пустой' }));
+  b.app.cloud.sync({ force: true });
+  await wait(60);
+  await b.tab('Сегодня');
+  assert.equal(b.doc.querySelector('.race'), null);
+  assert.equal(b.timers(60e3), 0);
+  b.done();
+});
+
+test('гонка недели: строк всегда не больше четырёх — «Ты» на своём месте или вместо четвёртого; спад к прошлой — без минуса', async () => {
+  const server = fakeSupabase();
+  const mon = '2026-10-19', week = range('2026-10-12', '2026-10-18');
+  const people = ['Аня', 'Боря', 'Вика', 'Гоша'].map((name, i) => ({ name, today: mon, S: buddy({ today: mon, closed: week.slice(0, 6 - 2 * i) }) })); // 6, 4, 2, 0
+  // я: на прошлой неделе 5 закрытых, неделей раньше — 7 → «на прошлой — 7», второе место среди пяти
+  const a = await racing(server, people, {
+    when: new Date(2026, 9, 19, 9, 0), storage: stateWith(mon, 20, { closed: [...range('2026-10-05', '2026-10-11'), ...week.slice(0, 5)] }),
+  });
+  assert.deepEqual(raceRows(a).map(r => [r[0], r[1], r[4]]), [['', 'Аня', '6'], ['2', 'Ты', '5'], ['3', 'Боря', '4'], ['4', 'Вика', '2']]);
+  const me = a.all('.race .race-row')[1];
+  assert.match(sp(me.textContent), /прошлая — 7/);
+  assert.doesNotMatch(sp(me.textContent), /−/);
+  a.done();
+});
+
+test('гонка недели: при запуске — уже в первом кадре, минимум не съезжает', async () => {
+  const server = fakeSupabase();
+  const idb = new IDBFactory();
+  const a = await racing(server, [{ name: 'Саша', S: buddy({ closed: ['2026-10-19', '2026-10-20'] }) }], { idb });
+  assert.ok(a.doc.querySelector('.race'));
+  await wait(400); // кэш друзей лёг в IndexedDB
+  const storage = {};
+  for (let i = 0; i < a.win.localStorage.length; i++) { const k = a.win.localStorage.key(i); storage[k] = a.win.localStorage.getItem(k); }
+  a.done();
+  const b = await start(server, { storage, idb }); // первый кадр — сразу после boot, до ответа сервера
+  assert.ok(b.doc.querySelector('.race'), 'гонка в первом кадре — из кэша');
+  assert.deepEqual(raceRows(b).map(r => [r[1], r[4]]), [['Ты', '2'], ['Саша', '2']]); // ничья — сначала «Ты»
   b.done();
 });

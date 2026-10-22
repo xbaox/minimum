@@ -229,6 +229,13 @@
   --tab-dot: 9px;
   --join-overlap: 22px;
   --track-code: 0.12em;
+  --race-place: 20px;
+  --race-ring: 32px;
+  --race-a: 42px;
+  --race-b: 60px;
+  --race-score: 30px;
+  --race-check: 22px;
+  --race-ic: 14px;
   --font-code: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
   /* радиусы */
@@ -1059,6 +1066,60 @@ button.cell.closed::after, button.cell.break::after { inset: calc(var(--u4) * -1
 /* «Что видят друзья»: переключатели с разделителями */
 .switch-row + .switch-row::before { content: ""; position: absolute; top: 0; left: var(--u16); right: 0; height: var(--hair); background: var(--sep); }
 .item-switch + .item-switch::before { left: calc(var(--u16) + var(--tile) + var(--u12)); }
+
+/* «Гонка недели» на «Сегодня»: место, кольца, имя, отметки сегодня, отбой прошлой ночи, счёт — колонки ровные */
+.sec-aside { flex: none; }
+.race-row { min-height: var(--row-s); gap: var(--u8); padding: var(--u8) var(--u16) var(--u8) var(--u12); }
+.race .race-row + .race-row::before { left: calc(var(--u12) + var(--race-place) + var(--u8) + var(--race-ring) + var(--u8)); }
+/* длинное имя переносится по слогам, а не посреди слова без дефиса */
+.race-row .name { -webkit-hyphens: auto; hyphens: auto; }
+.race-place {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--race-place);
+  font-size: var(--fs-sub);
+  font-weight: 600;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.race-crown { width: var(--race-place); height: var(--race-place); fill: url(#g-sun); stroke: none; }
+.r-rings { flex: none; width: var(--race-ring); height: var(--race-ring); }
+.r-rings circle { fill: none; }
+.race-a, .race-b {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--u3);
+  font-size: var(--fs-sub);
+  line-height: var(--lh-sub);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.race-a { width: var(--race-a); }
+.race-b { width: var(--race-b); }
+.race-b.ok { color: var(--sleep); font-weight: 600; }
+.race-ic { flex: none; width: var(--race-ic); height: var(--race-ic); }
+.race-check { display: grid; place-items: center; width: var(--race-check); height: var(--race-check); border-radius: 50%; background: var(--g-check); }
+.race-check .gl { width: var(--gl-s); height: var(--gl-s); stroke-width: 3; color: var(--on-grad); }
+.race-score {
+  flex: none;
+  width: var(--race-score);
+  text-align: right;
+  font-size: var(--fs-stat);
+  line-height: var(--lh-stat);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+/* итоги в понедельник: победитель — на закате, как закрытый день */
+.race-row.win { background: var(--g-sunset); color: var(--on-sun); }
+.race-row.win .note, .race-row.win .race-a, .race-row.win .race-b { color: var(--on-sun); }
+.race-row.win .race-crown { fill: var(--on-sun); }
+.race-row.win .tr-sun, .race-row.win .tr-sleep, .race-row.win .tr-train { stroke: var(--sun-track); }
+.race-row.win .arc-sun, .race-row.win .arc-sleep, .race-row.win .arc-train { stroke: var(--on-sun); }
+.race-row.win::before, .race-row.win + .race-row::before { display: none; }
+button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 
 /* ---------- лист */
 

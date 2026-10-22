@@ -2,10 +2,11 @@ process.env.TZ = 'America/Toronto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as D from '../domain.js';
+import { baoSeed } from './fixtures.js';
 import { ICON_IDS } from '../icons.js';
 
 const ids = () => { let n = 0; return () => 'i' + ++n; };
-const mk = createdAt => D.seed(createdAt, ids());
+const mk = createdAt => baoSeed(createdAt, ids());
 const closeDay = (s, d) => { s.days[d] = { plan: D.activeIds(s), done: D.activeIds(s) }; };
 const missDay = (s, d) => { s.days[d] = { plan: D.activeIds(s), done: [] }; };
 
@@ -43,23 +44,22 @@ test('неделя пн–вс', () => {
   assert.equal(D.weekStart('2026-11-01'), '2026-10-26');
 });
 
-test('шаблон валиден: 8 + 1, id уникальны, цвета из палитры', () => {
+test('шаблон нового телефона — базовый: 5 пунктов без недельных счётчиков, id уникальны, цвета из палитры', () => {
   const s = D.seed('2026-09-30');
-  assert.equal(s.items.length, 8);
-  assert.equal(s.weekly.length, 1);
-  const all = [...s.items, ...s.weekly];
-  assert.equal(new Set(all.map(i => i.id)).size, 9);
-  for (const i of all) assert.ok(D.COLORS.includes(i.color), i.color);
-  for (const i of all) assert.ok(ICON_IDS.includes(i.icon), i.icon);
-  assert.deepEqual(s.items.map(i => i.icon), ['sunrise', 'dumbbell', 'book', 'headphones', 'bed', 'drop', 'bottle', 'phone']);
-  assert.deepEqual(s.items.map(i => i.color), ['orange', 'red', 'purple', 'blue', 'mint', 'teal', 'pink', 'indigo']);
-  assert.deepEqual([s.weekly[0].icon, s.weekly[0].color], ['pulse', 'green']);
-  assert.ok(all.every(i => !('emoji' in i)));
+  assert.equal(s.items.length, 5);
+  assert.equal(s.weekly.length, 0, 'счётчики человек добавит сам');
+  assert.equal(new Set(s.items.map(i => i.id)).size, 5);
+  for (const i of s.items) assert.ok(D.COLORS.includes(i.color), i.color);
+  for (const i of s.items) assert.ok(ICON_IDS.includes(i.icon), i.icon);
+  assert.deepEqual(s.items.map(i => i.name), ['Стакан воды', 'Зарядка', 'План на завтра', 'Телефон на кухню', 'Чтение']);
+  assert.deepEqual(s.items.map(i => i.icon), ['glass', 'dumbbell', 'notebook', 'phone', 'book']);
+  assert.deepEqual(s.items.map(i => i.color), ['teal', 'red', 'yellow', 'indigo', 'purple']);
+  assert.ok(s.items.every(i => !/встал|лёг|легла|встала/.test(i.note)), 'подписи без рода — пол человека неизвестен');
+  assert.ok(s.items.every(i => !('emoji' in i) && i.note), 'у каждого пункта подпись «когда / после чего»');
   // число с единицей не разрывается переносом
-  assert.equal(s.items[2].note, '10\u00a0минут · книга, вникай в суть');
-  assert.match(s.weekly[0].note, /бег 1\u00a0км/);
-  assert.equal(s.items[7].beforeBed, 30);
-  assert.equal(s.weekly[0].perWeek, 3);
+  assert.equal(s.items[1].note, '5\u00a0минут · после воды');
+  assert.equal(s.items[4].note, '10\u00a0страниц · в кровати вместо телефона');
+  assert.equal(s.items[3].beforeBed, 30);
   assert.equal(s.sleep.targets[0].bed, '01:00');
   assert.equal(s.sleep.goalBed, '23:30');
   assert.equal(s.sleep.goalWake, '07:30');

@@ -6,8 +6,8 @@ import * as D from './domain.js';
 import { ICONS, ICON_GROUPS, UI as G } from './icons.js';
 import { createDOM, EASE } from './dom.js';
 import { createStore, requestPersist, shareOrDownload, parseImport } from './store.js';
-import { createCloud, CODE_RE, cleanCode, cleanName, NAME_MAX, CloudError } from './cloud.js';
-import { shareOf, readShare, summaryOf, changes, deviceZone, HIDDEN_NAME } from './share.js';
+import { createCloud, CODE_RE, cleanCode, cleanName, NAME_MAX, CloudError, CLOUD_KEY } from './cloud.js';
+import { shareOf, readShare, summaryOf, changes, deviceZone, weekScore, ranked, HIDDEN_NAME } from './share.js';
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const WEEKDAYS = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье'];
@@ -34,14 +34,15 @@ const TABS = [['today', 'Сегодня', G.tabToday], ['progress', 'Прогр�
 const WELCOME = (n, step, goal) =>
   `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках. Отбой — шагами от ${step} к${NB}${goal}, решаешь на итогах недели.`;
 // «Что нового» — про друзей; без настроенного сервера карточки нет.
-const NEWS_ID = 'v55';
+const NEWS_ID = 'v56';
 const NEWS = [
-  'Друзья: обменяйтесь кодами — и видно кольца, серию, сон и изменения друг друга',
-  'Отметки по-прежнему живут на телефоне; другу уходит только снимок прогресса',
-  'Разбор недели не уходит никогда, личный пункт можно скрыть — Настройки → Друзья',
+  'Гонка недели — прямо на «Сегодня»: ты и друзья по местам',
+  'Счёт — закрытые дни + ночи в цель с понедельника; итоги — в понедельник',
+  'Новый телефон начинает с пяти базовых пунктов — свои каждый добавит сам',
 ];
 const CODE_LEN = 5;
 const FRIENDS_EVERY = 60e3;
+const FIRST_WAIT = 150; // кэш друзей до первого кадра: гонка сразу на месте и минимум не съезжает
 // Ответы сервера на «Добавить» — человеческими словами.
 const ADD_RESULT = {
   sent: 'Запрос отправлен — когда друг примет, вы увидите прогресс друг друга',
@@ -174,7 +175,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     w && `${lcFirst(w.name)} — ${r.week ? 'да' : 'нет'}`,
   ].filter(Boolean).join(', '));
 
+  let rev = 0; // изменения состояния: свой снимок для гонки и «Друзей» пересобирается только после них
   const save = () => {
+    rev++;
     const ok = store.save(S);
     cloud.changed(); // друзья увидят — снимок уйдёт, когда отметки улягутся
     return ok;
@@ -361,10 +364,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ui.scroll[ui.tab] = se.scrollTop;
     Object.assign(ui, { tab: id, alert: null, edit: false, sleepOpen: false, dataMsg: '', updMsg: '', chartSel: null, scrolled: false, joinErr: '' });
     render();
-    if (id === 'friends') {
+    if (id === 'friends' || id === 'today') {
       cloud.sync();
       pollFriends();
-    } else win.clearTimeout(friendsTimer);
+    } else {
+      win.clearTimeout(friendsTimer);
+      friendsTimer = 0;
+    }
     scrollY(ui.scroll[id] || 0);
     updateScrolled(); // сразу, до первого кадра: панель не «догоняет» прокрутку
     M.anim(root.querySelector('.tab[aria-current] .gl'), [{ transform: 'scale(0.78)' }, { transform: 'scale(1.14)' }, { transform: 'none' }],
@@ -509,6 +515,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       D.status(S, y, today) === 'miss' && !closed && h('p', { key: 'miss', class: 'notice-line', 'data-flip': '' }, 'Вчера пропуск — сегодня не пропускай дважды'),
       card && sleepCard(),
       stack.length > 0 && h('div', { key: 'stack', class: 'stack', 'data-flip': '' }, stack),
+      raceCard(),
       secH('h-min', 'Минимум'),
       n > 0
         ? h('section', { key: 'list-min', class: 'group list-min', 'data-flip': '' }, plan.map(id => {
@@ -1237,6 +1244,74 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       range.map((d, i) => st.sleep.nights[d]?.bed && svg('rect', { key: `hit-${d}`, class: 'hit', x: L + slot * i, y: 0, width: slot, height: H, onclick: () => pick(d) })));
   }
 
+  // ---------- Гонка недели: друзья на «Сегодня»
+  // Карточка над минимумом: ты и друзья по местам — кольца, отметки сегодня, отбой прошлой ночи и счёт недели
+  // (закрытые дни + ночи в цель, share.js → weekScore). В понедельник — итоги прошлой недели, со вторника — новая гонка.
+  // «Ты» — из своего снимка: место и счёт ровно те, что видят друзья. Нет друзей с данными — карточки нет.
+  const RACE_ROWS = 4; // первые четыре; «Ты» ниже — вместо четвёртого: строк всегда столько же, минимум не прыгает
+
+  function raceCard() {
+    if (!cloud.joined) return null;
+    const friends = (cloud.cache?.friends || []).map(f => ({ id: f.id, name: f.name, v: friendView(f) })).filter(p => p.v);
+    const me0 = friends.length ? myView() : null;
+    if (!me0) return null;
+    const wd = D.weekday(today), results = wd === 0;
+    const monday = D.addDays(D.weekStart(today), results ? -7 : 0);
+    const people = ranked([{ id: 'me', me: true, name: 'Ты', v: me0 }, ...friends].map(p => ({ ...p, ...weekScore(p.v, monday) })));
+    const top = people[0].score, me = people.find(p => p.me);
+    const shown = people.slice(0, RACE_ROWS);
+    if (!shown.includes(me)) shown[RACE_ROWS - 1] = me;
+    let note = '';
+    if (results) {
+      // Своя прошлая неделя — только для роста; меньше — без минуса, просто число (без стыда).
+      const prev = weekScore(me0, D.addDays(monday, -7)).score;
+      note = me.score > prev ? `+${me.score - prev} к${NB}прошлой` : me.score === prev ? 'как на прошлой' : `прошлая${NB}—${NB}${prev}`;
+    } else if (top > 0) {
+      const rival = Math.max(...people.filter(p => !p.me).map(p => p.score));
+      note = me.score > rival ? `впереди на${NB}${me.score - rival}` : me.score === rival ? 'вровень' : `до лидера${NB}${top - me.score}`;
+    }
+    return [
+      secH('h-race', results ? 'Итоги гонки' : 'Гонка недели',
+        h('span', { class: 'sec-aside' }, results ? weekRange(monday) : wd === 6 ? 'последний день' : `ещё ${days(7 - wd)}`)),
+      h('section', { key: 'race', class: 'group race', 'data-flip': '' },
+        shown.map(p => raceRow(p, { results, top, note: p.me ? note : '' }))),
+      h('p', { key: 'race-foot', class: 'sec-foot', 'data-flip': '' }, results
+        ? 'Счёт — закрытые дни + ночи в цель. Новая гонка уже идёт.'
+        : 'Счёт — закрытые дни + ночи в цель с понедельника. Итоги — в понедельник.'),
+    ];
+  }
+
+  // Строка гонки. Неделя идёт: отметки сегодня (✓ или k/n) и отбой прошлой ночи — синим, если в цель.
+  // Итоги: закрытые дни и ночи за неделю, победитель — на закатной полосе. Скрытый сон — замок, ночи не в счёт.
+  function raceRow(p, { results, top, note }) {
+    const { v } = p, sum = v.sum, lead = p.place === 1 && top > 0;
+    const parts = results
+      ? [{ kind: 'sun', f: p.closed / 7 }, v.sleep && { kind: 'sleep', f: p.nights / 7 }]
+      : [{ kind: 'sun', f: sum.n ? sum.k / sum.n : 0 }, v.sleep && { kind: 'sleep', f: sum.sh.n ? sum.sh.k / sum.sh.n : 0 }, sum.w && { kind: 'train', f: sum.wc / sum.w.perWeek }];
+    const night = v.sleep ? v.F.sleep.nights[v.today] : null;
+    const hit = !!night?.bed && D.onTarget(v.F, v.today);
+    const day = results ? h('span', { class: 'race-a' }, gl(G.check, 'race-ic'), String(p.closed))
+      : h('span', { class: 'race-a' }, sum.closed ? h('span', { class: 'race-check' }, gl(G.check)) : sum.n ? `${sum.k}/${sum.n}` : '—');
+    const sleep = !v.sleep ? h('span', { class: 'race-b off' }, gl(G.lock, 'race-ic'))
+      : h('span', { class: 'race-b' + (!results && hit ? ' ok' : '') }, gl(ICONS.moon[1], 'race-ic'), results ? String(p.nights) : night?.bed || '—');
+    const said = [
+      top > 0 && `${p.place}-е место`,
+      `счёт ${p.score}: закрыто ${days(p.closed)}`, v.sleep ? `${p.nights} ${plural(p.nights, ['ночь', 'ночи', 'ночей'])} в${NB}цель` : 'сон скрыт',
+      !results && (sum.closed ? 'сегодня день закрыт' : sum.n ? `сегодня ${sum.k} из ${sum.n}` : 'минимум пуст'),
+      !results && v.sleep && (night?.bed ? `отбой ${night.bed}${hit ? ', в цель' : ''}` : 'ночь не отмечена'),
+      note,
+    ].filter(Boolean).join(', ');
+    return h('button', {
+      key: p.id, class: 'row race-row' + (p.me ? ' me' : '') + (results && lead ? ' win' : ''), 'data-flip': '',
+      'aria-label': `${p.name}: ${said}`, onclick: () => openFriend(p.me ? 'me' : p.id),
+    },
+    h('span', { class: 'race-place', 'aria-hidden': 'true' }, lead ? gl(G.crown, 'race-crown') : top > 0 ? String(p.place) : ''),
+    rings('r-rings', 32, [14, 9.5, 5], 3.6, parts.filter(Boolean)),
+    h('span', { class: 'txt' }, h('span', { class: 'name strong' }, p.name), note && h('span', { class: 'note' }, note)),
+    day, sleep,
+    h('span', { class: 'race-score' }, String(p.score)));
+  }
+
   // ---------- Друзья: вкладка, лист друга, «Добавить», «Что видят друзья», имя
 
   const pad2 = n => String(n).padStart(2, '0');
@@ -1277,9 +1352,14 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     return v;
   }
   // «Я» — через тот же снимок и то же чтение, что у друзей: что видишь, то и уходит.
+  // Снимок за три года строится миллисекунды — пересобираем только после изменений, смены дня и видимости.
+  let mine = null;
   function myView() {
+    const key = `${rev}|${today}|${JSON.stringify(cloud.prefs)}`;
+    if (mine?.key === key) return mine.v;
     const v = readShare(JSON.parse(JSON.stringify(shareOf(S, today, { tz: deviceZone(), ...cloud.prefs }))), now());
     if (v) v.sum = summaryOf(v.F, v.today);
+    mine = { key, v };
     return v;
   }
 
@@ -1746,13 +1826,16 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     cloudTimer = win.setTimeout(() => {
       if (closing || ui.alertClosing || pickerOpen()) return cloudChanged(400);
       render();
+      if (!friendsTimer) pollFriends(); // первые друзья пришли — гонка на «Сегодня» начинает обновляться
     }, delay);
   }
 
-  // Пока открыта вкладка «Друзья» и приложение на экране — свежие данные раз в минуту.
+  // Пока на экране «Друзья» или гонка на «Сегодня» — свежие данные друзей раз в минуту.
+  const racing = () => ui.tab === 'today' && (cloud.cache?.friends || []).some(f => f.snapshot);
   function pollFriends() {
     win.clearTimeout(friendsTimer);
-    if (!cloud.joined || ui.tab !== 'friends' || doc.visibilityState === 'hidden') return;
+    friendsTimer = 0;
+    if (!cloud.joined || !(ui.tab === 'friends' || racing()) || doc.visibilityState === 'hidden') return;
     friendsTimer = win.setTimeout(() => {
       cloud.sync({ force: true });
       pollFriends();
@@ -1867,7 +1950,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
 
   function askReset() {
     showAlert({
-      title: 'Сбросить к шаблону?', msg: 'Все отметки, сон и итоги недель будут стёрты. Если нужна копия — сначала экспорт.', yes: 'Сбросить', danger: true,
+      title: 'Сбросить к шаблону?', msg: 'Все отметки, сон и итоги недель будут стёрты, пункты вернутся к пяти базовым. Если нужна копия — сначала экспорт.', yes: 'Сбросить', danger: true,
       action: () => {
         S = D.seed(today, undefined, S.since); // «в системе с» переживает сброс
         Object.assign(ui, { dataMsg: 'Сброшено к шаблону', yOpen: false, sleepOpen: false, edit: false });
@@ -2003,6 +2086,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       flushTime();
       win.clearTimeout(tickTimer);
       win.clearTimeout(friendsTimer);
+      friendsTimer = 0;
       cloud.flush(); // друзья увидят последние отметки, даже если приложение выгрузят
       return void store.flush();
     }
@@ -2024,10 +2108,17 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   win.addEventListener('scroll', onScroll, { passive: true });
   doc.addEventListener('touchstart', () => {}, { passive: true }); // без слушателя iOS не показывает :active
 
+  // Друзья включены — кэш друзей ждём до первого кадра, но не дольше FIRST_WAIT: гонка на «Сегодня» сразу на месте
+  // и минимум не съезжает. Зависшая IndexedDB экран не держит: не успела — друзья появятся после первого кадра.
+  const loading = cloud.load();
+  let joinedHere = false;
+  try {
+    joinedHere = !!ls?.getItem(CLOUD_KEY);
+  } catch {}
+  if (cloud.enabled && joinedHere) await Promise.race([loading, new Promise(ok => win.setTimeout(ok, FIRST_WAIT))]);
   render();
   initSW();
-  // Друзья подгружаются после первого кадра: зависшая IndexedDB не оставит экран пустым.
-  const cloudReady = cloud.load().then(() => {
+  const cloudReady = loading.then(() => {
     render();
     return cloud.sync({ force: true });
   });

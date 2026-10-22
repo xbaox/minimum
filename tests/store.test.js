@@ -52,7 +52,7 @@ test('посев на пустом, затем чтение того же', asyn
   const st = createStore({ ls, idb, today });
   const r = await st.load();
   assert.equal(r.seeded, true);
-  assert.equal(r.state.items.length, 8);
+  assert.equal(r.state.items.length, 5); // базовый шаблон
   assert.equal(r.state.createdAt, TODAY);
   assert.ok(ls.getItem(KEY));
   const r2 = await createStore({ ls, idb, today }).load();

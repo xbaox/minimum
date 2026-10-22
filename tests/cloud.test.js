@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IDBFactory } from 'fake-indexeddb';
 import * as D from '../domain.js';
+import { baoSeed } from './fixtures.js';
 import { createCloud, cleanCode, cleanName, hash, CLOUD_KEY, CACHE_KEY, CloudError } from '../cloud.js';
 import { readShare, summaryOf, HIDDEN_NAME } from '../share.js';
 import { fakeSupabase } from './fake-supabase.js';
@@ -37,7 +38,7 @@ const NOW = new Date('2026-10-21T18:00:00-04:00');
 const ids = () => { let n = 0; return () => 'id-' + ++n; };
 
 function person(server, { win = fakeWin(), idb = new IDBFactory(), state, now = () => NOW } = {}) {
-  const S = state || D.seed('2026-10-01', ids());
+  const S = state || baoSeed('2026-10-01', ids());
   const box = { S, changes: 0 };
   box.win = win;
   box.idb = idb;

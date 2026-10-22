@@ -2,10 +2,11 @@ process.env.TZ = 'America/Toronto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as D from '../domain.js';
-import { shareOf, readShare, summaryOf, changes, logicalDateIn, clean, HIDDEN_NAME, NIGHTS_KEEP } from '../share.js';
+import { baoSeed } from './fixtures.js';
+import { shareOf, readShare, summaryOf, changes, logicalDateIn, clean, weekScore, ranked, HIDDEN_NAME, NIGHTS_KEEP } from '../share.js';
 
 const ids = () => { let n = 0; return () => 'uuid-' + ++n + '-xxxxxxxxxxxxxxxx'; };
-const mk = createdAt => D.seed(createdAt, ids());
+const mk = createdAt => baoSeed(createdAt, ids());
 const closeDay = (s, d) => { s.days[d] = { plan: D.activeIds(s), done: D.activeIds(s) }; };
 const missDay = (s, d) => { s.days[d] = { plan: D.activeIds(s), done: [] }; };
 const TODAY = '2026-10-21'; // среда
@@ -218,4 +219,36 @@ test('чистка текста: без \\u0000 и половинок сурро
   assert.equal(clean('ok 😀'), 'ok 😀');
   assert.equal(clean('\uD83D'), '�');
   assert.equal(clean('\uDE00x'), '�x');
+});
+
+test('гонка недели: счёт — закрытые дни + ночи в цель с понедельника, у друга — из его снимка', () => {
+  const s = life(); // пн 19 и вт 20 закрыты, сегодня 3 из 8; шаг с 19-го — 00:30, отбой 00:45 — мимо
+  const me = { F: s, today: TODAY, sleep: true };
+  assert.deepEqual(weekScore(me, '2026-10-19'), { closed: 2, nights: 0, score: 2 });
+  // прошлая неделя целиком: 7 закрытых дней, 7 ночей в цель (шаг тогда был 01:00)
+  assert.deepEqual(weekScore(me, '2026-10-12'), { closed: 7, nights: 7, score: 14 });
+  // тот же счёт — у друга из снимка; скрыл сон — ночи не в счёт
+  const v = readShare(shareOf(s, TODAY, { tz: 'America/Toronto' }), at(TODAY, 20));
+  assert.deepEqual(weekScore(v, '2026-10-12'), { closed: 7, nights: 7, score: 14 });
+  const hidden = readShare(shareOf(s, TODAY, { tz: 'America/Toronto', sleep: false }), at(TODAY, 20));
+  assert.equal(hidden.sleep, false);
+  assert.deepEqual(weekScore(hidden, '2026-10-12'), { closed: 7, nights: 0, score: 7 });
+  // сегодня закрыт — +1 сразу; будущие дни недели не считаются
+  closeDay(s, TODAY);
+  assert.deepEqual(weekScore(me, '2026-10-19'), { closed: 3, nights: 0, score: 3 });
+  // новичок с середины недели: дни до посева и утро посева — не в счёт
+  const fresh = mk(TODAY);
+  fresh.sleep.nights['2026-10-20'] = { bed: '23:00', wake: '07:00' };
+  assert.deepEqual(weekScore({ F: fresh, today: TODAY, sleep: true }, '2026-10-19'), { closed: 0, nights: 0, score: 0 });
+  // неделя, которая ещё не началась у этого «сегодня», — ноль
+  assert.deepEqual(weekScore(me, '2026-10-26'), { closed: 0, nights: 0, score: 0 });
+});
+
+test('гонка недели: места по счёту, при равном — общее место, выше тот, у кого больше закрытых дней', () => {
+  const r = ranked([
+    { id: 'me', score: 3, closed: 2 }, { id: 'a', score: 4, closed: 2 }, { id: 'b', score: 3, closed: 3 }, { id: 'c', score: 0, closed: 0 },
+  ]);
+  assert.deepEqual(r.map(p => [p.id, p.place]), [['a', 1], ['b', 2], ['me', 2], ['c', 4]]);
+  assert.deepEqual(ranked([{ id: 'me', score: 2, closed: 2 }, { id: 'a', score: 2, closed: 2 }]).map(p => [p.id, p.place]), [['me', 1], ['a', 1]]);
+  assert.deepEqual(ranked([]), []);
 });

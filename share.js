@@ -179,6 +179,24 @@ export function summaryOf(F, today) {
   return { plan, done: D.doneOf(F, today), k, n, closed: n > 0 && k === n, streak, best, sh, w, wc: w ? D.weekCount(F, w.id, today) : 0 };
 }
 
+// Гонка недели: счёт — закрытые дни + ночи в цель с monday по воскресенье, но не дальше своего «сегодня».
+// Каждый идёт против своего минимума и своего шага отбоя. Ночи считаются, только если сон виден друзьям:
+// скрыл сон — в счёте одни дни (у всех одинаково, и у «Я»). Недельные счётчики в счёт не идут.
+export function weekScore({ F, today, sleep = true }, monday) {
+  const sun = D.addDays(monday, 6), last = sun < today ? sun : today;
+  const closed = monday > last ? 0 : D.range(monday, last).filter(d => D.status(F, d, today) === 'closed').length;
+  const nights = sleep ? D.sleepHits(F, D.knownMornings(F, monday, sun, today)).k : 0;
+  return { closed, nights, score: closed + nights };
+}
+
+// Места: больше счёт — выше; при равном счёте выше тот, у кого больше закрытых дней, но место общее: 1, 1, 3.
+// Дальше — исходный порядок (сначала «Я», потом друзья в порядке добавления). Возвращает новый массив.
+export function ranked(list) {
+  const out = list.map((p, i) => ({ ...p, i })).sort((a, b) => b.score - a.score || b.closed - a.closed || a.i - b.i);
+  out.forEach((p, k) => (p.place = k && p.score === out[k - 1].score ? out[k - 1].place : k + 1));
+  return out;
+}
+
 const ORDER = { streak: 0, week: 1, step: 2, onepct: 3, add: 4, remove: 5 };
 
 // Лента изменений: новые и убранные пункты, шаг отбоя, «1% недели», круглые серии, неделя счётчика в цель.

@@ -7,6 +7,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { boot } from '../app.js';
 import { normalize, seed, addDays, range, activeIds } from '../domain.js';
 import { fakeSupabase } from './fake-supabase.js';
+import { baoSeed } from './fixtures.js';
 
 const HTML = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const WED = new Date(2026, 8, 30, 9, 0); // среда 30 сентября, утро
@@ -23,13 +24,17 @@ afterEach(() => {
 // Состояние с историей: посев за back дней до today, closed — дни, где отмечено всё.
 function stateWith(today, back, { closed = [], ui = { welcomeSeen: true, news: 'v53', lastExport: '' }, edit } = {}) {
   let n = 0;
-  const S = seed(addDays(today, -back), () => 'i' + ++n);
+  const S = baoSeed(addDays(today, -back), () => 'i' + ++n);
   Object.assign(S.ui, ui);
   const ids = activeIds(S);
   for (const d of range(S.createdAt, addDays(today, -1))) S.days[d] = { plan: ids.slice(), done: closed.includes(d) ? ids.slice() : [] };
   edit?.(S, ids);
   return { 'minimum.v2': JSON.stringify(S) };
 }
+
+// Новый телефон с пунктами БАО (прежний шаблон): на них написаны тесты отметок, героя, Прогресса и Настроек.
+// Сам шаблон нового телефона (базовый) проверяет тест первого старта.
+const fresh = () => stateWith('2026-09-30', 0, { ui: { welcomeSeen: false, news: '', lastExport: '' } });
 
 // Подмена Web Animations: всё «доигрывает» сразу, ключевые кадры записываются.
 function recordMotion(win, { hold = false } = {}) {
@@ -105,7 +110,7 @@ const reboot = async (prev, when = prev.t.now) => {
   return start(when, { storage, idb: prev.idb });
 };
 
-test('первый старт со старыми ключами: стёрто, 8 строк, приветствие один раз', async () => {
+test('первый старт со старыми ключами: стёрто, базовый шаблон — 5 строк, приветствие один раз', async () => {
   const idb = new IDBFactory();
   await new Promise(ok => { const r = idb.open('minimum', 1); r.onupgradeneeded = () => r.result.createObjectStore('x'); r.onsuccess = () => { r.result.close(); ok(); }; });
   const a = await start(WED, {
@@ -115,21 +120,23 @@ test('первый старт со старыми ключами: стёрто, 
   const keys = Object.keys(a.dump()).sort();
   assert.deepEqual(keys, ['englishSummer.v2', 'minimum.v2']);
   assert.ok(!(await idb.databases()).some(d => d.name === 'minimum'));
-  assert.equal(a.rows().length, 8);
+  assert.equal(a.rows().length, 5);
+  assert.deepEqual([...a.rows()].map(r => r.querySelector('.name').textContent), ['Стакан воды', 'Зарядка', 'План на завтра', 'Телефон на кухню', 'Чтение']);
   assert.match(a.text(), /Новый минимум/);
-  assert.match(a.text(), /8 пунктов, одинаковых каждый день/);
+  assert.match(a.text(), /5 пунктов, одинаковых каждый день/);
   assert.match(a.text(), /среда, 30 сентября/);
   assert.match(a.text(), /Отбой 01:00 · цель 23:30/);
   assert.match(a.text(), /телефон на кухню до 00:30 · подъём 7:30/);
-  assert.equal(a.doc.querySelectorAll('.list-week > .row').length, 1); // Тренировка
-  assert.equal(a.doc.querySelectorAll('.tile svg path').length > 8, true); // значки, а не эмодзи
+  assert.equal(a.doc.querySelectorAll('.list-week > .row').length, 0); // недельные счётчики новичок добавит сам
+  assert.doesNotMatch(a.text(), /На неделе/);
+  assert.equal(a.doc.querySelectorAll('.tile svg path').length >= 5, true); // значки, а не эмодзи
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Новый минимум/);
   assert.doesNotMatch(a.text(), /Что нового/); // новичку «Что нового» не нужно
-  assert.equal(a.app.state.ui.news, 'v55');
+  assert.equal(a.app.state.ui.news, 'v56');
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Новый минимум|Что нового/);
-  assert.equal(b.rows().length, 8);
+  assert.equal(b.rows().length, 5);
   b.done();
 });
 
@@ -140,7 +147,7 @@ test('«Что нового» — один раз для тех, кто уже �
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v53', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
   assert.equal(a.doc.querySelectorAll('.news li').length, 3);
-  assert.match(a.text(), /Друзья: обменяйтесь кодами/);
+  assert.match(a.text(), /Гонка недели — прямо на «Сегодня»/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
   const b = await reboot(a);
@@ -172,8 +179,46 @@ test('в разметке нет текста «null», «undefined», «NaN» �
   a.done();
 });
 
+test('базовый шаблон с историей: нигде нет «null», «undefined», «NaN»; два кольца, первый счётчик даёт третье', async () => {
+  let n = 0;
+  const S = seed('2026-09-10', () => 'b' + ++n);
+  S.ui = { welcomeSeen: true, news: 'v56', lastExport: '' };
+  const ids = activeIds(S);
+  for (const d of range(S.createdAt, '2026-09-29')) S.days[d] = { plan: ids.slice(), done: ['2026-09-27', '2026-09-28'].includes(d) ? ids.slice() : [] };
+  const a = await start(WED, { storage: { 'minimum.v2': JSON.stringify(S) } });
+  const clean = where => assert.doesNotMatch(a.doc.getElementById('app').textContent, /null|undefined|NaN/, where);
+  assert.equal(a.rows().length, 5);
+  assert.equal(a.doc.querySelectorAll('.hero .rings .tr-train').length, 0, 'без недельных счётчиков — только минимум и сон');
+  assert.equal(a.doc.querySelectorAll('.hero .rings .tr-sun, .hero .rings .tr-sleep').length, 2);
+  assert.doesNotMatch(a.text(), /На неделе/);
+  for (const tab of ['Сегодня', 'Прогресс', 'Настройки']) {
+    a.click(tab, '.tab');
+    clean(tab);
+  }
+  a.click('Правила', '.row'); clean('правила'); a.click('Готово', '.sheet-act');
+  a.find('Зарядка', '.row').click(); clean('пункт'); a.click('Отмена', '.sheet-act');
+  a.click('Прогресс', '.tab');
+  for (const d of ['28 сентября', '29 сентября', '30 сентября', '14 сентября']) {
+    a.cell(d).click(); clean('день ' + d); a.click('Готово', '.sheet-act');
+  }
+  a.doc.querySelector('.rate').click(); clean('детали из прогресса'); a.click('Отмена', '.sheet-act');
+  a.click('Настройки', '.tab');
+  a.click('Добавить счётчик');
+  a.type(a.sheet().querySelector('input[name="name"]'), 'Бег');
+  a.doc.getElementById('sheet-done').click();
+  assert.equal(a.app.state.weekly.length, 1);
+  a.click('Сегодня', '.tab');
+  assert.equal(a.doc.querySelectorAll('.hero .rings .tr-train').length, 1, 'первый счётчик — третье кольцо');
+  assert.match(a.text(), /На неделе.*Бег/);
+  a.click('Прогресс', '.tab');
+  a.t.now = new Date(2026, 9, 4, 20, 0); // воскресенье — итоги недели
+  a.click('Сегодня', '.tab');
+  a.click('Итоги недели', '.banner button'); clean('итоги');
+  a.done();
+});
+
 test('тап отмечает и снимает, узлы живут; 8 из 8 → закатный герой и «День закрыт»', async () => {
-  const a = await start(WED);
+  const a = await start(WED, { storage: fresh() });
   const r0 = a.rows()[0];
   const hero = a.doc.querySelector('.hero');
   r0.click();
@@ -219,7 +264,7 @@ test('у «Телефон на кухню» дедлайн от шага: до 0
 });
 
 test('название пункта внутри фразы: строчная первая буква, аббревиатуры не трогаем', async () => {
-  const a = await start(WED);
+  const a = await start(WED, { storage: fresh() });
   const S = a.app.state;
   assert.match(a.text(), /телефон на кухню до 00:30/);
   S.items.find(i => i.beforeBed).name = 'iPhone на кухню';
@@ -232,7 +277,7 @@ test('название пункта внутри фразы: строчная п
 });
 
 test('герой: кольца минимума, сна и тренировок; панель сверху повторяет прогресс', async () => {
-  const a = await start(WED);
+  const a = await start(WED, { storage: fresh() });
   const S = a.app.state;
   const label = () => sp(a.doc.querySelector('.rings').getAttribute('aria-label'));
   assert.equal(label(), 'Минимум 0 из 8, сон — нет данных, Тренировка 0 из 3');
@@ -369,7 +414,7 @@ test('карточка ночи сворачивается, когда прил�
 });
 
 test('вчера можно доотметить, позавчера — нет', async () => {
-  const a = await start(WED);
+  const a = await start(WED, { storage: fresh() });
   a.t.now = new Date(2026, 9, 1, 9, 0);
   a.app.render();
   a.click('Вчера: 0 из 8');
@@ -603,7 +648,7 @@ test('итоги: выбранный шаг сна или «Notes разобра
 });
 
 test('Настройки: добавить (11-й — переспрос), переименовать, ↑↓, убрать и вернуть', async () => {
-  const a = await start(WED);
+  const a = await start(WED, { storage: fresh() });
   a.click('Настройки', '.tab');
   const names = () => [...a.all('.screen > .group')[0].querySelectorAll('.row .name')].map(n => n.textContent).filter(n => n !== 'Добавить пункт');
   const doneBtn = () => a.doc.getElementById('sheet-done');
@@ -670,7 +715,7 @@ test('Настройки: добавить (11-й — переспрос), пе�
 });
 
 test('Настройки: недельный счётчик — раз в неделю 1–7', async () => {
-  const a = await start(WED);
+  const a = await start(WED, { storage: fresh() });
   a.click('Настройки', '.tab');
   a.find('Тренировка', '.row').click();
   assert.equal(a.sheet().getAttribute('aria-label'), 'Счётчик');
@@ -713,7 +758,7 @@ test('Правила открываются листом', async () => {
 });
 
 test('экспорт отдаёт валидный JSON с датой копии, импорт старого файла отклоняется, сброс — через подтверждение', async () => {
-  const a = await start(WED);
+  const a = await start(WED, { storage: fresh() });
   a.rows()[0].click();
   let file, name;
   a.win.URL.createObjectURL = f => { file = f; return 'blob:x'; };
@@ -752,7 +797,8 @@ test('экспорт отдаёт валидный JSON с датой копии
   assert.equal(a.app.state.items[0].name, 'Из файла');
   a.click('Сбросить к шаблону');
   a.alertBtn('Сбросить');
-  assert.equal(a.app.state.items[0].name, 'Шторы + умыться');
+  assert.equal(a.app.state.items[0].name, 'Стакан воды'); // сброс — к базовому шаблону
+  assert.deepEqual([a.app.state.items.length, a.app.state.weekly.length], [5, 0]);
   assert.deepEqual(a.app.state.days['2026-09-30'].done, []);
   a.done();
 });
@@ -779,7 +825,7 @@ test('Настройки: давно без копии — напоминани�
 });
 
 test('Прогресс рисуется: серия, цепь 6 недель, неделя, сон 14 ночей, пункты, недели', async () => {
-  const a = await start(WED);
+  const a = await start(WED, { storage: fresh() });
   a.app.state.sleep.nights['2026-09-30'] = { bed: '00:40', wake: '07:30' };
   a.click('Прогресс', '.tab');
   assert.match(a.text(), /В системе с 30 сентября · 1 день/); // новый телефон — «в системе» с сегодня
@@ -887,7 +933,7 @@ test('праздник закрытия дня укладывается в 1,3 �
 });
 
 test('уезжающий лист и гаснущее подтверждение не принимают касаний', async () => {
-  const a = await start(WED, { holdMotion: true });
+  const a = await start(WED, { holdMotion: true, storage: fresh() });
   a.click('Настройки', '.tab');
   a.find('Спорт', '.row').click();
   a.type(a.sheet().querySelector('input[name=name]'), 'Спорт+');
