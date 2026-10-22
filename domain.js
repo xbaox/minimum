@@ -113,12 +113,14 @@ const cut = (s, max) => {
 
 // Поля формы → чистые значения; null, если название пустое.
 export function cleanFields(f, weekly) {
-  const name = cut(String(f.name ?? '').trim(), 60);
+  // Одна строка: из поля могли вставить переносы. Неразрывные пробелы («5 минут») остаются.
+  const line = v => String(v ?? '').replace(/[\t\n\v\f\r\u2028\u2029]+/g, ' ').trim();
+  const name = cut(line(f.name), 60);
   if (!name) return null;
   const out = {
     icon: ICON_IDS.includes(f.icon) ? f.icon : DEFAULT_ICON,
     name,
-    note: cut(String(f.note ?? '').trim(), 120),
+    note: cut(line(f.note), 120),
     color: COLORS.includes(f.color) ? f.color : DEFAULT_COLOR,
   };
   if (weekly) out.perWeek = Math.min(7, Math.max(1, Math.round(+f.perWeek) || 3));
@@ -309,14 +311,39 @@ export function setNight(s, date, field, value) {
   if (!n.bed && !n.wake) delete s.sleep.nights[date];
 }
 
-// Новый шаг действует с завтрашнего логического дня — то есть с ближайшей ночи.
-export function setStep(s, bed, today) {
+// Новый шаг действует с завтрашнего логического дня — то есть с ближайшей ночи (или с from, см. stepFrom).
+export function setStep(s, bed, today, from = addDays(today, 1)) {
   if (!isTime(bed)) return false;
-  const from = addDays(today, 1);
   const ts = s.sleep.targets.filter(t => t.from !== from);
   if (targetFor({ sleep: { targets: ts } }, from) !== bed) ts.push({ from, bed });
   ts.sort((a, b) => (a.from < b.from ? -1 : 1));
   s.sleep.targets = ts;
+  return true;
+}
+
+// Сколько минут сна от отбоя bed до подъёма wake.
+export const sleepFor = (bed, wake) => toMin(wake) + 1440 - norm(bed);
+
+// С какой ночи действует новый отбой из Настроек: с ближайшей, но если этой ночью он уже прошёл —
+// со следующей: задним числом ночь «позже шага» не делаем. today — логический день, now — часы.
+export function stepFrom(today, bed, now) {
+  const h = now.getHours();
+  const night = h >= 18 || h < DAY_START_HOUR;
+  return addDays(today, night && nowNorm(now) >= norm(bed) ? 2 : 1);
+}
+
+// Подъём меняется — часы сна те же: цель отбоя и шаги (с from) сдвигаются на ту же разницу.
+// from — с какой ночи сдвигать шаг (stepFrom для нового отбоя); прошлые ночи не трогаем.
+export function setWake(s, wake, today, from = addDays(today, 1)) {
+  if (!isTime(wake)) return false;
+  const d = ((((toMin(wake) - toMin(s.sleep.goalWake)) % 1440) + 1440 + 720) % 1440) - 720;
+  s.sleep.goalWake = wake;
+  if (!d) return true;
+  s.sleep.goalBed = shiftTime(s.sleep.goalBed, d);
+  const at = targetFor(s, from);
+  const keep = s.sleep.targets.filter(t => t.from < from);
+  const later = s.sleep.targets.filter(t => t.from > from).map(t => ({ from: t.from, bed: shiftTime(t.bed, d) }));
+  s.sleep.targets = [...keep, { from, bed: shiftTime(at, d) }, ...later].sort((a, b) => (a.from < b.from ? -1 : 1));
   return true;
 }
 

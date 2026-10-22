@@ -474,3 +474,34 @@ test('недельный счётчик: эта неделя, 8 недель, з
   assert.equal(st.pastWeeks, 3); // 31.08, 07.09, 14.09
   assert.equal(st.goalWeeks, 2);
 });
+
+test('сон в часах: sleepFor, отбой из Настроек не задним числом (stepFrom), подъём сохраняет часы (setWake)', () => {
+  assert.equal(D.sleepFor('00:45', '07:30'), 405);
+  assert.equal(D.sleepFor('23:30', '07:30'), 480);
+  assert.equal(D.sleepFor('03:00', '07:30'), 270);
+  const t = (d, h, m = 0) => new Date(2026, 9, d, h, m);
+  assert.equal(D.stepFrom('2026-10-21', '00:00', t(21, 14)), '2026-10-22', 'днём — с ближайшей ночи');
+  assert.equal(D.stepFrom('2026-10-21', '00:00', t(21, 23, 30)), '2026-10-22', 'вечером, до нового отбоя — тоже');
+  assert.equal(D.stepFrom('2026-10-21', '00:00', t(22, 0, 30)), '2026-10-23', 'ночью после нового отбоя — со следующей');
+  assert.equal(D.stepFrom('2026-10-21', '23:30', t(21, 23, 30)), '2026-10-23', 'ровно в отбой — тоже со следующей');
+  assert.equal(D.stepFrom('2026-10-22', '00:00', t(22, 5)), '2026-10-23', 'утро — новый логический день, ближайшая ночь');
+  const s = mk('2026-10-01');
+  D.setStep(s, '00:30', '2026-10-10');
+  D.setStep(s, '00:15', '2026-10-10', '2026-10-12');
+  assert.deepEqual(s.sleep.targets, [{ from: '2026-10-01', bed: '01:00' }, { from: '2026-10-11', bed: '00:30' }, { from: '2026-10-12', bed: '00:15' }]);
+  assert.ok(D.setWake(s, '07:00', '2026-10-10'));
+  assert.equal(s.sleep.goalWake, '07:00');
+  assert.equal(s.sleep.goalBed, '23:00', 'цель — те же 8 ч');
+  assert.deepEqual(s.sleep.targets, [{ from: '2026-10-01', bed: '01:00' }, { from: '2026-10-11', bed: '00:00' }, { from: '2026-10-12', bed: '23:45' }],
+    'прошлое не тронуто, шаги дальше сдвинуты на ту же разницу');
+  assert.equal(D.sleepFor(D.targetFor(s, '2026-10-12'), s.sleep.goalWake), D.sleepFor('00:15', '07:30'));
+  assert.ok(D.setWake(s, '07:00', '2026-10-10'), 'тот же подъём — ничего не меняется');
+  assert.equal(s.sleep.goalBed, '23:00');
+  assert.equal(D.setWake(s, '7:00', '2026-10-10'), false);
+});
+
+test('название и подпись — одна строка: переносы схлопываются, неразрывные пробелы остаются', () => {
+  const f = D.cleanFields({ name: '  Чтение\n', note: '10 страниц\n\nперед сном  ' }, false);
+  assert.equal(f.name, 'Чтение');
+  assert.equal(f.note, '10 страниц перед сном');
+});

@@ -91,6 +91,7 @@ export const UI = {
   tick: 'M5 12.5l4.5 4.5L19 7.5',
   chevron: 'M9.5 6l6 6-6 6',
   plus: 'M12 5v14M5 12h14',
+  minus: 'M5 12h14',
   up: 'M12 19V5M6 11l6-6 6 6',
   down: 'M12 5v14M6 13l6 6 6-6',
   stairs: 'M4 19h4v-4h4v-4h4V7h4',

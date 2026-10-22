@@ -229,6 +229,8 @@
   --tab-dot: 9px;
   --join-overlap: 22px;
   --track-code: 0.12em;
+  --stepper-h: 32px;
+  --stepper-half: 46px;
   --race-place: 20px;
   --race-ring: 32px;
   --race-a: 42px;
@@ -249,6 +251,7 @@
   --r-chip: 18px;
   --r-seg: 4px;
   --r-pill: 3px;
+  --r-stepper: 9px;
   --r-mini: 5px;
   --r-legend: 4px;
   --r-spark: 2px;
@@ -1244,6 +1247,28 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .form-row + .form-row::before { content: ""; position: absolute; top: 0; left: var(--u16); right: 0; height: var(--hair); background: var(--sep); }
 .form-label { flex: none; width: var(--label-w); color: var(--text-2); }
 .form-input { flex: 1; min-width: 0; min-height: var(--row-m); font-size: var(--fs-body); }
+/* подпись пункта — поле, которое растёт по тексту: длинная подпись видна целиком */
+.form-row-top { align-items: flex-start; }
+.form-row-top .form-label { padding-top: var(--u14); line-height: var(--u24); }
+.form-area { padding: var(--u14) 0; }
+
+/* сон в Настройках: часы сна и степпер «− +» как в iOS */
+.sleep-row .name { font-variant-numeric: tabular-nums; }
+.stepper { flex: none; display: flex; align-items: center; height: var(--stepper-h); border-radius: var(--r-stepper); background: var(--fill); }
+.st-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--stepper-half);
+  height: 100%;
+  color: var(--text);
+  transition: opacity var(--t-fast) var(--e-out), transform var(--t) var(--e-spring);
+}
+.st-btn::after { content: ""; position: absolute; inset: calc((var(--tap) - var(--stepper-h)) / -2) 0; }
+.st-btn .gl { width: var(--gl); height: var(--gl); stroke-width: 2.2; }
+.st-btn:disabled { opacity: 0.3; }
+.st-btn:not(:disabled):active { transform: scale(var(--press-s)); }
+.st-sep { width: var(--hair); height: var(--u16); background: var(--chevron); }
 .swatches { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--u10) 0; justify-items: center; padding: var(--u14) var(--u12); }
 .swatch { display: grid; place-items: center; width: var(--swatch); height: var(--swatch); border-radius: 50%; border: var(--bw-l) solid transparent; transition: border-color var(--t-fast) var(--e-out), transform var(--t) var(--e-spring); }
 .swatch::before { content: ""; width: var(--swatch-in); height: var(--swatch-in); border-radius: 50%; background: var(--item); transition: transform var(--t-mid) var(--e-spring); }

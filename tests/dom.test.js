@@ -125,7 +125,7 @@ test('первый старт со старыми ключами: стёрто, 
   assert.match(a.text(), /Новый минимум/);
   assert.match(a.text(), /5 пунктов, одинаковых каждый день/);
   assert.match(a.text(), /среда, 30 сентября/);
-  assert.match(a.text(), /Отбой 01:00 · цель 23:30/);
+  assert.match(a.text(), /Отбой 01:00 · 6 ч 30 мин сна/); // днём — сколько сна по шагу
   assert.match(a.text(), /телефон на кухню до 00:30 · подъём 7:30/);
   assert.equal(a.doc.querySelectorAll('.list-week > .row').length, 0); // недельные счётчики новичок добавит сам
   assert.doesNotMatch(a.text(), /На неделе/);
@@ -299,7 +299,7 @@ test('вечером в герое — отсчёт до отбоя и до «т
   const line = () => sp(a.doc.querySelector('.sleep-btn').textContent);
   assert.match(line(), /Отбой 01:00 · через 4 ч/);
   assert.match(line(), /телефон на кухню до 00:30 · через 3 ч 30 мин/);
-  assert.match(line(), /прошлая ночь не отмечена/);
+  assert.doesNotMatch(line(), /прошлая ночь/, 'в первый день прошлой ночи в приложении ещё не было');
   a.t.now = new Date(2026, 9, 1, 0, 40); // тот же логический день
   a.app.render();
   assert.match(line(), /Отбой 01:00 · через 20 мин/);
@@ -311,6 +311,9 @@ test('вечером в герое — отсчёт до отбоя и до «т
   a.t.now = new Date(2026, 9, 1, 1, 20);
   a.app.render();
   assert.match(line(), /Отбой 01:00 · пора спать/);
+  a.t.now = new Date(2026, 9, 1, 21, 0); // на следующий вечер ночь уже могла быть отмечена
+  a.app.render();
+  assert.match(line(), /прошлая ночь не отмечена/);
   a.done();
 });
 
@@ -318,14 +321,14 @@ test('ночь: чипы утром, итог в карточке, «Готов�
   const a = await start(WED);
   const group = label => a.doc.querySelector(`.sleep-card [role=group][aria-label="${label}"]`);
   const chip = (label, v) => [...group(label).querySelectorAll('button')].find(b => b.textContent === v);
-  assert.ok(chip('Лёг', '01:00').classList.contains('mark'));
-  assert.deepEqual([...group('Лёг').querySelectorAll('button')].map(b => b.textContent), ['00:00', '00:30', '01:00', '01:30', '02:00', '02:30', '03:00']);
-  assert.deepEqual([...group('Встал').querySelectorAll('button')].map(b => b.textContent), ['6:30', '7:00', '7:30', '8:00', '8:30', '9:00']);
-  chip('Лёг', '01:00').click();
-  chip('Встал', '7:30').click();
+  assert.ok(chip('Отбой', '01:00').classList.contains('mark'));
+  assert.deepEqual([...group('Отбой').querySelectorAll('button')].map(b => b.textContent), ['00:00', '00:30', '01:00', '01:30', '02:00', '02:30', '03:00']);
+  assert.deepEqual([...group('Подъём').querySelectorAll('button')].map(b => b.textContent), ['6:30', '7:00', '7:30', '8:00', '8:30', '9:00']);
+  chip('Отбой', '01:00').click();
+  chip('Подъём', '7:30').click();
   // карточка остаётся открытой и показывает итог
   assert.match(sp(a.doc.querySelector('.strip').textContent), /Сон 6 ч 30 мин · в цель/);
-  chip('Лёг', '01:30').click();
+  chip('Отбой', '01:30').click();
   assert.match(sp(a.doc.querySelector('.strip').textContent), /Сон 6 ч · на 30 мин позже шага/);
   a.click('Готово', '.sec-h button');
   assert.equal(a.doc.querySelector('.sleep-card'), null);
@@ -334,12 +337,12 @@ test('ночь: чипы утром, итог в карточке, «Готов�
   a.doc.querySelector('.sleep-btn').click();
   assert.ok(a.doc.querySelector('.sleep-card'));
   // «Другое» — родной выбор времени (не в фокусе — применяется сразу)
-  const other = group('Лёг').querySelector('input[type=time]');
+  const other = group('Отбой').querySelector('input[type=time]');
   other.value = '01:10';
   other.dispatchEvent(new a.win.Event('change', { bubbles: true }));
   assert.match(sp(a.doc.querySelector('.strip').textContent), /на 10 мин позже шага/);
   assert.equal(a.app.state.sleep.nights['2026-09-30'].bed, '01:10');
-  assert.match(sp(group('Лёг').querySelector('.chip-other').textContent), /01:10/);
+  assert.match(sp(group('Отбой').querySelector('.chip-other').textContent), /01:10/);
   // вечер следующего дня: ночь не отмечена
   a.t.now = new Date(2026, 9, 1, 19, 0);
   a.app.render();
@@ -351,10 +354,10 @@ test('ночь: чипы утром, итог в карточке, «Готов�
 test('ночь: обе отметки — карточка сама сворачивается в строку героя', async () => {
   const a = await start(WED);
   const chip = (label, v) => [...a.doc.querySelector(`.sleep-card [aria-label="${label}"]`).querySelectorAll('button')].find(b => b.textContent === v);
-  chip('Встал', '7:30').click();
+  chip('Подъём', '7:30').click();
   await wait(1700);
   assert.ok(a.doc.querySelector('.sleep-card'), 'одна отметка — ждём вторую');
-  chip('Лёг', '01:00').click();
+  chip('Отбой', '01:00').click();
   assert.ok(a.doc.querySelector('.sleep-card'));
   await wait(1700);
   assert.equal(a.doc.querySelector('.sleep-card'), null);
@@ -364,7 +367,7 @@ test('ночь: обе отметки — карточка сама сворач
 
 test('барабан времени в фокусе: выбор ждёт закрытия, поле остаётся на месте', async () => {
   const a = await start(WED);
-  const input = a.doc.querySelector('.sleep-card [aria-label="Лёг: другое время"]');
+  const input = a.doc.querySelector('.sleep-card [aria-label="Отбой: другое время"]');
   input.focus();
   assert.equal(a.doc.activeElement, input);
   input.value = '01:20';
@@ -373,36 +376,36 @@ test('барабан времени в фокусе: выбор ждёт зак�
   input.blur();
   assert.equal(a.app.state.sleep.nights['2026-09-30'].bed, '01:20');
   assert.equal(input.isConnected, true); // узел живёт — без мигания
-  assert.match(sp(a.doc.querySelector('.sleep-card [aria-label="Лёг"] .chip-other').textContent), /01:20/);
+  assert.match(sp(a.doc.querySelector('.sleep-card [aria-label="Отбой"] .chip-other').textContent), /01:20/);
   a.done();
 });
 
 test('выбор из барабана не теряется, если экран перерисовался до его закрытия', async () => {
   const a = await start(WED);
-  const input = a.doc.querySelector('.sleep-card [aria-label="Встал: другое время"]');
+  const input = a.doc.querySelector('.sleep-card [aria-label="Подъём: другое время"]');
   input.focus();
   input.value = '07:10';
   input.dispatchEvent(new a.win.Event('change', { bubbles: true }));
   a.app.render(); // например, пришло обновление или сменился день
   assert.equal(a.app.state.sleep.nights['2026-09-30'].wake, '07:10');
-  // Настройки: поле цели в фокусе — значение сохраняется, экран не перерисован
+  // Настройки: поле подъёма в фокусе — значение сохраняется, экран не перерисован
   a.click('Настройки', '.tab');
-  const goal = a.doc.querySelector('.time-row input[aria-label="Цель отбоя"]');
-  goal.focus();
-  goal.value = '23:00';
-  goal.dispatchEvent(new a.win.Event('change', { bubbles: true }));
-  assert.equal(goal.isConnected, true);
-  goal.blur();
-  assert.equal(a.app.state.sleep.goalBed, '23:00');
-  assert.match(goal.closest('.time-row').textContent, /23:00/);
+  const wake = a.doc.querySelector('.time-row input[aria-label="Подъём"]');
+  wake.focus();
+  wake.value = '07:00';
+  wake.dispatchEvent(new a.win.Event('change', { bubbles: true }));
+  assert.equal(wake.isConnected, true);
+  wake.blur();
+  assert.equal(a.app.state.sleep.goalWake, '07:00');
+  assert.match(sp(wake.closest('.time-row').textContent), /7:00/);
   a.done();
 });
 
 test('карточка ночи сворачивается, когда приложение уходит в фон', async () => {
   const a = await start(WED);
   const chip = (label, v) => [...a.doc.querySelector(`.sleep-card [aria-label="${label}"]`).querySelectorAll('button')].find(b => b.textContent === v);
-  chip('Лёг', '01:00').click();
-  chip('Встал', '7:30').click();
+  chip('Отбой', '01:00').click();
+  chip('Подъём', '7:30').click();
   assert.ok(a.doc.querySelector('.sleep-card'));
   Object.defineProperty(a.doc, 'visibilityState', { configurable: true, get: () => 'hidden' });
   a.doc.dispatchEvent(new a.win.Event('visibilitychange'));
@@ -561,7 +564,7 @@ test('воскресенье: баннер → итоги → выбор → н�
   const rec = a.sheet().querySelector('.opt.rec');
   assert.match(sp(rec.textContent), /Раньше на 30 минут/);
   assert.match(sp(rec.textContent), /рекомендовано/);
-  assert.match(sp(rec.textContent), /отбой 00:30 · телефон на кухню до 00:00/);
+  assert.match(sp(rec.textContent), /отбой 00:30 · 7 ч сна · телефон на кухню до 00:00/);
   rec.click();
   assert.ok(rec.querySelector('.tick'));
   assert.equal(close().disabled, false);
@@ -600,7 +603,7 @@ test('итоги: незаполненные ночи дозаполняются
   a.click('Итоги недели', '.banner button');
   assert.match(sp(a.sheet().textContent), /Ночи по памяти/);
   const night = [...a.sheet().querySelectorAll('.sleep-card')].find(c => sp(c.textContent).includes('чт, 1 октября'));
-  [...night.querySelectorAll('[aria-label="Лёг"] button')].find(b => b.textContent === '00:30').click();
+  [...night.querySelectorAll('[aria-label="Отбой"] button')].find(b => b.textContent === '00:30').click();
   assert.equal(a.app.state.sleep.nights['2026-10-01'].bed, '00:30');
   assert.ok(a.sheet()); // лист остался открытым
   a.type(a.sheet().querySelector('textarea'), 'черновик');
@@ -726,23 +729,47 @@ test('Настройки: недельный счётчик — раз в нед
   a.done();
 });
 
-test('Настройки: цели сна и ручной шаг — с завтрашней даты', async () => {
-  const a = await start(WED);
+test('Настройки: сон в часах — «сон сейчас» и «цель» степпером, «сразу на цель»; подъём сдвигает отбой, часы те же', async () => {
+  const a = await start(WED); // 30 сентября, 9:00 — шаг 01:00, цель 23:30, подъём 7:30
   a.click('Настройки', '.tab');
-  const set = (label, v) => {
-    const i = a.doc.querySelector(`.time-row input[aria-label="${label}"]`);
-    i.value = v;
-    i.dispatchEvent(new a.win.Event('change', { bubbles: true }));
-  };
-  set('Текущий шаг', '00:45');
-  set('Подъём', '07:00');
   const S = a.app.state;
-  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '00:45' });
+  const row = label => a.doc.querySelector(`.sleep-row [role=group][aria-label="${label}"]`).closest('.sleep-row');
+  const btn = (label, more) => a.doc.querySelector(`[aria-label="${label}: ${more ? 'больше' : 'меньше'} на 15 минут"]`);
+  assert.match(sp(row('Сон сейчас').textContent), /^6 ч 30 мин\s*сон сейчас · отбой 01:00/);
+  assert.match(sp(row('Цель сна').textContent), /^8 ч\s*цель · отбой 23:30/);
+  assert.match(a.text(), /Сразу на цель — 8 ч/);
+  btn('Сон сейчас', true).click();
+  btn('Сон сейчас', true).click();
+  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '00:30' }, 'днём — с ближайшей ночи');
+  assert.match(sp(row('Сон сейчас').textContent), /^7 ч\s*сон сейчас · отбой 00:30$/);
+  btn('Цель сна', false).click();
+  assert.equal(S.sleep.goalBed, '23:45');
+  assert.match(sp(row('Цель сна').textContent), /^7 ч 45 мин/);
+  a.click('Сразу на цель — 7 ч 45 мин');
+  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '23:45' });
+  assert.doesNotMatch(a.text(), /Сразу на цель/, 'уже на цели');
+  assert.equal(btn('Сон сейчас', true).disabled, true, 'больше цели — нельзя');
+  assert.equal(btn('Цель сна', false).disabled, true, 'цель не меньше «сейчас»');
+  // подъём на полчаса раньше — отбой тоже, часы сна те же
+  const wake = a.doc.querySelector('.time-row input[aria-label="Подъём"]');
+  wake.value = '07:00';
+  wake.dispatchEvent(new a.win.Event('change', { bubbles: true }));
   assert.equal(S.sleep.goalWake, '07:00');
-  assert.match(a.text(), /7:00/);
+  assert.equal(S.sleep.goalBed, '23:15');
+  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-01', bed: '23:15' });
+  assert.match(sp(row('Сон сейчас').textContent), /^7 ч 45 мин/);
+  assert.match(sp(row('Цель сна').textContent), /^7 ч 45 мин/);
   a.click('Сегодня', '.tab');
-  assert.match(a.text(), /Отбой 00:45/);
+  assert.match(a.text(), /Отбой 23:15 · 7 ч 45 мин сна, цель/);
   assert.match(a.text(), /подъём 7:00/);
+  // ночью, когда новый отбой этой ночью уже прошёл, — со следующей ночи: задним числом «позже шага» не ставим
+  a.t.now = new Date(2026, 9, 1, 0, 30); // логически ещё 30 сентября
+  a.click('Настройки', '.tab');
+  btn('Сон сейчас', false).click(); // отбой 23:30
+  assert.deepEqual(S.sleep.targets.at(-1), { from: '2026-10-02', bed: '23:30' });
+  assert.match(sp(row('Сон сейчас').textContent), /отбой 23:30 со следующей ночи/);
+  a.click('Сегодня', '.tab');
+  assert.match(a.text(), /Отбой 23:15/, 'этой ночью — прежний отбой');
   a.done();
 });
 
@@ -919,12 +946,12 @@ test('праздник закрытия дня укладывается в 1,3 �
   // карточка ночи: передумали во время ухода — она остаётся и видна
   const b = await start(WED, { holdMotion: true });
   const chip = (label, v) => [...b.doc.querySelector(`.sleep-card [aria-label="${label}"]`).querySelectorAll('button')].find(x => x.textContent === v);
-  chip('Лёг', '01:00').click();
-  chip('Встал', '7:30').click();
+  chip('Отбой', '01:00').click();
+  chip('Подъём', '7:30').click();
   b.click('Готово', '.sec-h button'); // уход начался
   const fades = b.motionLog.filter(x => x.opts?.fill === 'forwards');
   assert.ok(fades.length >= 2);
-  chip('Встал', '7:30').click(); // сняли отметку — ночь неполная, утром карточка нужна
+  chip('Подъём', '7:30').click(); // сняли отметку — ночь неполная, утром карточка нужна
   b.motionLog.release();
   await wait(5);
   assert.ok(b.doc.querySelector('.sleep-card'));
@@ -973,9 +1000,9 @@ test('уезжающий лист и гаснущее подтверждение
 test('ночь не сворачивается, пока крутят барабан «Другое»', async () => {
   const a = await start(WED);
   const chip = (label, v) => [...a.doc.querySelector(`.sleep-card [aria-label="${label}"]`).querySelectorAll('button')].find(x => x.textContent === v);
-  chip('Лёг', '01:30').click();
-  chip('Встал', '7:30').click();
-  const input = a.doc.querySelector('.sleep-card [aria-label="Лёг: другое время"]');
+  chip('Отбой', '01:30').click();
+  chip('Подъём', '7:30').click();
+  const input = a.doc.querySelector('.sleep-card [aria-label="Отбой: другое время"]');
   input.focus();
   await wait(1800);
   assert.ok(a.doc.querySelector('.sleep-card'), 'карточка ждёт');
