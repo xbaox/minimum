@@ -436,6 +436,12 @@ test('вчера можно доотметить, позавчера — нет'
   yRows()[0].click();
   assert.match(a.text(), /Вчера: 1 из 8/);
   assert.deepEqual(a.app.state.days['2026-09-30'].done.length, 1);
+  // вчера целиком — счётчики и разделы в листе дня
+  a.click('Весь вчерашний день — счётчики и разделы');
+  assert.match(sp(a.sheet().textContent), /Среда, 30 сентября/);
+  assert.match(sp(a.sheet().textContent), /На неделе · можно отметить/);
+  a.click('Готово', '.sheet-act');
+  await wait(10);
   a.t.now = new Date(2026, 9, 2, 9, 0);
   a.app.render();
   assert.match(a.text(), /Вчера: 0 из 8/); // 1 октября
@@ -884,6 +890,7 @@ test('Прогресс рисуется: серия, цепь 6 недель, н
   assert.equal(a.doc.querySelectorAll('.chain .cell').length, 42);
   assert.equal(a.doc.querySelectorAll('.chain .cell.today').length, 1);
   assert.equal(a.doc.querySelectorAll('.week-rings .mini').length, 7);
+  assert.match(a.text(), /0 из 1дней закрыто—ночей в цель0 из 3тренировка/, 'неделя цифрами под кольцами');
   assert.ok(a.doc.querySelector('svg.chart'));
   assert.equal(a.doc.querySelectorAll('svg.chart rect.bar-ok').length, 1);
   assert.equal(a.doc.querySelectorAll('.rate').length, 8);

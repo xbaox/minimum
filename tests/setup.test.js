@@ -545,6 +545,15 @@ test('«Что сделано» (v60): кружок — отметка дня р
   a.alertBtn('Отмена');
   await wait();
   assert.equal(a.app.state.secDays['sec-s']['2026-10-26'], 'решил 15 задач по геометрии');
+  day('Учёба').querySelector('.sd-check').click();
+  a.alertBtn('Снять');
+  await wait();
+  assert.equal(a.app.state.secDays['sec-s'], undefined, 'снята — запись стёрта');
+  assert.match(sp(day('Учёба').textContent), /Что сделано сегодня\?/);
+  day('Учёба').querySelector('.sd-open').click();
+  a.type(a.sheet().querySelector('textarea[name="done-text"]'), 'решил 15 задач по геометрии');
+  a.doc.getElementById('sheet-done').click();
+  await wait();
   // набрал текст — день отмечен сам; тап мимо с набранным — переспрос; выключил отметку — запись не сохраняется
   day('Работа').querySelector('.sd-open').click();
   const sw = () => a.sheet().querySelector('.switch-row');

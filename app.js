@@ -40,7 +40,7 @@ const NEWS_ID = 'v60';
 const NEWS = [
   '«Что сделано» в разделах: кружок — отметка дня, тап по строке — запись пары слов. Пункты не обязательны',
   'Гонка: очко за закрытый день, ночь в цель и дело сверх минимума — раздел или счётчик, до трёх в день. Под карточкой — что ещё можно сегодня',
-  'Новый раздел друзьям открыт, закрыть можно ещё в первой настройке. Забытую вчера тренировку можно отметить в листе дня',
+  'Новый раздел друзьям открыт — закрыть можно в первой настройке или в «Что видят друзья». Недельный счётчик за вчера отмечается в листе дня',
 ];
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
 const SECTION_PRESETS = [
@@ -1479,7 +1479,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         chainLegend(),
         h('p', { class: 'rule' }, 'Один пропуск прощается, два подряд — серия с нуля. Тапни день — увидишь детали.')),
       secH('h-week', 'Эта неделя'),
-      h('section', { key: 'week', class: 'group rv-card', 'data-flip': '' }, weekRings(), dotsLegend(w)),
+      h('section', { key: 'week', class: 'group rv-card', 'data-flip': '' }, weekRings(), dotsLegend(w), weekStats(mon, w)),
       secH('h-sleep', `Сон · 14${NB}ночей`),
       sleepSection({ sel: ui.chartSel, onPick: d => { ui.chartSel = ui.chartSel === d ? null : d; } }),
       secH('h-rates', 'Пункты · 4 недели'),
@@ -1512,8 +1512,17 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
   }
 
-  // Разделы на «Прогрессе» (включённые, с пунктами): 8 недель столбиками — сколько отметок за неделю, — и доля дней
-  // с отметкой по пунктам за 4 недели; тап по пункту — его детали. Цвет столбиков — цвет раздела.
+  // Неделя цифрами под кольцами (v60): закрытые дни, ночи в цель и первый счётчик — с понедельника по сегодня.
+  function weekStats(mon, w) {
+    const sum = D.weekSummary(S, mon, today);
+    return [h('div', { key: 'wk-sep', class: 'sc-sep' }), h('div', { key: 'wk-stats', class: 'stats' },
+      stat(sum.total ? `${sum.closed} из ${sum.total}` : '—', 'дней закрыто'),
+      stat(sum.mornings.length ? `${sum.K} из ${sum.mornings.length}` : '—', 'ночей в цель'),
+      w && stat(`${D.weekCount(S, w.id, today)} из ${w.perWeek}`, lcFirst(w.name)))];
+  }
+
+  // Разделы на «Прогрессе» (включённые, с пунктами или записями): 8 недель столбиками — дни с делом за неделю, — доля дней
+  // с отметкой по пунктам за 4 недели (тап — детали пункта) и последние записи «Что сделано». Цвет столбиков — цвет раздела.
   function progressSections() {
     const mon = D.weekStart(today);
     const list = S.sections.filter(sec => sec.on && (sec.items.length || S.secDays[sec.id]));
