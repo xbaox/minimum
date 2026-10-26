@@ -739,9 +739,12 @@ export function itemRates(s, today) {
 
 const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
 const uniq = a => [...new Set(a)];
+// id — ключ в обычных объектах (weekMarks, secMarks): «constructor», «__proto__» и прочие имена Object.prototype
+// подменили бы массив отметок функцией и уронили бы экран — такие id (из файла или чужого снимка) отбрасываем.
+const badId = id => typeof id !== 'string' || !id || id in Object.prototype;
 
 function normItem(v, weekly, createdAt) {
-  if (!v || typeof v !== 'object' || typeof v.id !== 'string' || !v.id) return null;
+  if (!v || typeof v !== 'object' || badId(v.id)) return null;
   const c = cleanFields(v, weekly);
   if (!c) return null;
   return {
@@ -772,7 +775,7 @@ export function normalize(raw, today) {
   }
   const weekMarks = {};
   for (const [id, a] of Object.entries(isObj(raw.weekMarks) ? raw.weekMarks : {}))
-    if (Array.isArray(a)) weekMarks[id] = uniq(a.filter(isDate)).sort();
+    if (Array.isArray(a) && !badId(id)) weekMarks[id] = uniq(a.filter(isDate)).sort();
   const sl = raw.sleep;
   const targets = (Array.isArray(sl.targets) ? sl.targets : [])
     .filter(t => isObj(t) && isDate(t.from) && isTime(t.bed))
@@ -808,14 +811,14 @@ export function normalize(raw, today) {
   const sections = [];
   for (const v of Array.isArray(raw.sections) ? raw.sections : []) {
     if (sections.length >= MAX_SECTIONS) break;
-    if (!isObj(v) || typeof v.id !== 'string' || !v.id || seen.has(v.id)) continue;
+    if (!isObj(v) || badId(v.id) || seen.has(v.id)) continue;
     const c = cleanSection(v);
     if (!c) continue;
     seen.add(v.id);
     const items = [];
     for (const x of Array.isArray(v.items) ? v.items : []) {
       if (items.length >= MAX_SEC_ITEMS) break;
-      if (!isObj(x) || typeof x.id !== 'string' || !x.id || seen.has(x.id)) continue;
+      if (!isObj(x) || badId(x.id) || seen.has(x.id)) continue;
       const f = secFields(x);
       if (!f) continue;
       seen.add(x.id);

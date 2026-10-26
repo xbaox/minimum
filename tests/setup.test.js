@@ -9,6 +9,7 @@ import { boot } from '../app.js';
 import { addDays, range, activeIds, addSection, addSecItem } from '../domain.js';
 import { fakeSupabase } from './fake-supabase.js';
 import { baoSeed } from './fixtures.js';
+import { shareOf } from '../share.js';
 
 const HTML = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const MON = new Date(2026, 9, 26, 9, 10); // понедельник 26 октября, утро
@@ -49,7 +50,7 @@ function recordMotion(win) {
   return log;
 }
 
-async function start({ when = MON, storage = {}, idb = new IDBFactory(), server = null, motion = false } = {}) {
+async function start({ when = MON, storage = {}, idb = new IDBFactory(), server = null, motion = false, spy = false } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on('jsdomError', e => { if (!/Not implemented: navigation/.test(e.message)) errors.push(e); });
@@ -59,6 +60,18 @@ async function start({ when = MON, storage = {}, idb = new IDBFactory(), server 
   open.add(win);
   for (const [k, v] of Object.entries(storage)) win.localStorage.setItem(k, v);
   const motionLog = motion ? recordMotion(win) : null;
+  // spy — живые таймеры окна по длительности: видно, взведён ли минутный опрос друзей.
+  const live = new Map();
+  if (spy) {
+    const st = win.setTimeout.bind(win), ct = win.clearTimeout.bind(win);
+    win.setTimeout = (f, ms, ...rest) => {
+      const id = st((...x) => { live.delete(id); f(...x); }, ms, ...rest);
+      live.set(id, ms);
+      return id;
+    };
+    win.clearTimeout = id => { live.delete(id); ct(id); };
+  }
+  const timers = ms => [...live.values()].filter(v => v === ms).length;
   const t = { now: when };
   const cloud = server ? { url: server.url, key: server.key, fetch: server.fetch } : { url: '', key: '' };
   const app = await boot({ win, now: () => t.now, idb, cloud });
@@ -91,7 +104,7 @@ async function start({ when = MON, storage = {}, idb = new IDBFactory(), server 
   };
   const clean = where => assert.doesNotMatch(doc.getElementById('app').textContent, /null|undefined|NaN/, where);
   const done = () => { assert.deepEqual(errors.map(String), []); win.close(); open.delete(win); };
-  return { win, doc, app, t, idb, all, find, click, type, text, sheet, sheetText, alertBtn, next, picked, dump, hold, clean, done, errors, motionLog };
+  return { win, doc, app, t, idb, all, find, click, type, text, sheet, sheetText, alertBtn, next, picked, dump, hold, clean, done, errors, motionLog, timers };
 }
 
 test('первая настройка: привет → минимум → сон → разделы → друзья; выборы сразу в состоянии; конец — приложение с сегодняшнего дня', async () => {
@@ -200,11 +213,13 @@ test('первая настройка: привет → минимум → со�
   assert.match(a.text(), /Запрос отправлен/);
   const me = server.profiles.find(p => p.name === 'Бао');
   assert.ok(server.links.some(l => l.from === me.id && l.to === sasha.id), 'запрос другу ушёл');
-  assert.ok(me.snapshot, 'снимок уже на сервере');
-  assert.doesNotMatch(JSON.stringify(me.snapshot), /Музыка|Работа/, 'разделы друзьям не уходят');
+  assert.equal(me.snapshot, null, 'пока идёт настройка — снимок не уходит');
   a.clean('друзья');
   a.click('Начать', '.setup-foot button');
-  await wait();
+  await wait(60);
+  assert.ok(me.snapshot, 'настройка закончена — снимок сразу на сервере');
+  assert.equal(me.snapshot.createdAt, '2026-10-26');
+  assert.doesNotMatch(JSON.stringify(me.snapshot), /Музыка|Работа/, 'разделы друзьям не уходят');
 
   // приложение: с сегодняшнего дня, без приветствий, разделы на «Сегодня»
   assert.equal(a.doc.querySelector('main.setup'), null);
@@ -425,14 +440,114 @@ test('лист дня: разделы — вчера можно отметить
 test('движение настройки: шаг въезжает с той стороны, куда идём; только transform и opacity', async () => {
   const a = await start({ motion: true });
   const log = a.motionLog;
-  const enter = () => log.filter(x => x.el.matches('main.setup')).at(-1);
+  const enter = () => log.filter(x => x.el.matches('main.setup, .setup-body')).at(-1);
   assert.equal(enter().frames[0].transform, 'translateY(12px)', 'первый шаг — снизу, как экран');
   assert.ok(log.some(x => x.el.matches('.setup-hero .rings .arc')), 'кольца дорисовываются');
+  const foot = a.doc.querySelector('.setup-foot');
   a.next();
+  assert.ok(enter().el.matches('.setup-clip > .setup-body'), 'едет только содержимое шага — внутри обёртки, которая режет сдвиг вбок');
   assert.equal(enter().frames[0].transform, 'translateX(28px)', 'вперёд — справа');
+  assert.equal(a.doc.querySelector('.setup-foot'), foot, 'кнопка снизу — тот же узел, стоит на месте');
   a.click('Назад', '.setup-bar button');
   assert.equal(enter().frames[0].transform, 'translateX(-28px)', 'назад — слева');
   const keys = new Set(log.flatMap(x => x.frames.flatMap(f => Object.keys(f))));
   for (const k of keys) assert.ok(['transform', 'opacity', 'strokeDashoffset', 'offset'].includes(k), 'анимируется ' + k);
+  a.done();
+});
+
+test('в настройке снимок не уходит ни одним путём: фон, возврат, опрос, видимость своего пункта', async () => {
+  const server = fakeSupabase({ now: () => MON });
+  const sasha = server.addProfile({ name: 'Саша', code: 'R8DX4', snapshot: { meta: { day: '2026-10-26' } } });
+  const a = await start({ server, storage: withSections('2026-10-26') });
+  a.click('Друзья', '.tab');
+  a.type(a.doc.querySelector('input[name="friend-name"]'), 'Бао');
+  a.click('Включить друзей');
+  await wait(60);
+  const me = server.profiles.find(p => p.name === 'Бао');
+  server.befriend(me, sasha);
+  const sent = () => server.calls.filter(c => c.body.p_snapshot).length;
+  a.click('Настройки', '.tab');
+  a.click('Начать заново');
+  a.alertBtn('Стереть');
+  await wait(60);
+  const before = sent();
+  const visibility = async state => {
+    Object.defineProperty(a.doc, 'visibilityState', { configurable: true, get: () => state });
+    a.doc.dispatchEvent(new a.win.Event('visibilitychange'));
+    await wait(60);
+  };
+  await visibility('hidden'); // уход в фон — снимок с keepalive
+  await visibility('visible'); // возврат — синхронизация
+  a.win.dispatchEvent(new a.win.Event('online'));
+  a.next();
+  a.click('Свой пункт', '.plus-row');
+  a.type(a.sheet().querySelector('input[name="name"]'), 'Секретный пункт');
+  assert.match(a.sheetText(), /Видно друзьям/); // друзья включены — переключатель видимости тоже не шлёт снимок
+  a.doc.getElementById('sheet-done').click();
+  await wait(2700); // дольше задержки публикации
+  assert.equal(sent(), before, 'ни одного снимка, пока идёт настройка');
+  assert.doesNotMatch(JSON.stringify(me.snapshot || {}), /Секретный пункт/);
+  for (const b of ['Дальше', 'Дальше', 'Дальше', 'Начать']) a.click(b, '.setup-foot button');
+  await wait(60);
+  assert.ok(sent() > before, 'закончили — снимок ушёл');
+  assert.match(JSON.stringify(me.snapshot), /Секретный пункт/);
+  a.done();
+});
+
+test('гонка: в настройке опрос друзей молчит, после «Начать» — снова раз в минуту', async () => {
+  const server = fakeSupabase({ now: () => MON });
+  const friend = JSON.parse(withSections('2026-10-26')['minimum.v2']);
+  const sasha = server.addProfile({ name: 'Саша', code: 'R8DX4', snapshot: shareOf(friend, '2026-10-26', { tz: 'America/Toronto' }) });
+  const a = await start({ server, storage: withSections('2026-10-26'), spy: true });
+  a.click('Друзья', '.tab');
+  a.type(a.doc.querySelector('input[name="friend-name"]'), 'Бао');
+  a.click('Включить друзей');
+  await wait(60);
+  server.befriend(server.profiles.find(p => p.name === 'Бао'), sasha);
+  a.click('Сегодня', '.tab');
+  a.win.dispatchEvent(new a.win.Event('online')); // друг появился — свежий список сразу
+  await wait(60);
+  assert.ok(a.doc.querySelector('.race'), 'гонка на «Сегодня»');
+  assert.equal(a.timers(60e3), 1, 'гонка на экране — опрос раз в минуту');
+  a.click('Настройки', '.tab');
+  a.click('Начать заново');
+  a.alertBtn('Стереть');
+  a.win.dispatchEvent(new a.win.Event('online'));
+  await wait(60);
+  assert.equal(a.timers(60e3), 0, 'в настройке гонки нет — и опроса нет');
+  for (let i = 0; i < 4; i++) a.next();
+  a.click('Начать', '.setup-foot button');
+  await wait(60);
+  assert.equal(a.timers(60e3), 1, 'после настройки опрос снова идёт');
+  a.done();
+});
+
+test('свой пункт с названием подсказки — свой; код друга после Enter — поле пустое', async () => {
+  const server = fakeSupabase({ now: () => MON });
+  server.addProfile({ name: 'Саша', code: 'R8DX4' });
+  const a = await start({ server });
+  a.next();
+  a.click('Свой пункт', '.plus-row');
+  a.type(a.sheet().querySelector('input[name="name"]'), 'Чтение');
+  a.type(a.sheet().querySelector('textarea[name="note"]'), '30 минут · своё');
+  a.doc.getElementById('sheet-done').click();
+  await wait();
+  assert.match(a.text(), /Выбрано 6/);
+  assert.equal(a.picked().length, 6, 'свой «Чтение» — отдельная отмеченная строка');
+  a.find('Чтение10 страниц', '.pick').click(); // шаблонный «Чтение» снимается, свой остаётся
+  assert.deepEqual(a.app.state.items.map(i => [i.name, i.note]).filter(x => x[0] === 'Чтение'), [['Чтение', '30 минут · своё']]);
+  assert.equal(a.find('Чтение10 страниц', '.pick').getAttribute('aria-pressed'), 'false');
+  for (let i = 0; i < 3; i++) a.next();
+  a.type(a.doc.querySelector('input[name="friend-name"]'), 'Бао');
+  a.doc.getElementById('setup-join').click();
+  await wait(60);
+  const input = a.doc.getElementById('setup-code');
+  input.focus();
+  a.type(input, 'R8DX4');
+  input.dispatchEvent(new a.win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await wait(60);
+  assert.match(a.text(), /Запрос отправлен/);
+  assert.equal(a.doc.getElementById('setup-code').value, '', 'поле в фокусе тоже очищено');
+  assert.equal(a.doc.getElementById('setup-add').disabled, true);
   a.done();
 });

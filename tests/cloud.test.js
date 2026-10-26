@@ -37,12 +37,12 @@ const TODAY = '2026-10-21';
 const NOW = new Date('2026-10-21T18:00:00-04:00');
 const ids = () => { let n = 0; return () => 'id-' + ++n; };
 
-function person(server, { win = fakeWin(), idb = new IDBFactory(), state, now = () => NOW } = {}) {
+function person(server, { win = fakeWin(), idb = new IDBFactory(), state, now = () => NOW, paused } = {}) {
   const S = state || baoSeed('2026-10-01', ids());
   const box = { S, changes: 0 };
   box.win = win;
   box.idb = idb;
-  box.cloud = createCloud({ win, idb, getState: () => box.S, now, onChange: () => box.changes++, url: server.url, key: server.key, fetch: server.fetch });
+  box.cloud = createCloud({ win, idb, getState: () => box.S, now, onChange: () => box.changes++, paused, url: server.url, key: server.key, fetch: server.fetch });
   return box;
 }
 
@@ -377,4 +377,28 @@ test('ответ на «принять» false — запрос уже отме�
   server.mode = 'up';
   await b.cloud.sync({ force: true });
   assert.equal(b.cloud.cache.incoming.length, 1, 'запрос снова виден');
+});
+
+test('пауза (первая настройка): снимок не уходит ни изменением, ни в фон, ни синхронизацией; друзья работают', async () => {
+  const server = fakeSupabase({ now: () => NOW });
+  const friend = server.addProfile({ name: 'Саша', code: 'R8DX4' });
+  let paused = true;
+  const a = person(server, { paused: () => paused });
+  await a.cloud.join('Бао');
+  const me = server.profiles.find(p => p.name === 'Бао');
+  const snaps = () => server.calls.filter(c => c.body.p_snapshot).length;
+  assert.equal(snaps(), 0);
+  assert.equal(me.snapshot, null);
+  a.cloud.changed();
+  assert.equal(a.win.timers.size, 0, 'изменение не взводит публикацию');
+  a.cloud.setHidden(a.S.items[0].id, true);
+  a.cloud.flush();
+  await a.cloud.sync({ force: true });
+  assert.equal(await a.cloud.request('R8DX4'), 'sent', 'запросы в паузе работают');
+  assert.equal(snaps(), 0);
+  assert.ok(server.links.some(l => l.from === me.id && l.to === friend.id));
+  paused = false;
+  await a.cloud.sync({ force: true });
+  assert.equal(snaps(), 1, 'пауза снята — снимок сразу');
+  assert.ok(me.snapshot);
 });

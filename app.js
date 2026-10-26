@@ -39,7 +39,7 @@ const WELCOME = (n, now, goal) =>
 const NEWS_ID = 'v58';
 const NEWS = [
   'Разделы: «Работа», «Хобби» и свои — отдельно от минимума, на серию и гонку не влияют. Включаются в Настройках',
-  'Новичок начинает с первой настройки: минимум, сон, разделы и сразу код друга',
+  'Новый телефон начинает с первой настройки: минимум, сон, разделы и сразу код друга',
 ];
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
 const SECTION_PRESETS = [
@@ -127,7 +127,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   ui.restored = loaded.restored;
   requestPersist(win.navigator);
   // Друзья: снимок прогресса уходит в Supabase; без адреса и ключа вкладки нет.
-  const cloud = createCloud({ win, idb, getState: () => S, now, onChange: () => cloudChanged(), ...cloudOpts });
+  // Пока идёт первая настройка, снимок не уходит ни одним путём (фон, возврат, опрос, видимость пункта).
+  const cloud = createCloud({ win, idb, getState: () => S, now, onChange: () => cloudChanged(), paused: () => !!S?.ui.setup, ...cloudOpts });
   const tabs = () => (cloud.enabled ? [TABS[0], TABS[1], TAB_FRIENDS, TABS[2]] : TABS);
 
   // ---------- мелкие детали разметки
@@ -187,8 +188,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   const save = () => {
     rev++;
     const ok = store.save(S);
-    // Друзья увидят — снимок уйдёт, когда отметки улягутся. Полунастроенный телефон не показываем.
-    if (!S.ui.setup) cloud.changed();
+    cloud.changed(); // друзья увидят — снимок уйдёт, когда отметки улягутся (в первой настройке — не уйдёт)
     return ok;
   };
   const commit = () => {
@@ -267,7 +267,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const entered = M.patch(root, [
       defs(),
       h('main', {
-        key: setup ? `setup-${ui.setup.step}` : `screen-${ui.tab}`, class: 'screen' + (setup ? ' setup' : ''), 'data-enter': setup ? 'step' : 'screen',
+        key: setup ? 'setup' : `screen-${ui.tab}`, class: 'screen' + (setup ? ' setup' : ''), 'data-enter': 'screen',
         'aria-hidden': modal ? 'true' : null, inert: modal,
       }, screen),
       h('div', { key: 'bars', class: 'bars' },
@@ -1594,7 +1594,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           h('span', { class: 'tile tile-round' }, gl(G.plus)), h('span', { class: 'name' }, 'Добавить друга'))),
       friends.length === 0 && h('p', { key: 'f-hint', class: 'sec-foot', 'data-flip': '' }, !cache && c.status !== 'ok'
         ? 'Нет связи — список друзей появится, когда сервер ответит.'
-        : 'Скинь другу свой код — он введёт его у себя в «Друзьях». Или введи его код сам.'),
+        : 'Отправь свой код — его вводят у себя в «Друзьях». Или добавь друга по коду.'),
       outgoing.length > 0 && [secH('h-out', 'Ждут ответа'), h('section', { key: 'out', class: 'group', 'data-flip': '' }, outgoing.map(outRow))],
       c.stuck && h('p', { key: 'f-stuck', class: 'sec-foot err', role: 'status', 'data-flip': '' },
         'Сервер не принял твой прогресс — друзья видят прежний. Проверь названия пунктов.'),
@@ -1726,7 +1726,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('button', { key: 'join-btn', class: 'btn-primary', id: 'join-btn', disabled: ui.busy || !cleanName(name), 'data-flip': '', onclick: doJoin },
         ui.busy ? 'Включаю…' : 'Включить друзей'),
       h('p', { key: 'join-foot', class: 'sec-foot', 'data-flip': '' },
-        'Друг видит твой прогресс, только когда вы оба согласились: один вводит код, другой принимает. Разделы и разбор недели не уходят никогда, личный пункт можно скрыть.'),
+        'Прогресс виден только по взаимному согласию: с одной стороны вводят код, с другой — принимают запрос. Разделы и разбор недели не уходят никогда, личный пункт можно скрыть.'),
     ];
   }
 
@@ -2041,7 +2041,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   }
 
   // Пока на экране «Друзья» или гонка на «Сегодня» — свежие данные друзей раз в минуту.
-  const racing = () => ui.tab === 'today' && (cloud.cache?.friends || []).some(f => f.snapshot);
+  const racing = () => !S.ui.setup && ui.tab === 'today' && (cloud.cache?.friends || []).some(f => f.snapshot);
   function pollFriends() {
     win.clearTimeout(friendsTimer);
     friendsTimer = 0;
@@ -2244,7 +2244,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       Object.assign(ui, { dataMsg: fresh ? '' : 'Данные импортированы', yOpen: false, sleepOpen: false, edit: false, setup: null });
       if (fresh) toast('Данные восстановлены из копии');
       commit();
-      if (fresh) scrollY(0);
+      if (fresh) {
+        scrollY(0);
+        friendsAgain();
+      }
     };
     if (fresh) return apply();
     showAlert({
@@ -2271,7 +2274,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   // «Начать заново»: всё своё стирается, открывается первая настройка. Друзья и код остаются.
   function askReset() {
     showAlert({
-      title: 'Начать заново?', msg: 'Отметки, сон, разделы и итоги недель сотрутся, и откроется первая настройка. Если нужна копия — сначала экспорт.',
+      title: 'Начать заново?', msg: 'Минимум вернётся к шаблону; недельные счётчики, отметки, сон, разделы и итоги недель сотрутся — откроется первая настройка. Если нужна копия — сначала экспорт.',
       yes: 'Стереть', danger: true,
       action: () => {
         S = D.seed(today, undefined, S.since); // «в системе с» переживает сброс
@@ -2348,7 +2351,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('div', { class: 'sb-r' }));
     const body = kind === 'hello' ? helloStep() : kind === 'minimum' ? minimumStep() : kind === 'sleep' ? sleepStep()
       : kind === 'sections' ? sectionsStep() : friendsStep();
-    return [bar, body, setupFoot(kind, st.step === steps.length - 1)];
+    // Едет только содержимое шага: точки, «Назад» и кнопка снизу стоят на месте. Обёртка обрезает сдвиг вбок —
+    // иначе страница на миг шире экрана и iOS растягивает её (липкая кнопка уезжает вниз).
+    return [bar, h('div', { key: 'setup-clip', class: 'setup-clip' }, h('div', { key: `step-${kind}`, class: 'setup-body', 'data-enter': 'step' }, body)),
+      setupFoot(kind, st.step === steps.length - 1)];
   }
 
   function goStep(d) {
@@ -2371,6 +2377,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     M.haptic();
     commit();
     scrollY(0);
+    friendsAgain();
+  }
+
+  // После настройки (или копии вместо неё) — свежий снимок друзьям и опрос гонки, как при открытии «Сегодня».
+  function friendsAgain() {
+    cloud.sync({ force: true });
+    pollFriends();
   }
 
   // Низ шага: главная кнопка (закатная) и, где нужно, тихая вторая.
@@ -2395,7 +2408,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const feats = [
       [h('span', { class: 'tile tile-check' }, gl(G.check)), 'Отметка — одно касание', 'всё отмечено — день закрыт'],
       [h('span', { class: 'tile tile-sun' }, gl(G.flame)), 'Не пропускай дважды', 'один пропуск прощается, два подряд — серия с нуля'],
-      [tile('moon', 'indigo'), 'Сон — шагами к цели', `отбой раньше на 15–30${NB}минут в неделю — выбираешь сам`],
+      [tile('moon', 'indigo'), 'Сон — шагами к цели', `отбой раньше на 15–30${NB}минут в неделю — по твоему выбору`],
       [tile('sparkles', 'yellow'), '1% в неделю', 'на итогах недели — одно маленькое улучшение'],
       cloud.enabled && [tile('people', 'pink'), 'Друзья и гонка недели', 'по коду — без почты и паролей'],
     ].filter(Boolean);
@@ -2412,10 +2425,12 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
   }
 
+  // Пункт из подсказки — по названию и подписи: свой «Чтение» с другой подписью остаётся своим.
+  const fromSuggestion = (it, sg) => it.name === sg.name && it.note === sg.note;
+
   // Минимум: шаблон уже выбран, ещё шесть подсказок и свой пункт. Убранный в настройке пункт исчезает бесследно.
   function minimumStep() {
     const act = D.activeItems(S);
-    const names = new Set(D.SUGGESTIONS.map(x => x.name));
     const pick = (key, it, on, onclick) => h('button', { key, class: 'row pick', style: tint(it.color), 'aria-pressed': pressed(on), 'data-flip': '', onclick },
       tile(it.icon), txt(it.name, it.note), h('span', { class: 'check' }, gl(G.check, '', 1)));
     return [
@@ -2423,8 +2438,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('p', { key: 'lead', class: 'setup-lead left' }, 'Выбери то, что сделаешь даже в худший день. Лучше меньше, но каждый день.'),
       secH('h-pick', `Выбрано ${act.length}`),
       h('section', { key: 'picks', class: 'group', 'data-flip': '' },
-        D.SUGGESTIONS.map(sg => pick(sg.name, sg, act.some(i => i.name === sg.name), () => pickToggle(sg))),
-        act.filter(i => !names.has(i.name)).map(it => pick(it.id, it, true, () => unpick(it.id))),
+        D.SUGGESTIONS.map(sg => pick(`sg-${sg.name}`, sg, act.some(i => fromSuggestion(i, sg)), () => pickToggle(sg))),
+        act.filter(i => !D.SUGGESTIONS.some(sg => fromSuggestion(i, sg))).map(it => pick(it.id, it, true, () => unpick(it.id))),
         plusRow('own', 'Свой пункт', () => tryAdd(false))),
       h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, act.length
         ? 'Названия, подписи, значки и порядок — в Настройках, в любой момент.'
@@ -2434,13 +2449,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
 
   function pickToggle(sg) {
     if (stale()) return;
-    const it = D.activeItems(S).find(i => i.name === sg.name);
+    const it = D.activeItems(S).find(i => fromSuggestion(i, sg));
     if (it) return unpick(it.id);
     const add = () => {
       D.addItem(S, sg, false, today);
       // Порядок — как в подсказках, свои — в конце: день выглядит так же, как список выбора.
       const rank = x => {
-        const k = D.SUGGESTIONS.findIndex(y => y.name === x.name);
+        const k = D.SUGGESTIONS.findIndex(y => fromSuggestion(x, y));
         return k < 0 ? D.SUGGESTIONS.length : k;
       };
       S.items = S.items.map((x, i) => [x, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
@@ -2478,7 +2493,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     };
     return [
       title('Сон'),
-      h('p', { key: 'lead', class: 'setup-lead left' }, 'Главная цель. Отбой движется к ней шагами по 15–30 минут — шаг выбираешь сам на итогах недели.'),
+      h('p', { key: 'lead', class: 'setup-lead left' }, 'Главная цель. Отбой движется к ней шагами по 15–30 минут — шаг выбираешь на итогах недели.'),
       nightBar(cur, aim, wake),
       secH('h-sleep', 'Сейчас и цель'),
       h('section', { key: 'sleep', class: 'group', 'data-flip': '' },
@@ -2500,7 +2515,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function nightBar(cur, aim, wake) {
     const SPAN = 11 * 60, end = D.toMin(wake) + 1440, start = end - SPAN;
     const ticks = [];
-    for (let m = Math.ceil(start / 120) * 120; m < end; m += 120) if (m - start >= 40 && end - m >= 75) ticks.push(m);
+    for (let m = Math.ceil(start / 120) * 120; m < end; m += 120) if (m - start >= 40 && end - m >= 100) ticks.push(m); // у подъёма — только его время
     return h('section', {
       key: 'nbar', class: 'group nbar', style: `--f:${(cur / SPAN).toFixed(4)};--g:${(aim / SPAN).toFixed(4)}`, 'data-flip': '',
       role: 'img', 'aria-label': `Сейчас ${dur(cur)} сна, цель ${dur(aim)}, подъём ${clock(wake)}`,
@@ -2521,9 +2536,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     return `До цели ${dur(left)} — примерно ${weeks}, по шагу в неделю.`;
   };
 
+  // Раздел из готовых — по названию и значку: свой «Работа» со своим значком остаётся своим.
+  const fromPreset = (sec, p) => sec.name === p.name && sec.icon === p.icon;
+
   // Разделы: три на выбор и свой. В настройке выключить — значит убрать: пунктов и отметок ещё нет.
   function sectionsStep() {
-    const preset = new Set(SECTION_PRESETS.map(p => p.name));
     const row = (key, sec, on, note, onclick) => h('button', {
       key, class: 'switch-row item-switch', role: 'switch', 'aria-checked': pressed(on), style: tint(sec.color), 'data-flip': '', onclick,
     }, tile(sec.icon), txt(sec.name, note), h('span', { class: 'switch', 'aria-hidden': 'true' }));
@@ -2531,8 +2548,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       title('Разделы'),
       h('p', { key: 'lead', class: 'setup-lead left' }, 'Работа, хобби, учёба — отдельно от минимума: отмечай, когда получается. На серию и гонку не влияют.'),
       h('section', { key: 'secs', class: 'group group-gap-l', 'data-flip': '' },
-        SECTION_PRESETS.map(p => row(p.name, p, S.sections.some(x => x.name === p.name), p.note, () => presetToggle(p))),
-        S.sections.filter(x => !preset.has(x.name)).map(sec => row(sec.id, sec, true, 'свой раздел', () => dropSection(sec.id))),
+        SECTION_PRESETS.map(p => row(`p-${p.name}`, p, S.sections.some(x => fromPreset(x, p)), p.note, () => presetToggle(p))),
+        S.sections.filter(x => !SECTION_PRESETS.some(p => fromPreset(x, p))).map(sec => row(sec.id, sec, true, 'свой раздел', () => dropSection(sec.id))),
         S.sections.length < D.MAX_SECTIONS && plusRow('own', 'Свой раздел', () => openSection(null))),
       h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, 'Пункты разделов добавишь потом — на «Сегодня» или в Настройках. Друзья разделы не видят.'),
     ];
@@ -2540,11 +2557,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
 
   function presetToggle(p) {
     if (stale()) return;
-    const sec = S.sections.find(x => x.name === p.name);
+    const sec = S.sections.find(x => fromPreset(x, p));
     if (sec) return dropSection(sec.id);
     D.addSection(S, p, today);
     const rank = x => {
-      const k = SECTION_PRESETS.findIndex(y => y.name === x.name);
+      const k = SECTION_PRESETS.findIndex(y => fromPreset(x, y));
       return k < 0 ? SECTION_PRESETS.length : k;
     };
     S.sections = S.sections.map((x, i) => [x, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
@@ -2597,7 +2614,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             })),
           h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Код друга'), codeInput('setup-code', setupJoin))),
         note || h('p', { key: 'f-foot', class: 'sec-foot', 'data-flip': '' },
-          'Код друга — если он уже прислал свой; нет — пропусти, добавишь потом. Друг видит твой прогресс, только когда вы оба согласились. Разделы и разбор недели не уходят никогда.'),
+          'Код друга — если он уже есть; нет — пропусти, добавишь потом. Прогресс виден только по взаимному согласию. Разделы и разбор недели не уходят никогда.'),
       ];
     }
     return [
@@ -2608,7 +2625,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('section', { key: 'f-add', class: 'group form-row code-row', 'data-flip': '' },
         codeInput('setup-code', setupRequest),
         h('button', { class: 'pill-btn', id: 'setup-add', disabled: st.busy || !CODE_RE.test(cleanCode(st.code)), onclick: setupRequest }, st.busy ? 'Отправляю…' : 'Добавить')),
-      note || h('p', { key: 'f-foot', class: 'sec-foot', 'data-flip': '' }, 'Скинь другу свой код — он введёт его у себя. Или введи его код здесь.'),
+      note || h('p', { key: 'f-foot', class: 'sec-foot', 'data-flip': '' }, 'Отправь свой код — его вводят у себя в «Друзьях». Или введи здесь код друга.'),
     ];
   }
 
@@ -2643,7 +2660,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       M.haptic();
       const code = cleanCode(st.code);
       if (CODE_RE.test(code)) await setupSend(code);
-      else st.result = 'Друзья включены — скинь другу свой код или введи его код.';
+      else st.result = 'Друзья включены — отправь свой код или введи здесь код друга.';
     } catch (e) {
       st.err = failText(e);
     } finally {
@@ -2673,6 +2690,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       if (r === 'sent' || r === 'friends' || r === 'pending' || r === 'already') {
         st.result = ADD_RESULT[r];
         st.code = '';
+        const input = root.querySelector('#setup-code');
+        if (input) input.value = ''; // поле в фокусе перерисовка не трогает — чистим сами
         if (r === 'sent' || r === 'friends') M.haptic();
       } else st.err = ADD_RESULT[r] || FAIL.down;
     } catch (e) {

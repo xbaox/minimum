@@ -267,3 +267,14 @@ test('разделы (v58) друзьям не уходят: ни названи
   assert.deepEqual([v.F.sections, v.F.secMarks], [[], {}]);
   assert.deepEqual(weekScore(v, '2026-10-19'), weekScore(readShare(JSON.parse(JSON.stringify(before)), at(TODAY, 20)), '2026-10-19'));
 });
+
+test('чужой снимок с id «constructor» не роняет сводку и гонку', () => {
+  const snap = JSON.parse(JSON.stringify(shareOf(life(), TODAY, { tz: 'America/Toronto' })));
+  snap.weekly.unshift({ id: 'constructor', name: 'ловушка', perWeek: 3, icon: 'star', color: 'red', addedAt: '2026-09-30' });
+  snap.items.push({ id: 'toString', name: 'ловушка', icon: 'star', color: 'red', addedAt: '2026-09-30' });
+  const v = readShare(snap, at(TODAY, 20));
+  assert.ok(v);
+  assert.doesNotThrow(() => summaryOf(v.F, v.today));
+  assert.doesNotThrow(() => weekScore(v, '2026-10-19'));
+  assert.ok(!v.F.weekly.some(w => w.id === 'constructor') && !v.F.items.some(i => i.id === 'toString'));
+});

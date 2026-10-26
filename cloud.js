@@ -95,7 +95,9 @@ function base64url(bytes) {
 
 // win — окно (fetch, crypto, localStorage, таймеры); getState — текущее состояние; onChange — перерисовать.
 // url, key, fetch подменяются в тестах и превью.
-export function createCloud({ win, idb, getState, now = () => new Date(), onChange = () => {}, url = SUPABASE_URL, key = SUPABASE_KEY, fetch: fetchFn } = {}) {
+// paused() → true — снимок не уходит (идёт первая настройка: полунастроенный телефон друзьям не показываем),
+// друзья и запросы при этом работают.
+export function createCloud({ win, idb, getState, now = () => new Date(), onChange = () => {}, paused = () => false, url = SUPABASE_URL, key = SUPABASE_KEY, fetch: fetchFn } = {}) {
   const enabled = !!(url && key);
   let ls;
   try {
@@ -198,9 +200,13 @@ export function createCloud({ win, idb, getState, now = () => new Date(), onChan
       syncQueued = false;
       if (!joined()) return;
       lastSync = t();
-      const { obj, h } = snapshot();
       const args = { p_secret: doc.secret };
-      if (h !== doc.sent && h !== stuck) args.p_snapshot = obj;
+      let h = '';
+      if (!paused()) {
+        const snap = snapshot();
+        h = snap.h;
+        if (h !== doc.sent && h !== stuck) args.p_snapshot = snap.obj;
+      }
       try {
         let r;
         try {
@@ -237,7 +243,7 @@ export function createCloud({ win, idb, getState, now = () => new Date(), onChan
 
   // Своё изменилось — отправим снимок чуть позже, когда отметки улягутся.
   function changed() {
-    if (!joined()) return;
+    if (!joined() || paused()) return;
     win.clearTimeout(pubTimer);
     pubTimer = win.setTimeout(() => {
       pubTimer = 0;
@@ -247,7 +253,7 @@ export function createCloud({ win, idb, getState, now = () => new Date(), onChan
 
   function publish({ keepalive = false } = {}) {
     return serial(async () => {
-      if (!joined()) return;
+      if (!joined() || paused()) return;
       const { obj, h } = snapshot();
       if (h === doc.sent || h === stuck) return;
       try {

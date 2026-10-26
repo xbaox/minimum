@@ -722,3 +722,22 @@ test('конец настройки: без отметок приложение 
   assert.equal(t.createdAt, '2026-10-20');
   assert.equal(t.ui.setup, false);
 });
+
+test('нормализация: id с именами Object.prototype отброшены — отметки не подменяются функцией', () => {
+  const s = mk('2026-09-01');
+  const raw = JSON.parse(JSON.stringify(s));
+  raw.items.push({ id: 'constructor', name: 'ловушка' });
+  raw.weekly.push({ id: 'toString', name: 'ловушка', perWeek: 2 });
+  raw.sections = [{ id: '__proto__', name: 'ловушка' }, { id: 'ok', name: 'Работа', items: [{ id: 'hasOwnProperty', name: 'ловушка' }, { id: 'w1', name: 'Фокус' }] }];
+  raw.weekMarks = JSON.parse('{"__proto__": ["2026-09-02"], "valueOf": ["2026-09-02"]}');
+  raw.secMarks = JSON.parse('{"hasOwnProperty": ["2026-09-02"], "w1": ["2026-09-02"]}');
+  const n = D.normalize(raw, '2026-09-10');
+  assert.equal(n.items.length, 8);
+  assert.equal(n.weekly.length, 1);
+  assert.deepEqual(n.sections.map(x => [x.id, x.items.map(i => i.id)]), [['ok', ['w1']]]);
+  assert.deepEqual(Object.keys(n.weekMarks), []);
+  assert.equal(Object.getPrototypeOf(n.weekMarks), Object.prototype, 'прототип не подменён');
+  assert.deepEqual(n.secMarks, { w1: ['2026-09-02'] });
+  assert.equal(D.secDone(n, 'w1', '2026-09-02'), true);
+  assert.doesNotThrow(() => D.dayRings(n, '2026-09-09', '2026-09-10'));
+});

@@ -55,6 +55,7 @@
   --glow-2: rgba(155, 92, 255, 0.14);
   --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.18);
   --shadow-knob: 0 3px 8px rgba(0, 0, 0, 0.15), 0 1px 1px rgba(0, 0, 0, 0.06);
+  --nb-goal: rgba(94, 92, 230, 0.22);
 
   /* смысловые цвета колец и градиенты — одинаковы в обеих темах */
   --sun-1: #FF6A3D;
@@ -332,6 +333,7 @@
     --glow-2: rgba(155, 92, 255, 0.26);
     --train-text: #30D158;
     --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.45);
+    --nb-goal: rgba(125, 122, 255, 0.42);
     --b-red: #FF6369;
     --b-orange: #F59E0B;
     --b-yellow: #EAB308;
@@ -1152,6 +1154,7 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
   padding: calc(env(safe-area-inset-top) + var(--u8)) var(--u20) 0;
   background: var(--bg);
 }
+.setup-clip { overflow-x: hidden; overflow-x: clip; }
 .sb-l { justify-self: start; }
 .sb-r { justify-self: end; }
 .dots { display: flex; align-items: center; gap: var(--u8); }
@@ -1191,7 +1194,7 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .nbar { margin-top: var(--u20); padding: var(--u16) var(--u16) var(--u14); display: flex; flex-direction: column; gap: var(--u8); }
 .nb-track { position: relative; height: var(--nb-h); border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
 .nb-goal, .nb-now { position: absolute; inset: 0; transform-origin: right center; transition: transform var(--t-mid) var(--e-out); }
-.nb-goal { background: var(--t-sleep); transform: scaleX(var(--g)); }
+.nb-goal { background: var(--nb-goal); transform: scaleX(var(--g)); }
 .nb-now { background: var(--g-sleep-x); transform: scaleX(var(--f)); }
 .nb-axis { position: relative; height: var(--u14); font-size: var(--fs-axis); line-height: var(--u14); color: var(--text-2); }
 .nb-axis span { position: absolute; top: 0; left: calc(var(--x) * 1%); transform: translateX(-50%); }
@@ -1199,7 +1202,7 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .nb-legend { display: flex; gap: var(--u14); font-size: var(--fs-foot); color: var(--text-2); }
 .nb-legend span { display: inline-flex; align-items: center; gap: var(--u6); }
 .nb-sw { width: var(--legend); height: var(--legend); border-radius: var(--r-legend); background: var(--g-sleep-x); }
-.nb-sw.goal { background: var(--t-sleep); }
+.nb-sw.goal { background: var(--nb-goal); }
 .code-mini { font-family: var(--font-code); font-weight: 700; letter-spacing: var(--track-code); text-transform: uppercase; }
 .code-mini::placeholder { font-family: var(--font); font-weight: 400; letter-spacing: normal; text-transform: none; }
 
