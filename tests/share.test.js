@@ -252,3 +252,18 @@ test('гонка недели: места по счёту, при равном �
   assert.deepEqual(ranked([{ id: 'me', score: 2, closed: 2 }, { id: 'a', score: 2, closed: 2 }]).map(p => [p.id, p.place]), [['me', 1], ['a', 1]]);
   assert.deepEqual(ranked([]), []);
 });
+
+test('разделы (v58) друзьям не уходят: ни названий, ни пунктов, ни отметок; счёт гонки тот же', () => {
+  const s = life();
+  const before = shareOf(s, TODAY, { tz: 'America/Toronto' });
+  const sec = D.addSection(s, { name: 'Секретная работа', icon: 'briefcase', color: 'blue' }, TODAY, () => 'sec-1');
+  const it = D.addSecItem(s, sec.id, { name: 'Тайный проект', note: 'никому' }, TODAY, () => 'sec-item-1');
+  D.toggleSecMark(s, it.id, TODAY, TODAY);
+  const snap = shareOf(s, TODAY, { tz: 'America/Toronto' });
+  assert.deepEqual(snap, before, 'снимок не изменился');
+  const text = JSON.stringify(snap);
+  for (const secret of ['Секретная работа', 'Тайный проект', 'никому', 'sec-1', 'sec-item-1', 'secMarks', 'sections']) assert.ok(!text.includes(secret), secret);
+  const v = readShare(JSON.parse(text), at(TODAY, 20));
+  assert.deepEqual([v.F.sections, v.F.secMarks], [[], {}]);
+  assert.deepEqual(weekScore(v, '2026-10-19'), weekScore(readShare(JSON.parse(JSON.stringify(before)), at(TODAY, 20)), '2026-10-19'));
+});

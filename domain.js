@@ -4,6 +4,10 @@ import { ICON_IDS, DEFAULT_ICON } from './icons.js';
 
 export const DAY_START_HOUR = 4;
 export const MAX_DAILY = 10;
+// Разделы (v58): «Работа», «Хобби» и свои — отдельно от минимума. Пределы — против мусора, не против человека.
+export const MAX_SECTIONS = 8;
+export const MAX_SEC_ITEMS = 20;
+export const SECTION_NAME_MAX = 30;
 export const SINCE = '2026-07-20';
 // Палитра плиток: под белый значок, контраст ≥ 3:1 (считает tests/style.test.js).
 export const COLORS = ['red', 'orange', 'yellow', 'green', 'mint', 'teal', 'blue', 'indigo', 'purple', 'pink', 'brown', 'gray'];
@@ -87,8 +91,20 @@ const TEMPLATE_ITEMS = [ // по ходу дня; подписи без «вст
   ['book', 'Чтение', `10${NB}страниц · в кровати вместо телефона`, 'purple', null],
 ];
 const TEMPLATE_WEEKLY = [];
+// Первая настройка предлагает ещё шесть пунктов — того же рода: малые, с «когда / после чего».
+const EXTRA_ITEMS = [
+  ['heart', 'Растяжка', `5${NB}минут · перед душем`, 'green', null],
+  ['globe', 'Английский', `10${NB}минут · после завтрака`, 'blue', null],
+  ['leaf', 'Прогулка', `15${NB}минут · на воздухе`, 'mint', null],
+  ['pencil', 'Дневник', `3${NB}строки · перед сном`, 'brown', null],
+  ['shirt', 'Одежда на завтра', 'с вечера', 'pink', null],
+  ['pill', 'Витамины', 'с завтраком', 'orange', null],
+];
+// Подсказки первой настройки: сначала шаблон (он уже выбран), потом ещё шесть на выбор.
+export const SUGGESTIONS = [...TEMPLATE_ITEMS, ...EXTRA_ITEMS].map(([icon, name, note, color, beforeBed]) => ({ icon, name, note, color, beforeBed }));
 
 // since — «в системе с»: у нового телефона — сегодня; сброс к шаблону передаёт прежнюю дату.
+// ui.setup — новый телефон начинает с первой настройки (v58).
 export function seed(today, id = makeId, since = today) {
   return {
     schema: 1,
@@ -102,7 +118,9 @@ export function seed(today, id = makeId, since = today) {
     weekMarks: {},
     sleep: { goalBed: '23:30', goalWake: '07:30', targets: [{ from: today, bed: '01:00' }], nights: {} },
     reviews: {},
-    ui: { welcomeSeen: false, news: '', lastExport: '' },
+    sections: [],
+    secMarks: {},
+    ui: { welcomeSeen: false, news: '', lastExport: '', setup: true },
   };
 }
 
@@ -172,6 +190,188 @@ export function restoreItem(s, id) {
   if (!item || !item.archivedAt) return false;
   item.archivedAt = null;
   return true;
+}
+
+// ---------- разделы (v58): «Работа», «Хобби» и свои. Отдельно от минимума: план дня, серия, кольца, итоги
+// и гонка их не видят, друзьям они не уходят. Отметка — дата в secMarks; пропусков нет — раздел не обязательство.
+
+export const findSection = (s, id) => s.sections.find(x => x.id === id) || null;
+
+export function findSecItem(s, id) {
+  for (const section of s.sections) {
+    const item = section.items.find(i => i.id === id);
+    if (item) return { section, item };
+  }
+  return null;
+}
+
+// Поля раздела → чистые значения; null, если название пустое.
+export function cleanSection(f) {
+  const c = cleanFields({ name: f?.name, icon: f?.icon, color: f?.color }, false);
+  return c && { name: cut(c.name, SECTION_NAME_MAX), icon: c.icon, color: c.color };
+}
+
+// Пункт раздела — как пункт минимума, только без привязки к отбою.
+function secFields(f) {
+  const c = cleanFields(f, false);
+  if (!c) return null;
+  delete c.beforeBed;
+  return c;
+}
+
+export function addSection(s, f, today, id = makeId) {
+  const c = cleanSection(f);
+  if (!c || s.sections.length >= MAX_SECTIONS) return null;
+  const sec = { id: id(), ...c, on: true, addedAt: today, items: [] };
+  s.sections.push(sec);
+  return sec;
+}
+
+export function updateSection(s, id, f) {
+  const sec = findSection(s, id);
+  const c = sec && cleanSection(f);
+  if (!c) return false;
+  Object.assign(sec, c);
+  return true;
+}
+
+// Выключенный раздел пропадает с «Сегодня», пункты и отметки остаются.
+export function setSectionOn(s, id, on) {
+  const sec = findSection(s, id);
+  if (!sec) return false;
+  sec.on = !!on;
+  return true;
+}
+
+// Удалить раздел — вместе с пунктами и их отметками (в интерфейсе — через подтверждение).
+export function removeSection(s, id) {
+  const k = s.sections.findIndex(x => x.id === id);
+  if (k < 0) return false;
+  for (const it of s.sections[k].items) delete s.secMarks[it.id];
+  s.sections.splice(k, 1);
+  return true;
+}
+
+const swap = (list, k, dir) => {
+  const j = k + dir;
+  if (k < 0 || j < 0 || j >= list.length) return false;
+  [list[k], list[j]] = [list[j], list[k]];
+  return true;
+};
+
+export const moveSection = (s, id, dir) => swap(s.sections, s.sections.findIndex(x => x.id === id), dir);
+
+export function addSecItem(s, sectionId, f, today, id = makeId) {
+  const sec = findSection(s, sectionId);
+  const c = sec && secFields(f);
+  if (!c || sec.items.length >= MAX_SEC_ITEMS) return null;
+  const item = { id: id(), ...c, addedAt: today };
+  sec.items.push(item);
+  return item;
+}
+
+export function updateSecItem(s, id, f) {
+  const hit = findSecItem(s, id);
+  const c = hit && secFields(f);
+  if (!c) return false;
+  Object.assign(hit.item, c);
+  return true;
+}
+
+export function removeSecItem(s, id) {
+  const hit = findSecItem(s, id);
+  if (!hit) return false;
+  hit.section.items.splice(hit.section.items.indexOf(hit.item), 1);
+  delete s.secMarks[id];
+  return true;
+}
+
+export function moveSecItem(s, id, dir) {
+  const hit = findSecItem(s, id);
+  return !!hit && swap(hit.section.items, hit.section.items.indexOf(hit.item), dir);
+}
+
+export const secDone = (s, id, date) => (s.secMarks[id] || []).includes(date);
+
+// Отметка пункта раздела — в те же дни, что у минимума: сегодня и вчера; до появления пункта — нельзя.
+export function toggleSecMark(s, id, date, today) {
+  const hit = findSecItem(s, id);
+  if (!hit || !canEdit(s, date, today) || date < hit.item.addedAt) return false;
+  const m = (s.secMarks[id] ||= []);
+  const i = m.indexOf(date);
+  if (i >= 0) m.splice(i, 1);
+  else {
+    m.push(date);
+    m.sort();
+  }
+  if (!m.length) delete s.secMarks[id];
+  return true;
+}
+
+// Пункты раздела, которые уже были в этот день, и сколько из них отмечено.
+export function secDay(s, sec, date) {
+  const items = sec.items.filter(i => i.addedAt <= date);
+  return { items, k: items.filter(i => secDone(s, i.id, date)).length, n: items.length };
+}
+
+// Детали пункта раздела: эта неделя, 4 недели, всего и клетки 6 недель (пн–вс) — done | none | off | future.
+export function secStats(s, id, today) {
+  const hit = findSecItem(s, id);
+  if (!hit) return null;
+  const marks = new Set((s.secMarks[id] || []).filter(d => d <= today));
+  const cur = weekStart(today);
+  const count = (a, b) => range(a, b).filter(d => marks.has(d)).length;
+  return {
+    week: count(cur, today),
+    month: count(addDays(today, -27), today),
+    total: marks.size,
+    cells: range(addDays(cur, -35), addDays(cur, 6)).map(d => ({
+      date: d, st: d > today ? 'future' : marks.has(d) ? 'done' : d < hit.item.addedAt ? 'off' : 'none',
+    })),
+  };
+}
+
+// ---------- первая настройка (v58)
+
+// Убрать пункт бесследно — только в первой настройке: у нового телефона ещё нет истории, которую надо беречь.
+export function dropItem(s, id) {
+  const k = s.items.findIndex(i => i.id === id);
+  if (k < 0) return false;
+  s.items.splice(k, 1);
+  for (const r of Object.values(s.days)) {
+    r.plan = r.plan.filter(x => x !== id);
+    r.done = r.done.filter(x => x !== id);
+  }
+  return true;
+}
+
+// Первый шаг отбоя — с первой ночи: прошлого, которое он мог бы переписать, ещё нет.
+export function setFirstStep(s, bed) {
+  if (!isTime(bed)) return false;
+  s.sleep.targets = [{ from: s.createdAt, bed }];
+  return true;
+}
+
+// Настройка закончена. Отметок ещё нет — приложение начинается сегодня: день посева, «в системе с» у нового
+// телефона (после «Начать заново» — прежняя дата), пункты, разделы и первый шаг сна; дни самой настройки не в счёт.
+export function finishSetup(s, today) {
+  const blank = !Object.values(s.days).some(r => r.done.length) && !Object.keys(s.sleep.nights).length &&
+    !Object.values(s.weekMarks).some(a => a.length) && !Object.values(s.secMarks).some(a => a.length);
+  if (blank) {
+    const bed = targetFor(s, addDays(today, 1));
+    if (s.since === s.createdAt) s.since = today;
+    s.createdAt = today;
+    s.days = {};
+    for (const it of [...s.items, ...s.weekly]) if (!it.archivedAt) it.addedAt = today;
+    for (const sec of s.sections) {
+      sec.addedAt = today;
+      for (const it of sec.items) it.addedAt = today;
+    }
+    s.sleep.targets = [{ from: today, bed }];
+  }
+  s.ui.setup = false;
+  s.ui.welcomeSeen = true;
+  return blank;
 }
 
 // ---------- план и статус дня
@@ -604,6 +804,32 @@ export function normalize(raw, today) {
       },
     };
   }
+  // Разделы: id не повторяют id пунктов и друг друга; отметки — только у известных пунктов разделов.
+  const sections = [];
+  for (const v of Array.isArray(raw.sections) ? raw.sections : []) {
+    if (sections.length >= MAX_SECTIONS) break;
+    if (!isObj(v) || typeof v.id !== 'string' || !v.id || seen.has(v.id)) continue;
+    const c = cleanSection(v);
+    if (!c) continue;
+    seen.add(v.id);
+    const items = [];
+    for (const x of Array.isArray(v.items) ? v.items : []) {
+      if (items.length >= MAX_SEC_ITEMS) break;
+      if (!isObj(x) || typeof x.id !== 'string' || !x.id || seen.has(x.id)) continue;
+      const f = secFields(x);
+      if (!f) continue;
+      seen.add(x.id);
+      items.push({ id: x.id, ...f, addedAt: isDate(x.addedAt) ? x.addedAt : createdAt });
+    }
+    sections.push({ id: v.id, ...c, on: v.on !== false, addedAt: isDate(v.addedAt) ? v.addedAt : createdAt, items });
+  }
+  const known = new Set(sections.flatMap(x => x.items.map(i => i.id)));
+  const secMarks = {};
+  for (const [id, a] of Object.entries(isObj(raw.secMarks) ? raw.secMarks : {})) {
+    if (!known.has(id) || !Array.isArray(a)) continue;
+    const m = uniq(a.filter(isDate)).sort();
+    if (m.length) secMarks[id] = m;
+  }
   return {
     schema: 1,
     createdAt,
@@ -619,10 +845,13 @@ export function normalize(raw, today) {
       nights,
     },
     reviews,
+    sections,
+    secMarks,
     ui: {
       welcomeSeen: raw.ui?.welcomeSeen === true,
       news: str(raw.ui?.news, 16),
       lastExport: isDate(raw.ui?.lastExport) ? raw.ui.lastExport : '',
+      setup: raw.ui?.setup === true,
     },
   };
 }

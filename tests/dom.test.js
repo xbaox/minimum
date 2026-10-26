@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { boot } from '../app.js';
-import { normalize, seed, addDays, range, activeIds } from '../domain.js';
+import { normalize, seed, addDays, range, activeIds, logicalDate } from '../domain.js';
 import { fakeSupabase } from './fake-supabase.js';
 import { baoSeed } from './fixtures.js';
 
@@ -36,6 +36,14 @@ function stateWith(today, back, { closed = [], ui = { welcomeSeen: true, news: '
 // Сам шаблон нового телефона (базовый) проверяет тест первого старта.
 const fresh = () => stateWith('2026-09-30', 0, { ui: { welcomeSeen: false, news: '', lastExport: '' } });
 
+// Без storage — новый телефон, уже прошедший первую настройку с шаблоном (как посев до v58): на нём написаны
+// тесты отметок, ночи, итогов и листов. Саму первую настройку проверяет setup.test.js.
+const planted = when => {
+  const S = seed(logicalDate(when));
+  S.ui.setup = false;
+  return { 'minimum.v2': JSON.stringify(S) };
+};
+
 // Подмена Web Animations: всё «доигрывает» сразу, ключевые кадры записываются.
 function recordMotion(win, { hold = false } = {}) {
   const log = [];
@@ -55,7 +63,7 @@ function recordMotion(win, { hold = false } = {}) {
 }
 
 // cloud — сервер друзей: по умолчанию выключен (как без адреса и ключа), в тестах друзей — фейковый Supabase.
-async function start(when, { storage = {}, idb = new IDBFactory(), motion = false, holdMotion = false, cloud = { url: '', key: '' } } = {}) {
+async function start(when, { storage = planted(when), idb = new IDBFactory(), motion = false, holdMotion = false, cloud = { url: '', key: '' } } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on('jsdomError', e => { if (!/Not implemented: navigation/.test(e.message)) errors.push(e); });
@@ -110,7 +118,7 @@ const reboot = async (prev, when = prev.t.now) => {
   return start(when, { storage, idb: prev.idb });
 };
 
-test('первый старт со старыми ключами: стёрто, базовый шаблон — 5 строк, приветствие один раз', async () => {
+test('первый старт со старыми ключами: стёрто, первая настройка с шаблоном, после неё — 5 строк и без приветствий', async () => {
   const idb = new IDBFactory();
   await new Promise(ok => { const r = idb.open('minimum', 1); r.onupgradeneeded = () => r.result.createObjectStore('x'); r.onsuccess = () => { r.result.close(); ok(); }; });
   const a = await start(WED, {
@@ -120,34 +128,35 @@ test('первый старт со старыми ключами: стёрто, 
   const keys = Object.keys(a.dump()).sort();
   assert.deepEqual(keys, ['englishSummer.v2', 'minimum.v2']);
   assert.ok(!(await idb.databases()).some(d => d.name === 'minimum'));
+  assert.ok(a.doc.querySelector('main.setup'), 'новый телефон — первая настройка');
+  assert.equal(a.doc.querySelector('.tabbar'), null, 'без вкладок');
+  for (const b of ['Настроить', 'Дальше', 'Дальше', 'Начать']) a.click(b, '.setup-foot button');
+  assert.equal(a.doc.querySelector('main.setup'), null);
   assert.equal(a.rows().length, 5);
   assert.deepEqual([...a.rows()].map(r => r.querySelector('.name').textContent), ['Стакан воды', 'Зарядка', 'План на завтра', 'Телефон на кухню', 'Чтение']);
-  assert.match(a.text(), /Новый минимум/);
-  assert.match(a.text(), /5 пунктов, одинаковых каждый день/);
   assert.match(a.text(), /среда, 30 сентября/);
   assert.match(a.text(), /Отбой 01:00 · 6 ч 30 мин сна/); // днём — сколько сна по шагу
   assert.match(a.text(), /телефон на кухню до 00:30 · подъём 7:30/);
   assert.equal(a.doc.querySelectorAll('.list-week > .row').length, 0); // недельные счётчики новичок добавит сам
   assert.doesNotMatch(a.text(), /На неделе/);
   assert.equal(a.doc.querySelectorAll('.tile svg path').length >= 5, true); // значки, а не эмодзи
-  a.click('Понятно');
-  assert.doesNotMatch(a.text(), /Новый минимум/);
-  assert.doesNotMatch(a.text(), /Что нового/); // новичку «Что нового» не нужно
-  assert.equal(a.app.state.ui.news, 'v57');
+  assert.doesNotMatch(a.text(), /Новый минимум|Что нового/); // настройка уже всё объяснила
+  assert.equal(a.app.state.ui.news, 'v58');
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Новый минимум|Что нового/);
+  assert.equal(b.doc.querySelector('main.setup'), null);
   assert.equal(b.rows().length, 5);
   b.done();
 });
 
-test('«Что нового» — один раз для тех, кто уже пользовался, и только с сервером друзей', async () => {
-  const off = await start(WED, { storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v53', lastExport: '' } }) });
-  assert.doesNotMatch(off.text(), /Что нового/);
+test('«Что нового» — один раз для тех, кто уже пользовался, с сервером друзей и без', async () => {
+  const off = await start(WED, { storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
+  assert.match(off.text(), /Что нового/);
   off.done();
-  const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v53', lastExport: '' } }) });
+  const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
-  assert.equal(a.doc.querySelectorAll('.news li').length, 3);
-  assert.match(a.text(), /Сон — в часах/);
+  assert.equal(a.doc.querySelectorAll('.news li').length, 2);
+  assert.match(a.text(), /Разделы: «Работа», «Хобби» и свои/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
   const b = await reboot(a);
@@ -787,7 +796,8 @@ test('Правила открываются листом', async () => {
   const a = await start(WED);
   a.click('Настройки', '.tab');
   a.click('Правила', '.row');
-  assert.equal(a.sheet().querySelectorAll('.rules-list .row').length, 6);
+  assert.equal(a.sheet().querySelectorAll('.rules-list .row').length, 7);
+  assert.match(a.sheet().textContent, /Работа и хобби — в разделах/);
   assert.match(a.sheet().textContent, /Не пропускай дважды/);
   a.click('Готово', '.sheet-act');
   assert.equal(a.sheet(), null);
@@ -829,14 +839,18 @@ test('экспорт отдаёт валидный JSON с датой копии
   a.alertBtn('Заменить');
   assert.equal(a.app.state.items[0].name, 'Из файла');
 
-  a.click('Сбросить к шаблону');
+  a.click('Начать заново');
   a.alertBtn('Отмена');
   assert.equal(a.app.state.items[0].name, 'Из файла');
-  a.click('Сбросить к шаблону');
-  a.alertBtn('Сбросить');
-  assert.equal(a.app.state.items[0].name, 'Стакан воды'); // сброс — к базовому шаблону
+  a.click('Начать заново');
+  assert.match(sp(a.alertBox().textContent), /откроется первая настройка/);
+  a.alertBtn('Стереть');
+  assert.ok(a.doc.querySelector('main.setup'), '«Начать заново» — первая настройка');
+  assert.equal(a.app.state.items[0].name, 'Стакан воды'); // шаблон уже выбран
   assert.deepEqual([a.app.state.items.length, a.app.state.weekly.length], [5, 0]);
   assert.deepEqual(a.app.state.days['2026-09-30'].done, []);
+  for (const b of ['Настроить', 'Дальше', 'Дальше', 'Начать']) a.click(b, '.setup-foot button');
+  assert.equal(a.rows().length, 5);
   a.done();
 });
 
@@ -932,7 +946,7 @@ test('с движением: только transform, opacity и stroke-dashoffse
   await tick();
   assert.equal(a.sheet(), null);
   a.click('Настройки', '.tab');
-  a.click('Сбросить к шаблону');
+  a.click('Начать заново');
   a.alertBtn('Отмена');
   assert.ok(a.alertBox(), 'подтверждение ещё гаснет');
   await tick();
@@ -982,15 +996,15 @@ test('уезжающий лист и гаснущее подтверждение
   a.motionLog.release();
   await wait(5);
   assert.equal(a.sheet(), null);
-  // двойной тап по «Сбросить» — действие один раз: записей столько же, сколько от одного тапа
+  // двойной тап по «Стереть» — действие один раз: записей столько же, сколько от одного тапа
   let saves = 0;
   const setItem = a.win.Storage.prototype.setItem;
   a.win.Storage.prototype.setItem = function (k, v) { if (k === 'minimum.v2') saves++; return setItem.call(this, k, v); };
   const reset = async taps => {
-    a.click('Сбросить к шаблону');
+    a.click('Начать заново');
     a.motionLog.release();
     await wait(5);
-    const yes = [...a.alertBox().querySelectorAll('button')].find(x => x.textContent === 'Сбросить');
+    const yes = [...a.alertBox().querySelectorAll('button')].find(x => x.textContent === 'Стереть');
     saves = 0;
     yes.click();
     assert.equal(a.alertBox().inert, true, 'гаснущее подтверждение недоступно');
@@ -998,12 +1012,15 @@ test('уезжающий лист и гаснущее подтверждение
     a.motionLog.release();
     await wait(5);
     assert.equal(a.alertBox(), null);
-    return saves;
+    assert.ok(a.doc.querySelector('main.setup'), 'открылась первая настройка');
+    const n = saves;
+    for (const b of ['Настроить', 'Дальше', 'Дальше', 'Начать']) a.click(b, '.setup-foot button');
+    a.click('Настройки', '.tab');
+    return n;
   };
   const one = await reset(1);
   assert.ok(one >= 1);
   assert.equal(await reset(2), one);
-  assert.match(a.text(), /Сброшено к шаблону/);
   a.done();
 });
 

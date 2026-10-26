@@ -83,6 +83,7 @@
   --g-sun: linear-gradient(90deg, var(--sun-1), var(--sun-2), var(--sun-3));
   --g-sun-d: linear-gradient(135deg, var(--sun-1), var(--sun-2), var(--sun-3));
   --g-sleep: linear-gradient(180deg, var(--sleep-1), var(--sleep-2));
+  --g-sleep-x: linear-gradient(90deg, var(--sleep-1), var(--sleep-2));
   --g-train: linear-gradient(90deg, var(--train-1), var(--train-2));
   --g-train-d: linear-gradient(135deg, var(--train-1), var(--train-2));
   --g-check: linear-gradient(135deg, var(--check-1), var(--check-2) 55%, var(--check-3));
@@ -238,6 +239,10 @@
   --race-score: 30px;
   --race-check: 22px;
   --race-ic: 14px;
+  --tile-xs: 18px;
+  --gl-xs: 12px;
+  --setup-foot: 140px;
+  --nb-h: 14px;
   --font-code: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
   /* радиусы */
@@ -246,6 +251,7 @@
   --r-cell: 12px;
   --r-tile: 8px;
   --r-tile-s: 7px;
+  --r-tile-xs: 5px;
   --r-tile-l: 18px;
   --r-chain: 10px;
   --r-chip: 18px;
@@ -523,7 +529,7 @@ input::placeholder, textarea::placeholder { color: var(--text-2); opacity: 1; }
   color: var(--text);
   transition: transform var(--t-mid) var(--e-out);
 }
-.row + .row::before, .drawer + .row::before {
+.row + .row::before, .drawer + .row::before, .switch-row + .row::before {
   content: "";
   position: absolute;
   top: 0;
@@ -1034,6 +1040,7 @@ button.cell.closed::after, button.cell.break::after { inset: calc(var(--u4) * -1
   transition: transform var(--t) var(--e-spring), opacity var(--t) var(--e-out);
 }
 .pill-btn::after { content: ""; position: absolute; inset: calc(var(--u4) * -1) calc(var(--u2) * -1); }
+.pill-btn:disabled { opacity: 0.4; }
 
 /* друзья выключены: твои кольца и место для друга */
 .join { display: flex; flex-direction: column; align-items: center; gap: var(--u8); padding: var(--u24) var(--u20) var(--u22); text-align: center; }
@@ -1123,6 +1130,78 @@ button.cell.closed::after, button.cell.break::after { inset: calc(var(--u4) * -1
 .race-row.win .arc-sun, .race-row.win .arc-sleep, .race-row.win .arc-train { stroke: var(--on-sun); }
 .race-row.win::before, .race-row.win + .race-row::before { display: none; }
 button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
+
+/* ---------- разделы (v58): заголовок со значком своего цвета, отметка — цветом пункта, не закатом минимума */
+
+.sec-name { display: inline-flex; align-items: center; gap: var(--u8); }
+.sec-ic { flex: none; display: grid; place-items: center; width: var(--tile-xs); height: var(--tile-xs); border-radius: var(--r-tile-xs); background: var(--item); color: var(--on-tile); }
+.sec-ic .gl { width: var(--gl-xs); height: var(--gl-xs); stroke-width: 2.4; }
+.sec-row .check::before { background: var(--item); }
+
+/* ---------- первая настройка (v58): шаги без таб-бара, точки сверху, кнопка снизу */
+
+.screen.setup { min-height: 100dvh; display: flex; flex-direction: column; padding-bottom: 0; }
+.setup-bar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  min-height: var(--tap);
+  padding: calc(env(safe-area-inset-top) + var(--u8)) var(--u20) 0;
+  background: var(--bg);
+}
+.sb-l { justify-self: start; }
+.sb-r { justify-self: end; }
+.dots { display: flex; align-items: center; gap: var(--u8); }
+.dot-i { width: var(--u7); height: var(--u7); border-radius: 50%; background: var(--chevron); transition: background-color var(--t) var(--e-out), transform var(--t-mid) var(--e-spring); }
+.dot-i.on { background: var(--accent); transform: scale(1.3); }
+.setup-hero { display: flex; flex-direction: column; align-items: center; gap: var(--u8); padding: var(--u28) var(--u20) var(--u24); text-align: center; }
+.setup-hero .rings { margin-bottom: var(--u12); }
+.setup-title { font-size: var(--fs-title); line-height: var(--lh-title); font-weight: 700; }
+.setup-lead { font-size: var(--fs-body); line-height: var(--lh-body); color: var(--text-2); }
+.setup-lead.left { margin: var(--u8) var(--u20) 0; }
+.feats { margin-top: var(--u20); }
+.feat { align-items: flex-start; min-height: 0; padding-top: var(--u12); padding-bottom: var(--u12); }
+.tile-check { background: var(--g-check); }
+.tile-check .gl { stroke-width: 2.8; }
+/* выбор пункта: та же галочка, что у отметки; невыбранный значок притушен */
+.pick[aria-pressed="false"] .tile { opacity: 0.45; }
+.pick[aria-pressed="true"] .check { border-color: transparent; }
+.pick[aria-pressed="true"] .check::before { opacity: 1; transform: none; }
+.pick[aria-pressed="true"] .check .gl { stroke-dashoffset: 0; opacity: 1; transition-delay: var(--t-check); }
+.setup-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: var(--u4);
+  margin-top: auto;
+  padding: var(--u24) var(--gutter) calc(env(safe-area-inset-bottom) + var(--u12));
+  background: linear-gradient(to bottom, transparent, var(--bg) var(--u24));
+}
+.setup-foot .btn-primary { width: 100%; margin: var(--u8) 0 0; }
+.setup-alt { position: relative; align-self: center; cursor: pointer; }
+.setup-alt:disabled { opacity: 0.4; }
+.in-setup .bars { bottom: calc(env(safe-area-inset-bottom) + var(--setup-foot)); }
+.code-row { margin-top: 0; padding-right: var(--u12); }
+/* ночь полосой: сплошная — сейчас, бледная — до цели; растут от подъёма влево */
+.nbar { margin-top: var(--u20); padding: var(--u16) var(--u16) var(--u14); display: flex; flex-direction: column; gap: var(--u8); }
+.nb-track { position: relative; height: var(--nb-h); border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
+.nb-goal, .nb-now { position: absolute; inset: 0; transform-origin: right center; transition: transform var(--t-mid) var(--e-out); }
+.nb-goal { background: var(--t-sleep); transform: scaleX(var(--g)); }
+.nb-now { background: var(--g-sleep-x); transform: scaleX(var(--f)); }
+.nb-axis { position: relative; height: var(--u14); font-size: var(--fs-axis); line-height: var(--u14); color: var(--text-2); }
+.nb-axis span { position: absolute; top: 0; left: calc(var(--x) * 1%); transform: translateX(-50%); }
+.nb-axis .nb-end { left: auto; right: 0; transform: none; color: var(--text); font-weight: 600; }
+.nb-legend { display: flex; gap: var(--u14); font-size: var(--fs-foot); color: var(--text-2); }
+.nb-legend span { display: inline-flex; align-items: center; gap: var(--u6); }
+.nb-sw { width: var(--legend); height: var(--legend); border-radius: var(--r-legend); background: var(--g-sleep-x); }
+.nb-sw.goal { background: var(--t-sleep); }
+.code-mini { font-family: var(--font-code); font-weight: 700; letter-spacing: var(--track-code); text-transform: uppercase; }
+.code-mini::placeholder { font-family: var(--font); font-weight: 400; letter-spacing: normal; text-transform: none; }
 
 /* ---------- лист */
 

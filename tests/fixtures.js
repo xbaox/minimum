@@ -16,8 +16,10 @@ const ITEMS = [
 const WEEKLY = [['pulse', 'Тренировка', `подтягивания · брусья · уголок · бег 1${NB}км · подъём ног`, 'green', 3]];
 
 // Как seed(today, id, since), но с пунктами БАО; id выдаются в том же порядке: пункты, затем счётчик.
+// Первая настройка давно пройдена (ui.setup = false) — как у телефона, который уже в деле.
 export function baoSeed(today, id = makeId, since = today) {
   const S = seed(today, () => 'tmp', since);
+  S.ui.setup = false;
   S.items = ITEMS.map(([icon, name, note, color, beforeBed]) => ({ id: id(), icon, name, note, color, beforeBed, addedAt: today, archivedAt: null }));
   S.weekly = WEEKLY.map(([icon, name, note, color, perWeek]) => ({ id: id(), icon, name, note, color, perWeek, addedAt: today, archivedAt: null }));
   return S;

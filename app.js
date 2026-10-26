@@ -27,6 +27,7 @@ const RULES = S => [
   'Одно улучшение в неделю — 1%.',
   'План дня — в Напоминаниях, не здесь.',
   `Сон — главное: отбой шагами к${NB}${S.sleep.goalBed}, подъём ${clock(S.sleep.goalWake)} — ${dur(D.sleepFor(S.sleep.goalBed, S.sleep.goalWake))} сна.`,
+  'Работа и хобби — в разделах, отдельно от минимума: серию они не трогают.',
 ];
 const CHOICE = { earlier30: 'Раньше на 30 минут', earlier15: 'Раньше на 15 минут', keep: 'Оставить', later15: 'Позже на 15 минут' };
 const TAB_FRIENDS = ['friends', 'Друзья', ICONS.people[1]];
@@ -34,13 +35,19 @@ const TABS = [['today', 'Сегодня', G.tabToday], ['progress', 'Прогр�
 // Новичку — шаблон, который правится в Настройках; цифры — из его же состояния.
 const WELCOME = (n, now, goal) =>
   `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках. Сон — шагами от ${dur(now)} к${NB}${dur(goal)}: шаг выбираешь на итогах недели или в${NB}Настройках.`;
-// «Что нового» — про друзей; без настроенного сервера карточки нет.
-const NEWS_ID = 'v57';
+// «Что нового» — один раз для тех, кто уже пользовался; новичок видит первую настройку.
+const NEWS_ID = 'v58';
 const NEWS = [
-  'Сон — в часах: Настройки → «Сон», «−» и «+» по 15 минут, можно сразу на цель',
-  'Подъём меняется — часы сна остаются те же',
-  'Гонка недели — прямо на «Сегодня»: ты и друзья по местам, итоги в понедельник',
+  'Разделы: «Работа», «Хобби» и свои — отдельно от минимума, на серию и гонку не влияют. Включаются в Настройках',
+  'Новичок начинает с первой настройки: минимум, сон, разделы и сразу код друга',
 ];
+// Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
+const SECTION_PRESETS = [
+  { icon: 'briefcase', name: 'Работа', color: 'blue', note: 'дела по работе' },
+  { icon: 'heart', name: 'Хобби', color: 'orange', note: 'то, что любишь делать' },
+  { icon: 'cap', name: 'Учёба', color: 'purple', note: 'уроки и домашка' },
+];
+const SLEEP_STEP = 15, SLEEP_MAX = 10 * 60;
 const CODE_LEN = 5;
 const FRIENDS_EVERY = 60e3;
 const FIRST_WAIT = 150; // кэш друзей до первого кадра: гонка сразу на месте и минимум не съезжает
@@ -105,6 +112,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     tab: 'today', sheet: null, alert: null, yOpen: false, sleepOpen: false, edit: false, revOpen: new Set(), chartSel: null,
     dataMsg: '', updMsg: '', toast: '', saveFailed: false, restored: false, update: false, version: '', scrolled: false, scroll: {}, alertClosing: false,
     joinName: null, joinErr: '', busy: false,
+    setup: null, // первая настройка: { step, dir, name, code, busy, err, result }
   };
   let S, today, reg = null, reloading = false, lastCheck = Date.now(), closing = false, pendingTime = null;
   let dayTimer, tickTimer, toastTimer, nightTimer, friendsTimer, cloudTimer;
@@ -179,7 +187,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   const save = () => {
     rev++;
     const ok = store.save(S);
-    cloud.changed(); // друзья увидят — снимок уйдёт, когда отметки улягутся
+    // Друзья увидят — снимок уйдёт, когда отметки улягутся. Полунастроенный телефон не показываем.
+    if (!S.ui.setup) cloud.changed();
     return ok;
   };
   const commit = () => {
@@ -248,17 +257,24 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (D.syncToday(S, today)) save();
     const modal = !!(ui.sheet || ui.alert);
     if (ui.tab === 'friends' && !cloud.enabled) ui.tab = 'today';
-    const screen = ui.tab === 'today' ? todayScreen() : ui.tab === 'progress' ? progressScreen() : ui.tab === 'friends' ? friendsScreen() : settingsScreen();
+    // Новый телефон (и «Начать заново») — первая настройка вместо вкладок.
+    const setup = S.ui.setup;
+    if (!setup) ui.setup = null;
+    else if (!ui.setup) ui.setup = { step: 0, dir: 0, name: cloud.me.name || '', code: '', busy: false, err: '', result: '' };
+    const screen = setup ? setupScreen() : ui.tab === 'today' ? todayScreen() : ui.tab === 'progress' ? progressScreen() : ui.tab === 'friends' ? friendsScreen() : settingsScreen();
     const asks = cloud.joined ? cloud.cache?.incoming.length || 0 : 0;
     const before = M.measure(root);
     const entered = M.patch(root, [
       defs(),
-      h('main', { key: `screen-${ui.tab}`, class: 'screen', 'data-enter': 'screen', 'aria-hidden': modal ? 'true' : null, inert: modal }, screen),
+      h('main', {
+        key: setup ? `setup-${ui.setup.step}` : `screen-${ui.tab}`, class: 'screen' + (setup ? ' setup' : ''), 'data-enter': setup ? 'step' : 'screen',
+        'aria-hidden': modal ? 'true' : null, inert: modal,
+      }, screen),
       h('div', { key: 'bars', class: 'bars' },
         ui.saveFailed && h('div', { key: 'warn', class: 'bar bar-warn', role: 'alert', 'data-enter': 'bar' }, 'Не удалось сохранить — сделай экспорт в Настройках'),
         ui.update && h('button', { key: 'update', class: 'bar bar-update', 'data-enter': 'bar', onclick: applyUpdate }, 'Доступна новая версия · ', h('b', {}, 'Обновить')),
         ui.toast && h('div', { key: 'toast', class: 'bar bar-toast', role: 'status', 'data-enter': 'bar' }, ui.toast)),
-      h('nav', { key: 'tabbar', class: 'tabbar', style: `--tabs:${tabs().length}`, 'aria-label': 'Разделы', 'aria-hidden': modal ? 'true' : null, inert: modal }, tabs().map(([id, label, d]) => {
+      !setup && h('nav', { key: 'tabbar', class: 'tabbar', style: `--tabs:${tabs().length}`, 'aria-label': 'Вкладки', 'aria-hidden': modal ? 'true' : null, inert: modal }, tabs().map(([id, label, d]) => {
         const dot = id === 'friends' && asks > 0; // входящий запрос в друзья — точка на вкладке
         return h('button', { key: id, class: 'tab', 'aria-current': ui.tab === id ? 'page' : null, 'aria-label': dot ? `${label}, есть запросы` : null, onclick: () => openTab(id) },
           h('span', { class: 'tab-ic' }, gl(d), dot && h('i', { key: 'dot', class: 'tab-dot', 'data-enter': 'pop' })), h('span', {}, label));
@@ -271,6 +287,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     M.flip(before, entered);
     entrance(entered);
     doc.body.classList.toggle('locked', modal);
+    doc.body.classList.toggle('in-setup', !!setup);
     win.clearTimeout(dayTimer);
     dayTimer = win.setTimeout(render, D.msToNextDay(now()) + 1000);
     tick();
@@ -282,6 +299,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       if (el.nodeType !== 1) continue;
       const kind = el.getAttribute('data-enter');
       if (kind === 'screen') M.anim(el, [{ opacity: 0, transform: 'translateY(12px)' }, { opacity: 1, transform: 'none' }], 380);
+      else if (kind === 'step') { // шаг настройки въезжает с той стороны, куда идём; первый — снизу, как экран
+        const dx = (ui.setup?.dir || 0) * 28;
+        M.anim(el, [{ opacity: 0, transform: dx ? `translateX(${dx}px)` : 'translateY(12px)' }, { opacity: 1, transform: 'none' }], { duration: 420, easing: EASE.out });
+      }
       else if (kind === 'sheet') sheetIn(el);
       else if (kind === 'alert') alertIn(el);
       else if (kind === 'bar') M.anim(el, [{ opacity: 0, transform: 'translateY(18px) scale(0.96)' }, { opacity: 1, transform: 'none' }], { duration: 420, easing: EASE.spring });
@@ -444,7 +465,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const sh = ui.sheet;
     if (!sh) return false;
     if (sh.kind === 'review') return !!sh.choice || sh.draft.notesDone || ['good', 'bad', 'learned', 'improvement'].some(k => sh.draft[k].trim());
-    if (sh.kind === 'item' || sh.kind === 'name') return JSON.stringify(sh.draft) !== sh.orig;
+    if (sh.kind === 'item' || sh.kind === 'name' || sh.kind === 'section') return JSON.stringify(sh.draft) !== sh.orig;
     return false;
   }
   function guardDirty() {
@@ -507,7 +528,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         h('div', { class: 'welcome-head' }, tile('sparkles', 'pink'), h('p', { class: 'name strong' }, 'Новый минимум')),
         h('p', {}, WELCOME(D.activeItems(S).length, D.sleepFor(D.stepTonight(S, today), S.sleep.goalWake), D.sleepFor(S.sleep.goalBed, S.sleep.goalWake))),
         h('button', { class: 'btn-text', onclick: e => leave(e.currentTarget.closest('.group'), () => { S.ui.welcomeSeen = true; S.ui.news = NEWS_ID; commit(); }) }, 'Понятно')),
-      S.ui.welcomeSeen && S.ui.news !== NEWS_ID && cloud.enabled && h('section', { key: 'news', class: 'group card-pad welcome', 'data-flip': '' },
+      S.ui.welcomeSeen && S.ui.news !== NEWS_ID && h('section', { key: 'news', class: 'group card-pad welcome', 'data-flip': '' },
         h('div', { class: 'welcome-head' }, tile('star', 'purple'), h('p', { class: 'name strong' }, 'Что нового')),
         h('ul', { class: 'news' }, NEWS.map(t => h('li', {}, t))),
         h('button', { class: 'btn-text', onclick: e => leave(e.currentTarget.closest('.group'), () => { S.ui.news = NEWS_ID; commit(); }) }, 'Понятно')),
@@ -526,7 +547,45 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       weekly.length > 0 && [secH('h-week', 'На неделе'), h('section', { key: 'list-week', class: 'group list-week', 'data-flip': '' }, weekly.map(weekRow))],
       improvement && h('section', { key: 'onepct', class: 'group onepct', 'data-flip': '' }, h('div', { class: 'row' }, tile('sparkles', 'yellow'),
         h('span', { class: 'txt' }, h('span', { class: 'note' }, '1% недели'), h('span', { class: 'name' }, improvement)))),
+      sectionBlocks(),
     ];
+  }
+
+  // ---------- разделы на «Сегодня» (v58): ниже минимума, своим цветом отметки; на героя, серию и гонку не влияют.
+
+  // Заголовок раздела — маленький значок его цвета и название.
+  const secTitle = sec => h('span', { class: 'sec-name' },
+    h('span', { class: 'sec-ic', style: tint(sec.color), 'aria-hidden': 'true' }, icon(sec.icon)), h('span', {}, sec.name));
+  const plusRow = (key, label, onclick) => h('button', { key, class: 'row row-m plus-row', 'data-flip': '', onclick },
+    h('span', { class: 'tile tile-round' }, gl(G.plus)), h('span', { class: 'name' }, label));
+
+  function sectionBlocks() {
+    return S.sections.filter(sec => sec.on).map(sec => {
+      const { items, k, n } = D.secDay(S, sec, today);
+      return [
+        secH(`h-sec-${sec.id}`, secTitle(sec), n > 0 && h('span', { class: 'sec-aside roll', 'data-roll': '' }, `${k} из ${n}`)),
+        h('section', { key: `sec-${sec.id}`, class: 'group list-sec', 'data-flip': '', 'aria-label': `Раздел «${sec.name}»` }, n > 0
+          ? items.map(it => secRow(it, sec, today, true))
+          : plusRow('add', 'Добавить пункт', () => openSecItem(null, sec.id))),
+      ];
+    });
+  }
+
+  // Строка пункта раздела: тап — отметка, удержание — детали (в листе дня — только отметка).
+  function secRow(it, sec, date, hold) {
+    const on = D.secDone(S, it.id, date);
+    const act = () => secToggle(date, it.id);
+    return h('button', {
+      key: it.id, class: 'row sec-row' + (on ? ' done' : ''), style: tint(it.color), 'aria-pressed': pressed(on), 'data-flip': '',
+      ...(hold ? M.holdable(act, () => openSecItem(it.id, sec.id)) : { onclick: act }),
+    }, tile(it.icon), txt(it.name, it.note), h('span', { class: 'check' }, gl(G.check, '', 1)));
+  }
+
+  function secToggle(date, id) {
+    if (stale() || closing) return;
+    if (!D.toggleSecMark(S, id, date, today)) return;
+    M.haptic();
+    commit();
   }
 
   // Герой дня: кольца, «k из n», легенда, полоса минимума и строка снизу (сон). Тот же герой — у друга:
@@ -786,6 +845,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: sh.busy || !cleanName(sh.draft.name), onclick: () => saveName(sh) },
         sh.busy ? 'Сохраняю…' : 'Готово');
       body = nameSheet(sh);
+    } else if (sh.kind === 'section') {
+      titleText = sh.id ? 'Раздел' : 'Новый раздел';
+      right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: !sh.draft.name.trim(), onclick: () => saveSection(sh) }, 'Готово');
+      body = sectionSheet(sh);
     } else {
       titleText = sh.id ? (sh.weekly ? 'Счётчик' : 'Пункт') : sh.weekly ? 'Новый счётчик' : 'Новый пункт';
       right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: !sh.draft.name.trim(), onclick: () => saveItem(sh) }, 'Готово');
@@ -932,7 +995,20 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         : h('div', { key: it.id, class: 'row' + (done.includes(it.id) ? ' done' : ' missed'), style: tint(it.color) },
           tile(it.icon), txt(it.name, it.note), h('span', { class: 'check', role: 'img', 'aria-label': done.includes(it.id) ? 'сделано' : 'не сделано' }, gl(G.check, '', 1))))
         : h('p', { class: 'empty' }, 'В этот день минимума ещё не было')),
+      daySections(d, editable),
     ];
+  }
+
+  // Разделы в листе дня: включённые и те, где в этот день есть отметки. Вчера и сегодня — можно отметить.
+  function daySections(d, editable) {
+    return S.sections.map(sec => ({ sec, ...D.secDay(S, sec, d) })).filter(x => x.n && (x.sec.on || x.k)).map(({ sec, items, k, n }) => [
+      secH(`d-h-${sec.id}`, secTitle(sec), h('span', { class: 'sec-aside' }, `${k} из ${n}`)),
+      h('section', { key: `d-sec-${sec.id}`, class: 'group', 'data-flip': '' }, items.map(it => editable
+        ? secRow(it, sec, d, false)
+        : h('div', { key: it.id, class: 'row static sec-row' + (D.secDone(S, it.id, d) ? ' done' : ''), style: tint(it.color) },
+          tile(it.icon), txt(it.name, it.note),
+          h('span', { class: 'check', role: 'img', 'aria-label': D.secDone(S, it.id, d) ? 'сделано' : 'без отметки' }, gl(G.check, '', 1))))),
+    ]);
   }
 
   function openItem(id, weekly) {
@@ -944,6 +1020,16 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     openSheet({ kind: 'item', id, weekly: !!weekly, draft, orig: JSON.stringify(draft), icons: !id });
   }
 
+  // Пункт раздела — тот же лист пункта, без привязки к отбою и видимости для друзей (разделы им не уходят).
+  function openSecItem(id, sectionId) {
+    const sec = D.findSection(S, sectionId);
+    if (!sec) return;
+    const it = id && D.findSecItem(S, id)?.item;
+    if (id && !it) return;
+    const draft = it ? { icon: it.icon, name: it.name, note: it.note, color: it.color } : { icon: 'star', name: '', note: '', color: sec.color };
+    openSheet({ kind: 'item', sec: sec.id, id, weekly: false, draft, orig: JSON.stringify(draft), icons: !id });
+  }
+
   function itemSheet(sh) {
     const d = sh.draft;
     const set = (k, v) => {
@@ -953,6 +1039,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       if (k === 'icon' || k === 'color') M.anim(root.querySelector('.preview .tile'), [{ transform: 'scale(0.82)' }, { transform: 'none' }], { duration: 460, easing: EASE.spring });
     };
     const step = D.stepTonight(S, today);
+    const sec = sh.sec && D.findSection(S, sh.sec);
     const placeholder = sh.weekly ? 'Новый счётчик' : 'Новый пункт';
     const onText = (k, sel, fallback) => e => {
       d[k] = e.target.value;
@@ -963,16 +1050,17 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       if (ok) ok.disabled = !d.name.trim();
     };
     const mins = [...new Set([...BEFORE, ...(d.beforeBed != null ? [+d.beforeBed] : [])])].sort((a, b) => a - b);
-    const st = sh.id ? D.itemStats(S, sh.id, today) : null;
+    const st = sh.id ? (sec ? D.secStats(S, sh.id, today) : D.itemStats(S, sh.id, today)) : null;
     return [
+      sec && h('p', { key: 'sec-sub', class: 'sheet-sub' }, `Раздел «${sec.name}» · отдельно от минимума`),
       h('div', { key: 'preview', class: 'preview', style: tint(d.color) },
         h('span', { class: 'tile' }, icon(d.icon)),
         h('p', { class: 'pv-name' }, d.name.trim() || placeholder),
         h('p', { class: 'pv-note' }, d.note.trim() || 'когда / после чего')),
-      st && itemStatsView(st, sh),
+      st && (sec ? secStatsView(st, sh) : itemStatsView(st, sh)),
       h('section', { key: 'form', class: 'group group-gap-l', 'data-flip': '' },
         h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Название'),
-          h('input', { class: 'form-input', name: 'name', value: d.name, maxlength: 60, placeholder: 'например, Растяжка', oninput: onText('name', '.pv-name', placeholder) })),
+          h('input', { class: 'form-input', name: 'name', value: d.name, maxlength: 60, placeholder: sec ? 'что сделать' : 'например, Растяжка', oninput: onText('name', '.pv-name', placeholder) })),
         h('label', { class: 'form-row form-row-top' }, h('span', { class: 'form-label' }, 'Подпись'),
           h('textarea', {
             class: 'form-input form-area area', name: 'note', rows: 1, value: d.note, maxlength: 120, placeholder: 'когда / после чего', enterkeyhint: 'done',
@@ -980,6 +1068,35 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             autocapitalize: 'none',
             onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.target.blur(); } }, // подпись — одна строка, длинная переносится
           }))),
+      lookPicker(sh, set),
+      sec ? null : sh.weekly
+        ? [secH('h-per', 'Раз в неделю'), h('section', { key: 'per', class: 'group sub-block sub-first', 'data-flip': '' }, h('div', { class: 'chips' }, [1, 2, 3, 4, 5, 6, 7].map(n =>
+          h('button', { key: n, class: 'chip', 'aria-pressed': pressed(+d.perWeek === n), onclick: () => set('perWeek', n) }, String(n)))))]
+        : h('section', { key: 'bed', class: 'group group-gap-l', 'data-flip': '' },
+          h('button', {
+            class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.beforeBed != null),
+            onclick: () => set('beforeBed', d.beforeBed != null ? null : 30),
+          }, txt('Привязать к отбою', d.beforeBed != null
+            ? `подпись дополнится временем: «до${NB}${D.deadline(step, +d.beforeBed)}»`
+            : 'для пунктов вроде «Телефон на кухню»'), h('span', { class: 'switch', 'aria-hidden': 'true' })),
+          d.beforeBed != null && h('div', { key: 'mins', class: 'sub-block', 'data-flip': '' },
+            h('span', { class: 'field-label' }, 'За сколько до отбоя'),
+            h('div', { class: 'chips' }, mins.map(m => h('button', {
+              key: m, class: 'chip', 'aria-pressed': pressed(+d.beforeBed === m), onclick: () => set('beforeBed', m),
+            }, m % 60 === 0 ? `${m / 60}${NB}ч` : `${m}${NB}мин`))))),
+      !sec && 'shared' in d && h('section', { key: 'shared', class: 'group group-gap-l', 'data-flip': '' }, h('button', {
+        class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.shared), onclick: () => set('shared', !d.shared),
+      }, txt('Видно друзьям', d.shared ? 'друзья видят название и отметки' : `друзья видят «${HIDDEN_NAME}» — отметки считаются`),
+      h('span', { class: 'switch', 'aria-hidden': 'true' }))),
+      sh.id && h('section', { key: 'remove', class: 'group group-gap-l', 'data-flip': '' }, h('button', { class: 'row row-t row-danger', onclick: () => removeItem(sh) },
+        sec ? 'Удалить из раздела' : sh.weekly ? 'Убрать из недельных' : 'Убрать из минимума')),
+    ];
+  }
+
+  // Цвет и значок — общие для пункта и раздела. set(k, v) — меняет черновик и пружинит превью.
+  function lookPicker(sh, set) {
+    const d = sh.draft;
+    return [
       secH('h-color', 'Цвет'),
       h('section', { key: 'colors', class: 'group swatches', role: 'group', 'aria-label': 'Цвет', 'data-flip': '' }, D.COLORS.map(c => h('button', {
         key: c, class: 'swatch', style: tint(c), 'aria-label': COLOR_NAMES[c], 'aria-pressed': pressed(d.color === c), onclick: () => set('color', c),
@@ -995,29 +1112,72 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         : h('section', { key: 'icon-row', class: 'group', 'data-flip': '' }, h('button', {
           class: 'row row-s', style: tint(d.color), 'aria-expanded': 'false', onclick: () => { sh.icons = true; render(); },
         }, tile(d.icon), txt(cap((ICONS[d.icon] || ICONS.star)[0])), h('span', { class: 'value' }, 'Сменить'), chev())),
-      sh.weekly
-        ? [secH('h-per', 'Раз в неделю'), h('section', { key: 'per', class: 'group sub-block sub-first', 'data-flip': '' }, h('div', { class: 'chips' }, [1, 2, 3, 4, 5, 6, 7].map(n =>
-          h('button', { key: n, class: 'chip', 'aria-pressed': pressed(+d.perWeek === n), onclick: () => set('perWeek', n) }, String(n)))))]
-        : h('section', { key: 'bed', class: 'group group-gap-l', 'data-flip': '' },
-          h('button', {
-            class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.beforeBed != null),
-            onclick: () => set('beforeBed', d.beforeBed != null ? null : 30),
-          }, txt('Привязать к отбою', d.beforeBed != null
-            ? `подпись дополнится временем: «до${NB}${D.deadline(step, +d.beforeBed)}»`
-            : 'для пунктов вроде «Телефон на кухню»'), h('span', { class: 'switch', 'aria-hidden': 'true' })),
-          d.beforeBed != null && h('div', { key: 'mins', class: 'sub-block', 'data-flip': '' },
-            h('span', { class: 'field-label' }, 'За сколько до отбоя'),
-            h('div', { class: 'chips' }, mins.map(m => h('button', {
-              key: m, class: 'chip', 'aria-pressed': pressed(+d.beforeBed === m), onclick: () => set('beforeBed', m),
-            }, m % 60 === 0 ? `${m / 60}${NB}ч` : `${m}${NB}мин`))))),
-      'shared' in d && h('section', { key: 'shared', class: 'group group-gap-l', 'data-flip': '' }, h('button', {
-        class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.shared), onclick: () => set('shared', !d.shared),
-      }, txt('Видно друзьям', d.shared ? 'друзья видят название и отметки' : `друзья видят «${HIDDEN_NAME}» — отметки считаются`),
-      h('span', { class: 'switch', 'aria-hidden': 'true' }))),
-      sh.id && h('section', { key: 'remove', class: 'group group-gap-l', 'data-flip': '' }, h('button', { class: 'row row-t row-danger', onclick: () => removeItem(sh) },
-        sh.weekly ? 'Убрать из недельных' : 'Убрать из минимума')),
     ];
   }
+
+  // Раздел: название, цвет и значок; удалить — с пунктами и отметками, через подтверждение.
+  function openSection(id) {
+    const sec = id && D.findSection(S, id);
+    if (id && !sec) return;
+    const draft = sec ? { icon: sec.icon, name: sec.name, color: sec.color } : { icon: 'star', name: '', color: 'blue' };
+    openSheet({ kind: 'section', id, draft, orig: JSON.stringify(draft), icons: !id });
+  }
+
+  function sectionSheet(sh) {
+    const d = sh.draft, sec = sh.id && D.findSection(S, sh.id);
+    const set = (k, v) => {
+      d[k] = v;
+      M.haptic();
+      render();
+      M.anim(root.querySelector('.preview .tile'), [{ transform: 'scale(0.82)' }, { transform: 'none' }], { duration: 460, easing: EASE.spring });
+    };
+    return [
+      h('div', { key: 'preview', class: 'preview', style: tint(d.color) },
+        h('span', { class: 'tile' }, icon(d.icon)),
+        h('p', { class: 'pv-name' }, d.name.trim() || 'Новый раздел'),
+        h('p', { class: 'pv-note' }, sec ? secCount(sec) : 'отдельно от минимума')),
+      h('section', { key: 'form', class: 'group group-gap-l', 'data-flip': '' },
+        h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Название'),
+          h('input', {
+            class: 'form-input', name: 'name', value: d.name, maxlength: D.SECTION_NAME_MAX, placeholder: 'например, Работа', enterkeyhint: 'done',
+            oninput: e => {
+              d.name = e.target.value;
+              const pv = root.querySelector('.sheet .pv-name');
+              if (pv) pv.textContent = d.name.trim() || 'Новый раздел';
+              const ok = root.querySelector('#sheet-done');
+              if (ok) ok.disabled = !d.name.trim();
+            },
+            onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) e.target.blur(); },
+          }))),
+      lookPicker(sh, set),
+      sec && h('section', { key: 'remove', class: 'group group-gap-l', 'data-flip': '' },
+        h('button', { class: 'row row-t row-danger', onclick: () => askRemoveSection(sec) }, 'Удалить раздел')),
+    ];
+  }
+
+  function saveSection(sh) {
+    if (closing || !D.cleanSection(sh.draft)) return;
+    if (sh.id) D.updateSection(S, sh.id, sh.draft);
+    else D.addSection(S, sh.draft, today);
+    save();
+    M.haptic();
+    closeSheet();
+  }
+
+  function askRemoveSection(sec) {
+    showAlert({
+      title: `Удалить раздел «${sec.name}»?`,
+      msg: sec.items.length ? 'Пункты раздела и их отметки сотрутся. Вернуть нельзя — можно просто выключить раздел.' : 'Вернуть нельзя.',
+      yes: 'Удалить', danger: true,
+      action: () => {
+        D.removeSection(S, sec.id);
+        save();
+        closeSheet();
+      },
+    });
+  }
+
+  const secCount = sec => (sec.items.length ? `${sec.items.length}${NB}${plural(sec.items.length, ['пункт', 'пункта', 'пунктов'])}` : 'пока пусто');
 
   // Детали пункта: серия, рекорд, доля и 6 недель клеток цвета пункта; у счётчика — недели в цель.
   function itemStatsView(st, sh) {
@@ -1034,17 +1194,46 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         stat(String(st.streak), `${plural(st.streak, ['день', 'дня', 'дней'])} подряд`),
         stat(String(st.best), 'рекорд'),
         stat(st.rate == null ? '—' : `${Math.round(st.rate * 100)}%`, `за 4${NB}недели`)),
-      h('div', { class: 'heat-wd', 'aria-hidden': 'true' }, WDL.map(l => h('span', {}, l))),
-      h('div', { class: 'heat', style: tint(sh.draft.color), role: 'img', 'aria-label': `6 недель: сделано ${st.cells.filter(c => c.st === 'done').length} дней`, 'data-stagger': 'pop', 'data-step': '14' },
-        st.cells.map((c, i) => h('span', { class: `hc hc-${c.st}` + (c.date === today ? ' hc-today' : ''), 'data-d': String((i % 7) + Math.floor(i / 7)) }))),
+      heat(st.cells, sh.draft.color),
       h('div', { class: 'heat-legend' },
         h('span', {}, h('i', { class: 'hc hc-done', style: tint(sh.draft.color) }), 'сделано'),
         h('span', {}, h('i', { class: 'hc hc-miss' }), 'пропуск'),
         h('span', {}, h('i', { class: 'hc hc-off' }), 'не было в плане')));
   }
 
+  // Клетки 6 недель пн–вс цветом пункта.
+  function heat(cells, color) {
+    const n = cells.filter(c => c.st === 'done').length;
+    return [
+      h('div', { class: 'heat-wd', 'aria-hidden': 'true' }, WDL.map(l => h('span', {}, l))),
+      h('div', { class: 'heat', style: tint(color), role: 'img', 'aria-label': `6 недель: сделано ${days(n)}`, 'data-stagger': 'pop', 'data-step': '14' },
+        cells.map((c, i) => h('span', { class: `hc hc-${c.st}` + (c.date === today ? ' hc-today' : ''), 'data-d': String((i % 7) + Math.floor(i / 7)) }))),
+    ];
+  }
+
+  // Пункт раздела: сколько раз — без серий и пропусков (раздел не обязательство).
+  function secStatsView(st, sh) {
+    return h('section', { key: 'stats', class: 'group rv-card group-gap-l', 'data-flip': '' },
+      h('div', { class: 'stats' },
+        stat(String(st.week), 'эта неделя'),
+        stat(String(st.month), `за 4${NB}недели`),
+        stat(String(st.total), 'всего')),
+      heat(st.cells, sh.draft.color),
+      h('div', { class: 'heat-legend' },
+        h('span', {}, h('i', { class: 'hc hc-done', style: tint(sh.draft.color) }), 'сделано'),
+        h('span', {}, h('i', { class: 'hc hc-none' }), 'без отметки'),
+        st.cells.some(c => c.st === 'off') && h('span', {}, h('i', { class: 'hc hc-off' }), 'пункта ещё не было')));
+  }
+
   function saveItem(sh) {
     if (closing || !D.cleanFields(sh.draft, sh.weekly)) return;
+    if (sh.sec) {
+      if (sh.id) D.updateSecItem(S, sh.id, sh.draft);
+      else D.addSecItem(S, sh.sec, sh.draft, today);
+      save();
+      M.haptic();
+      return closeSheet();
+    }
     let id = sh.id;
     if (sh.id) D.updateItem(S, sh.id, sh.draft);
     else id = D.addItem(S, sh.draft, sh.weekly, today)?.id;
@@ -1056,6 +1245,18 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   }
 
   function removeItem(sh) {
+    if (sh.sec) {
+      const it = D.findSecItem(S, sh.id)?.item;
+      if (!it) return;
+      return showAlert({
+        title: `Удалить «${it.name}»?`, msg: 'Отметки пункта сотрутся. Вернуть нельзя.', yes: 'Удалить', danger: true,
+        action: () => {
+          D.removeSecItem(S, sh.id);
+          save();
+          closeSheet();
+        },
+      });
+    }
     const it = D.findItem(S, sh.id);
     showAlert({
       title: `Убрать «${it.name}»?`, msg: 'Прошлые дни не изменятся. Вернуть можно в Настройках, в разделе «Убранные».',
@@ -1398,7 +1599,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       c.stuck && h('p', { key: 'f-stuck', class: 'sec-foot err', role: 'status', 'data-flip': '' },
         'Сервер не принял твой прогресс — друзья видят прежний. Проверь названия пунктов.'),
       h('p', { key: 'f-privacy', class: 'sec-foot', 'data-flip': '' },
-        'Друзья видят пункты и отметки, сон, недельные счётчики и серию. Разбор недели не уходит никогда. ',
+        'Друзья видят минимум с отметками, сон, недельные счётчики и серию. Разделы и разбор недели не уходят никогда. ',
         h('button', { class: 'link', onclick: () => openSheet({ kind: 'privacy' }) }, 'Что видят друзья')),
     ];
   }
@@ -1525,7 +1726,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('button', { key: 'join-btn', class: 'btn-primary', id: 'join-btn', disabled: ui.busy || !cleanName(name), 'data-flip': '', onclick: doJoin },
         ui.busy ? 'Включаю…' : 'Включить друзей'),
       h('p', { key: 'join-foot', class: 'sec-foot', 'data-flip': '' },
-        'Друг видит твой прогресс, только когда вы оба согласились: один вводит код, другой принимает. Разбор недели не уходит никогда, личный пункт можно скрыть.'),
+        'Друг видит твой прогресс, только когда вы оба согласились: один вводит код, другой принимает. Разделы и разбор недели не уходят никогда, личный пункт можно скрыть.'),
     ];
   }
 
@@ -1659,7 +1860,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       v.sleep && [secH('f-h-sleep', `Сон · 14${NB}ночей`), sleepSection({ st: F, day, sel: sh.chartSel, onPick: d => { sh.chartSel = sh.chartSel === d ? null : d; } })],
       feed.length > 0 && [secH('f-h-feed', 'Изменения'), h('section', { key: 'f-feed', class: 'group', 'data-flip': '' }, feed.map((e, i) => feedRow(e, i, day)))],
       me
-        ? [h('p', { key: 'me-foot', class: 'sec-foot' }, 'Разбор недели сюда не попадает. Скрытый пункт друзья видят как «Личный пункт».'),
+        ? [h('p', { key: 'me-foot', class: 'sec-foot' }, 'Разделы и разбор недели сюда не попадают. Скрытый пункт друзья видят как «Личный пункт».'),
           h('section', { key: 'me-privacy', class: 'group group-gap-l' }, h('button', { class: 'row row-t row-accent', onclick: () => openSheet({ kind: 'privacy' }) }, 'Что видят друзья'))]
         : removeFriendRow(f),
     ];
@@ -1764,7 +1965,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('section', { key: 'p-more', class: 'group' },
         shareSwitch('sleep', p.sleep, 'Сон', 'отбой, подъём, шаг отбоя и график ночей'),
         shareSwitch('onepct', p.onepct, '1% недели', 'улучшение, которое выбираешь на итогах')),
-      h('p', { key: 'p-foot', class: 'sec-foot' }, 'Разбор недели — «что получилось», «что нет», «чему научила неделя» — друзьям не уходит никогда. Ещё друзья видят, когда твой прогресс обновлялся, и твой часовой пояс — по нему считается твой день.'),
+      h('p', { key: 'p-foot', class: 'sec-foot' }, 'Разбор недели — «что получилось», «что нет», «чему научила неделя» — и разделы друзьям не уходят никогда. Ещё друзья видят, когда твой прогресс обновлялся, и твой часовой пояс — по нему считается твой день.'),
       h('section', { key: 'p-me', class: 'group group-gap-l' }, h('button', { class: 'row row-t row-accent', onclick: () => openFriend('me') }, 'Как меня видят друзья')),
     ];
   }
@@ -1875,29 +2076,68 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     } else go();
   }
 
+  // Стрелки «выше / ниже» в режиме «Изменить». move(dir) — сдвиг в своём списке.
+  const upDown = (name, i, n, move) => h('span', { class: 'up-down' },
+    h('button', { class: 'icon-btn', 'aria-label': `${name}: выше`, disabled: i === 0, onclick: () => move(-1) }, gl(G.up)),
+    h('button', { class: 'icon-btn', 'aria-label': `${name}: ниже`, disabled: i === n - 1, onclick: () => move(1) }, gl(G.down)));
+  const moved = (fn, id) => dir => {
+    fn(S, id, dir);
+    M.haptic();
+    commit();
+  };
+
   function listRows(list, weekly) {
     const act = list.filter(i => !i.archivedAt);
-    const move = (id, dir) => {
-      D.moveItem(S, id, dir);
-      M.haptic();
-      commit();
-    };
     return act.map((it, i) => {
       const sub = weekly ? null : [it.note, it.beforeBed && `за${NB}${it.beforeBed}${NB}мин до${NB}отбоя`].filter(Boolean).join(' · ');
       const value = weekly && h('span', { class: 'value' }, `${it.perWeek}${NB}${plural(it.perWeek, ['раз', 'раза', 'раз'])}`);
       if (ui.edit) {
         return h('div', { key: it.id, class: 'row row-s', style: tint(it.color), 'data-flip': '' }, tile(it.icon), txt(it.name, sub), value,
-          h('span', { class: 'up-down' },
-            h('button', { class: 'icon-btn', 'aria-label': `${it.name}: выше`, disabled: i === 0, onclick: () => move(it.id, -1) }, gl(G.up)),
-            h('button', { class: 'icon-btn', 'aria-label': `${it.name}: ниже`, disabled: i === act.length - 1, onclick: () => move(it.id, 1) }, gl(G.down))));
+          upDown(it.name, i, act.length, moved(D.moveItem, it.id)));
       }
       return h('button', { key: it.id, class: 'row row-s', style: tint(it.color), 'data-flip': '', onclick: () => openItem(it.id, weekly) },
         tile(it.icon), txt(it.name, sub), value, chev());
     });
   }
 
-  const addRow = weekly => h('button', { key: 'add', class: 'row row-m plus-row', 'data-flip': '', onclick: () => tryAdd(weekly) },
-    h('span', { class: 'tile tile-round' }, gl(G.plus)), h('span', { class: 'name' }, weekly ? 'Добавить счётчик' : 'Добавить пункт'));
+  // Разделы в Настройках: переключатель на каждом (выключенный пропадает с «Сегодня», пункты остаются),
+  // «Добавить раздел»; у включённых — свои пункты ниже. «Изменить» — порядок разделов и пунктов.
+  function sectionsSettings() {
+    const list = S.sections;
+    const toggleSection = sec => {
+      if (stale()) return;
+      D.setSectionOn(S, sec.id, !sec.on);
+      M.haptic();
+      commit();
+    };
+    return [
+      secH('h-secs', 'Разделы'),
+      h('section', { key: 'secs', class: 'group', 'data-flip': '' },
+        list.map((sec, i) => ui.edit
+          ? h('div', { key: sec.id, class: 'row row-s', style: tint(sec.color), 'data-flip': '' }, tile(sec.icon), txt(sec.name, secCount(sec)),
+            upDown(sec.name, i, list.length, moved(D.moveSection, sec.id)))
+          : h('button', {
+            key: sec.id, class: 'switch-row item-switch', role: 'switch', 'aria-checked': pressed(sec.on), style: tint(sec.color), 'data-flip': '',
+            onclick: () => toggleSection(sec),
+          }, tile(sec.icon), txt(sec.name, sec.on ? secCount(sec) : `выключен · ${secCount(sec)}`), h('span', { class: 'switch', 'aria-hidden': 'true' }))),
+        !ui.edit && list.length < D.MAX_SECTIONS && plusRow('add', 'Добавить раздел', () => openSection(null))),
+      h('p', { key: 'secs-foot', class: 'sec-foot', 'data-flip': '' }, list.length
+        ? 'Отдельно от минимума: на серию, кольца и гонку не влияют, друзьям не видны.'
+        : 'Работа, хобби, учёба — отдельно от минимума: на серию, кольца и гонку не влияют, друзьям не видны.'),
+      list.filter(sec => sec.on && (!ui.edit || sec.items.length)).map(sec => [
+        secH(`h-s-${sec.id}`, secTitle(sec), !ui.edit && h('button', { class: 'link', onclick: () => openSection(sec.id) }, 'Настроить')),
+        h('section', { key: `s-${sec.id}`, class: 'group', 'data-flip': '' },
+          sec.items.map((it, i) => ui.edit
+            ? h('div', { key: it.id, class: 'row row-s', style: tint(it.color), 'data-flip': '' }, tile(it.icon), txt(it.name, it.note),
+              upDown(it.name, i, sec.items.length, moved(D.moveSecItem, it.id)))
+            : h('button', { key: it.id, class: 'row row-s', style: tint(it.color), 'data-flip': '', onclick: () => openSecItem(it.id, sec.id) },
+              tile(it.icon), txt(it.name, it.note), chev())),
+          !ui.edit && sec.items.length < D.MAX_SEC_ITEMS && plusRow('add', 'Добавить пункт', () => openSecItem(null, sec.id))),
+      ]),
+    ];
+  }
+
+  const addRow = weekly => plusRow('add', weekly ? 'Добавить счётчик' : 'Добавить пункт', () => tryAdd(weekly));
 
   function timeRow(d, name, note, value, fmt, onSet) {
     return h('label', { key: name, class: 'row row-s time-row', style: tint('indigo') },
@@ -1915,12 +2155,16 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     h('span', { class: 'st-sep', 'aria-hidden': 'true' }),
     h('button', { class: 'st-btn', 'aria-label': `${label}: больше на 15 минут`, disabled: !canUp, onclick: up }, gl(G.plus)));
 
+  // Строка сна в часах: значок, часы (перекатываются), подпись и степпер.
+  const sleepRow = (key, glyph, value, note, ctl) => h('div', { key, class: 'row row-s sleep-row', style: tint('indigo') },
+    h('span', { class: 'tile' }, gl(glyph)),
+    h('span', { class: 'txt' }, h('span', { class: 'name strong roll', 'data-roll': '', 'aria-live': 'polite' }, value), h('span', { class: 'note' }, note)), ctl);
+
   // С какой ночи: «с ближайшей ночи» или «с ночи на пятницу» (ночь называется по утру).
   const nightFrom = from => (from === D.addDays(today, 1) ? 'с ближайшей ночи' : `с ночи на ${WD_ACC[D.weekday(from)]}`);
 
   // Сон в Настройках — в часах: текущий шаг (отбой → подъём) и цель, −/+ по 15 минут; подъём — барабаном, часы сна
   // при этом не меняются. Новый отбой — с ближайшей ночи; если этой ночью отбой уже прошёл — со следующей (stepFrom).
-  const SLEEP_STEP = 15, SLEEP_MAX = 10 * 60;
   function sleepRows() {
     const wake = S.sleep.goalWake, goal = S.sleep.goalBed, tonight = D.stepTonight(S, today);
     const planned = D.targetFor(S, D.addDays(today, 2)); // последний назначенный шаг — может начаться со следующей ночи
@@ -1944,15 +2188,12 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       title: `Сразу ${dur(aim)} сна?`, msg: `Отбой ${goal} ${nightFrom(from(goal))}, вместо шагов к цели. Сейчас по шагу — ${dur(cur)}.`,
       yes: 'Поставить', action: () => plan(goal),
     });
-    const row = (key, glyph, value, note, ctl) => h('div', { key, class: 'row row-s sleep-row', style: tint('indigo') },
-      h('span', { class: 'tile' }, gl(glyph)),
-      h('span', { class: 'txt' }, h('span', { class: 'name strong roll', 'data-roll': '', 'aria-live': 'polite' }, value), h('span', { class: 'note' }, note)), ctl);
     const later = planned !== tonight;
     return [
-      row('now', ICONS.moon[1], dur(cur), `текущий шаг · отбой ${planned}${later ? ` ${nightFrom(D.addDays(today, 2))}` : ''}`,
+      sleepRow('now', ICONS.moon[1], dur(cur), `текущий шаг · отбой ${planned}${later ? ` ${nightFrom(D.addDays(today, 2))}` : ''}`,
         stepper('Текущий шаг', cur - SLEEP_STEP >= least, cur + SLEEP_STEP <= aim,
           () => plan(D.shiftTime(planned, SLEEP_STEP)), () => plan(D.shiftTime(planned, -SLEEP_STEP)))),
-      row('aim', ICONS.flag[1], dur(aim), `цель · отбой ${goal}`,
+      sleepRow('aim', ICONS.flag[1], dur(aim), `цель · отбой ${goal}`,
         stepper('Цель сна', aim - SLEEP_STEP >= least, aim + SLEEP_STEP <= SLEEP_MAX,
           () => aimAt(D.shiftTime(goal, SLEEP_STEP)), () => aimAt(D.shiftTime(goal, -SLEEP_STEP)))),
       timeRow(ICONS.alarm[1], 'Подъём', 'часы сна сохранятся', wake, clock, v => {
@@ -1979,29 +2220,36 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     r.readAsText(file);
   });
 
-  async function doImport(e) {
+  // В первой настройке (fresh) стирать нечего — копия встаёт сразу, без подтверждения.
+  async function doImport(e, fresh = false) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    const fail = msg => {
+      if (fresh && ui.setup) ui.setup.err = msg;
+      else ui.dataMsg = msg;
+      render();
+    };
     let text;
     try {
       text = await readText(file);
     } catch {
-      ui.dataMsg = 'Не удалось прочитать файл';
-      return render();
+      return fail('Не удалось прочитать файл');
     }
     const r = parseImport(text, today);
-    if (r.error) {
-      ui.dataMsg = r.error;
-      return render();
-    }
+    if (r.error) return fail(r.error);
+    const apply = () => {
+      S = r.state;
+      S.ui.setup = false;
+      Object.assign(ui, { dataMsg: fresh ? '' : 'Данные импортированы', yOpen: false, sleepOpen: false, edit: false, setup: null });
+      if (fresh) toast('Данные восстановлены из копии');
+      commit();
+      if (fresh) scrollY(0);
+    };
+    if (fresh) return apply();
     showAlert({
-      title: 'Заменить все данные?', msg: 'Текущие отметки, сон и итоги будут стёрты и заменены данными из файла.', yes: 'Заменить', danger: true,
-      action: () => {
-        S = r.state;
-        Object.assign(ui, { dataMsg: 'Данные импортированы', yOpen: false, sleepOpen: false, edit: false });
-        commit();
-      },
+      title: 'Заменить все данные?', msg: 'Текущие отметки, сон, разделы и итоги будут стёрты и заменены данными из файла.', yes: 'Заменить', danger: true,
+      action: apply,
     });
   }
 
@@ -2020,13 +2268,16 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     render();
   }
 
+  // «Начать заново»: всё своё стирается, открывается первая настройка. Друзья и код остаются.
   function askReset() {
     showAlert({
-      title: 'Сбросить к шаблону?', msg: 'Все отметки, сон и итоги недель будут стёрты, пункты вернутся к пяти базовым. Если нужна копия — сначала экспорт.', yes: 'Сбросить', danger: true,
+      title: 'Начать заново?', msg: 'Отметки, сон, разделы и итоги недель сотрутся, и откроется первая настройка. Если нужна копия — сначала экспорт.',
+      yes: 'Стереть', danger: true,
       action: () => {
         S = D.seed(today, undefined, S.since); // «в системе с» переживает сброс
-        Object.assign(ui, { dataMsg: 'Сброшено к шаблону', yOpen: false, sleepOpen: false, edit: false });
+        Object.assign(ui, { dataMsg: '', yOpen: false, sleepOpen: false, edit: false, setup: null, tab: 'today' });
         commit();
+        scrollY(0);
       },
     });
   }
@@ -2034,7 +2285,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function settingsScreen() {
     const act = D.activeItems(S), wact = S.weekly.filter(i => !i.archivedAt);
     const arch = [...S.items, ...S.weekly].filter(i => i.archivedAt);
-    const canEdit = act.length > 1 || wact.length > 1;
+    const canEdit = act.length > 1 || wact.length > 1 || S.sections.length > 1 || S.sections.some(x => x.on && x.items.length > 1);
     const exp = S.ui.lastExport;
     const old = exp ? D.diffDays(exp, today) >= 14 : D.diffDays(S.createdAt, today) >= 7;
     return [
@@ -2054,6 +2305,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       secH('h-sleep', 'Сон'),
       h('section', { key: 'sleep', class: 'group', 'data-flip': '' }, sleepRows()),
       h('p', { key: 'sleep-foot', class: 'sec-foot', 'data-flip': '' }, sleepFoot()),
+      sectionsSettings(),
       cloud.enabled && [secH('h-friends', 'Друзья'), h('section', { key: 'friends', class: 'group', 'data-flip': '' }, cloud.joined
         ? [
           h('button', { key: 'name', class: 'row row-s', style: tint('pink'), onclick: openName }, tile('people'), txt('Имя для друзей'), h('span', { class: 'value' }, cloud.me.name), chev()),
@@ -2067,7 +2319,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           h('span', { class: 'value' + (old ? ' warn' : '') }, exp ? ago(exp, today) : 'ещё не было')),
         h('label', { class: 'row row-t row-accent' }, 'Импорт из файла',
           h('input', { type: 'file', accept: 'application/json,.json', class: 'hidden-input', onchange: doImport })),
-        h('button', { class: 'row row-t row-danger', onclick: askReset }, 'Сбросить к шаблону')),
+        h('button', { class: 'row row-t row-danger', onclick: askReset }, 'Начать заново')),
       (ui.dataMsg || old) && h('p', { key: 'data-foot', class: 'sec-foot', role: 'status', 'data-flip': '' },
         ui.dataMsg || 'Данные живут только на этом телефоне — время сделать копию в файл.'),
       secH('h-about', 'О приложении'),
@@ -2077,6 +2329,355 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         h('button', { class: 'row row-t row-accent', onclick: checkUpdates }, 'Проверить обновления')),
       ui.updMsg && h('p', { key: 'upd-foot', class: 'sec-foot', role: 'status', 'data-flip': '' }, ui.updMsg),
     ];
+  }
+
+  // ---------- первая настройка (v58): привет → минимум → сон → разделы → друзья (если есть сервер)
+  // Новый телефон и «Начать заново» открывают её вместо вкладок. Всё правится сразу в состоянии: закрыл
+  // приложение посреди — выборы на месте. Конец настройки — приложение начинается сегодня (D.finishSetup).
+
+  const setupSteps = () => ['hello', 'minimum', 'sleep', 'sections', ...(cloud.enabled ? ['friends'] : [])];
+
+  function setupScreen() {
+    const st = ui.setup, steps = setupSteps();
+    st.step = Math.max(0, Math.min(steps.length - 1, st.step));
+    const kind = steps[st.step];
+    const bar = h('header', { key: 'setup-bar', class: 'setup-bar' },
+      h('div', { class: 'sb-l' }, st.step > 0 && h('button', { class: 'head-action', onclick: () => goStep(-1) }, 'Назад')),
+      h('div', { class: 'dots', role: 'img', 'aria-label': `Шаг ${st.step + 1} из ${steps.length}` },
+        steps.map((x, i) => h('span', { key: x, class: 'dot-i' + (i === st.step ? ' on' : '') }))),
+      h('div', { class: 'sb-r' }));
+    const body = kind === 'hello' ? helloStep() : kind === 'minimum' ? minimumStep() : kind === 'sleep' ? sleepStep()
+      : kind === 'sections' ? sectionsStep() : friendsStep();
+    return [bar, body, setupFoot(kind, st.step === steps.length - 1)];
+  }
+
+  function goStep(d) {
+    const st = ui.setup;
+    if (!st || closing) return;
+    flushTime();
+    st.step += d;
+    st.dir = d;
+    st.err = '';
+    render();
+    scrollY(0);
+  }
+
+  function finishSetup() {
+    if (closing || !S.ui.setup) return;
+    flushTime();
+    D.finishSetup(S, today);
+    S.ui.news = NEWS_ID; // новичку «Что нового» не нужно
+    Object.assign(ui, { setup: null, tab: 'today', yOpen: false, sleepOpen: false, edit: false });
+    M.haptic();
+    commit();
+    scrollY(0);
+  }
+
+  // Низ шага: главная кнопка (закатная) и, где нужно, тихая вторая.
+  function setupFoot(kind, last) {
+    const st = ui.setup;
+    let main, alt = null;
+    if (kind === 'hello') {
+      main = h('button', { class: 'btn-primary', onclick: () => goStep(1) }, 'Настроить');
+      alt = h('label', { class: 'btn-text setup-alt' }, 'Восстановить из копии',
+        h('input', { type: 'file', accept: 'application/json,.json', class: 'hidden-input', onchange: e => doImport(e, true) }));
+    } else if (kind === 'friends' && !cloud.joined) {
+      main = h('button', { class: 'btn-primary', id: 'setup-join', disabled: st.busy || !cleanName(st.name), onclick: setupJoin }, joinLabel());
+      alt = h('button', { class: 'btn-text setup-alt', disabled: st.busy, onclick: finishSetup }, 'Пропустить');
+    } else {
+      const empty = kind === 'minimum' && !D.activeItems(S).length;
+      main = h('button', { class: 'btn-primary', disabled: empty || st.busy, onclick: last ? finishSetup : () => goStep(1) }, last ? 'Начать' : 'Дальше');
+    }
+    return h('div', { key: 'setup-foot', class: 'setup-foot' }, main, alt);
+  }
+
+  function helloStep() {
+    const feats = [
+      [h('span', { class: 'tile tile-check' }, gl(G.check)), 'Отметка — одно касание', 'всё отмечено — день закрыт'],
+      [h('span', { class: 'tile tile-sun' }, gl(G.flame)), 'Не пропускай дважды', 'один пропуск прощается, два подряд — серия с нуля'],
+      [tile('moon', 'indigo'), 'Сон — шагами к цели', `отбой раньше на 15–30${NB}минут в неделю — выбираешь сам`],
+      [tile('sparkles', 'yellow'), '1% в неделю', 'на итогах недели — одно маленькое улучшение'],
+      cloud.enabled && [tile('people', 'pink'), 'Друзья и гонка недели', 'по коду — без почты и паролей'],
+    ].filter(Boolean);
+    return [
+      h('section', { key: 'hello', class: 'hero setup-hero', 'data-flip': '' },
+        rings('rings', 132, [57, 41, 25], 13, [{ kind: 'sun', f: 0.78 }, { kind: 'sleep', f: 0.6 }, { kind: 'train', f: 0.38 }]),
+        h('h1', { class: 'setup-title' }, 'Минимум'),
+        h('p', { class: 'setup-lead' }, 'Пол, а не план: несколько дел, которые выполнимы даже в худший день.')),
+      h('section', { key: 'feats', class: 'group feats', 'data-stagger': 'rise', 'data-step': '60' }, feats.map(([t, name, note]) =>
+        h('div', { key: name, class: 'row feat' }, t, txt(name, note, true)))),
+      ui.setup.err
+        ? h('p', { key: 'err', class: 'sec-foot err', role: 'alert' }, ui.setup.err)
+        : h('p', { key: 'local', class: 'sec-foot' }, 'Всё хранится на этом телефоне — без аккаунта и почты.'),
+    ];
+  }
+
+  // Минимум: шаблон уже выбран, ещё шесть подсказок и свой пункт. Убранный в настройке пункт исчезает бесследно.
+  function minimumStep() {
+    const act = D.activeItems(S);
+    const names = new Set(D.SUGGESTIONS.map(x => x.name));
+    const pick = (key, it, on, onclick) => h('button', { key, class: 'row pick', style: tint(it.color), 'aria-pressed': pressed(on), 'data-flip': '', onclick },
+      tile(it.icon), txt(it.name, it.note), h('span', { class: 'check' }, gl(G.check, '', 1)));
+    return [
+      title('Твой минимум'),
+      h('p', { key: 'lead', class: 'setup-lead left' }, 'Выбери то, что сделаешь даже в худший день. Лучше меньше, но каждый день.'),
+      secH('h-pick', `Выбрано ${act.length}`),
+      h('section', { key: 'picks', class: 'group', 'data-flip': '' },
+        D.SUGGESTIONS.map(sg => pick(sg.name, sg, act.some(i => i.name === sg.name), () => pickToggle(sg))),
+        act.filter(i => !names.has(i.name)).map(it => pick(it.id, it, true, () => unpick(it.id))),
+        plusRow('own', 'Свой пункт', () => tryAdd(false))),
+      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, act.length
+        ? 'Названия, подписи, значки и порядок — в Настройках, в любой момент.'
+        : 'Выбери хотя бы один пункт.'),
+    ];
+  }
+
+  function pickToggle(sg) {
+    if (stale()) return;
+    const it = D.activeItems(S).find(i => i.name === sg.name);
+    if (it) return unpick(it.id);
+    const add = () => {
+      D.addItem(S, sg, false, today);
+      // Порядок — как в подсказках, свои — в конце: день выглядит так же, как список выбора.
+      const rank = x => {
+        const k = D.SUGGESTIONS.findIndex(y => y.name === x.name);
+        return k < 0 ? D.SUGGESTIONS.length : k;
+      };
+      S.items = S.items.map((x, i) => [x, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+      M.haptic();
+      commit();
+    };
+    if (D.activeItems(S).length >= D.MAX_DAILY) {
+      showAlert({ title: tooMany(), msg: 'Минимум должен выполняться в худший день. Всё равно добавить?', yes: 'Добавить', action: add });
+    } else add();
+  }
+
+  function unpick(id) {
+    if (stale()) return;
+    D.dropItem(S, id);
+    M.haptic();
+    commit();
+  }
+
+  // Сон: подъём, сколько сейчас и цель — в часах; первый шаг действует с первой ночи.
+  function sleepStep() {
+    const wake = S.sleep.goalWake, goal = S.sleep.goalBed, bed = D.stepTonight(S, today);
+    const cur = D.sleepFor(bed, wake), aim = D.sleepFor(goal, wake), least = D.sleepFor(D.LATEST_BED, wake);
+    const first = b => {
+      if (stale()) return;
+      D.setFirstStep(S, b);
+      M.haptic();
+      commit();
+    };
+    const aimAt = b => {
+      if (stale()) return;
+      S.sleep.goalBed = b;
+      if (D.sleepFor(b, wake) < cur) D.setFirstStep(S, b); // цель ниже «сейчас» — «сейчас» опускается с ней
+      M.haptic();
+      commit();
+    };
+    return [
+      title('Сон'),
+      h('p', { key: 'lead', class: 'setup-lead left' }, 'Главная цель. Отбой движется к ней шагами по 15–30 минут — шаг выбираешь сам на итогах недели.'),
+      nightBar(cur, aim, wake),
+      secH('h-sleep', 'Сейчас и цель'),
+      h('section', { key: 'sleep', class: 'group', 'data-flip': '' },
+        timeRow(ICONS.alarm[1], 'Подъём', 'одно время на все дни', wake, clock, v => {
+          if (!stale()) D.setWake(S, v, today, S.createdAt);
+        }),
+        sleepRow('now', ICONS.moon[1], dur(cur), `сейчас · отбой ${bed}`,
+          stepper('Сейчас', cur - SLEEP_STEP >= least, cur + SLEEP_STEP <= aim,
+            () => first(D.shiftTime(bed, SLEEP_STEP)), () => first(D.shiftTime(bed, -SLEEP_STEP)))),
+        sleepRow('aim', ICONS.flag[1], dur(aim), `цель · отбой ${goal}`,
+          stepper('Цель сна', aim - SLEEP_STEP >= least, aim + SLEEP_STEP <= SLEEP_MAX,
+            () => aimAt(D.shiftTime(goal, SLEEP_STEP)), () => aimAt(D.shiftTime(goal, -SLEEP_STEP))))),
+      h('p', { key: 'way', class: 'sec-foot', 'data-flip': '' }, `${wayText(aim - cur)} Утром на «Сегодня» — отбой и подъём прошлой ночи, пара касаний.`),
+    ];
+  }
+
+  // Ночь полосой: сплошная — сон сейчас (от отбоя до подъёма), бледная — сколько добрать до цели.
+  // Шкала — 11 часов до подъёма; меняется только масштаб полос (transform), поэтому шаг «−/+» плавный.
+  function nightBar(cur, aim, wake) {
+    const SPAN = 11 * 60, end = D.toMin(wake) + 1440, start = end - SPAN;
+    const ticks = [];
+    for (let m = Math.ceil(start / 120) * 120; m < end; m += 120) if (m - start >= 40 && end - m >= 75) ticks.push(m);
+    return h('section', {
+      key: 'nbar', class: 'group nbar', style: `--f:${(cur / SPAN).toFixed(4)};--g:${(aim / SPAN).toFixed(4)}`, 'data-flip': '',
+      role: 'img', 'aria-label': `Сейчас ${dur(cur)} сна, цель ${dur(aim)}, подъём ${clock(wake)}`,
+    },
+    h('div', { class: 'nb-track', 'aria-hidden': 'true' }, h('span', { class: 'nb-goal' }), h('span', { class: 'nb-now' })),
+    h('div', { class: 'nb-axis', 'aria-hidden': 'true' },
+      ticks.map(m => h('span', { key: m, style: `--x:${((m - start) / SPAN * 100).toFixed(2)}` }, D.fmtTime(m))),
+      h('span', { key: 'wake', class: 'nb-end' }, clock(wake))),
+    h('div', { class: 'nb-legend', 'aria-hidden': 'true' },
+      h('span', {}, h('i', { class: 'nb-sw' }), 'сейчас'), h('span', {}, h('i', { class: 'nb-sw goal' }), 'до цели')));
+  }
+
+  // Сколько идти до цели: шаг в неделю, по 30 или по 15 минут.
+  const wayText = left => {
+    if (left <= 0) return 'Сейчас — уже цель: отбой держим.';
+    const fast = Math.ceil(left / 30), slow = Math.ceil(left / SLEEP_STEP);
+    const weeks = `${fast === slow ? fast : `${fast}–${slow}`}${NB}${plural(slow, ['неделя', 'недели', 'недель'])}`;
+    return `До цели ${dur(left)} — примерно ${weeks}, по шагу в неделю.`;
+  };
+
+  // Разделы: три на выбор и свой. В настройке выключить — значит убрать: пунктов и отметок ещё нет.
+  function sectionsStep() {
+    const preset = new Set(SECTION_PRESETS.map(p => p.name));
+    const row = (key, sec, on, note, onclick) => h('button', {
+      key, class: 'switch-row item-switch', role: 'switch', 'aria-checked': pressed(on), style: tint(sec.color), 'data-flip': '', onclick,
+    }, tile(sec.icon), txt(sec.name, note), h('span', { class: 'switch', 'aria-hidden': 'true' }));
+    return [
+      title('Разделы'),
+      h('p', { key: 'lead', class: 'setup-lead left' }, 'Работа, хобби, учёба — отдельно от минимума: отмечай, когда получается. На серию и гонку не влияют.'),
+      h('section', { key: 'secs', class: 'group group-gap-l', 'data-flip': '' },
+        SECTION_PRESETS.map(p => row(p.name, p, S.sections.some(x => x.name === p.name), p.note, () => presetToggle(p))),
+        S.sections.filter(x => !preset.has(x.name)).map(sec => row(sec.id, sec, true, 'свой раздел', () => dropSection(sec.id))),
+        S.sections.length < D.MAX_SECTIONS && plusRow('own', 'Свой раздел', () => openSection(null))),
+      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, 'Пункты разделов добавишь потом — на «Сегодня» или в Настройках. Друзья разделы не видят.'),
+    ];
+  }
+
+  function presetToggle(p) {
+    if (stale()) return;
+    const sec = S.sections.find(x => x.name === p.name);
+    if (sec) return dropSection(sec.id);
+    D.addSection(S, p, today);
+    const rank = x => {
+      const k = SECTION_PRESETS.findIndex(y => y.name === x.name);
+      return k < 0 ? SECTION_PRESETS.length : k;
+    };
+    S.sections = S.sections.map((x, i) => [x, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+    M.haptic();
+    commit();
+  }
+
+  function dropSection(id) {
+    if (stale()) return;
+    D.removeSection(S, id);
+    M.haptic();
+    commit();
+  }
+
+  // Друзья: имя и (если есть) код друга → включить и сразу отправить запрос. Уже включены — свой код и «Добавить».
+  function friendsStep() {
+    const st = ui.setup;
+    const art = h('section', { key: 'f-art', class: 'hero join', 'data-flip': '' },
+      h('div', { class: 'join-art', 'aria-hidden': 'true' },
+        rings('join-rings', 96, [41, 28.5, 16], 10, [{ kind: 'sun', f: 0.72 }, { kind: 'sleep', f: 0.5 }, { kind: 'train', f: 0.3 }]),
+        rings('join-rings ghost', 96, [41, 28.5, 16], 10, [{ kind: 'sun', f: 0.64 }, { kind: 'sleep', f: 0.82 }, { kind: 'train', f: 0.34 }])),
+      h('p', { class: 'join-title' }, 'Прогресс вместе'),
+      h('p', { class: 'join-text' }, 'Обменяйтесь кодами — и видно кольца, серию и сон друг друга, а на «Сегодня» появится гонка недели.'));
+    const codeInput = (id, enter) => h('input', {
+      class: 'form-input code-mini', id, name: 'friend-code', value: st.code, maxlength: 12, placeholder: cloud.joined ? `${CODE_LEN}${NB}букв и цифр` : 'если есть',
+      autocapitalize: 'characters', autocomplete: 'off', autocorrect: 'off', spellcheck: 'false', enterkeyhint: 'go', 'aria-label': 'Код друга',
+      oninput: e => {
+        st.code = e.target.value;
+        st.err = '';
+        syncFriendButtons();
+      },
+      onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) enter(); },
+    });
+    const note = (st.err || st.result) && h('p', { key: 'f-res', class: 'sec-foot' + (st.err ? ' err' : ''), role: st.err ? 'alert' : 'status', 'data-flip': '' }, st.err || st.result);
+    if (!cloud.joined) {
+      return [
+        title('Друзья'),
+        art,
+        h('section', { key: 'f-form', class: 'group group-gap-l', 'data-flip': '' },
+          h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Имя'),
+            h('input', {
+              class: 'form-input', name: 'friend-name', value: st.name, maxlength: NAME_MAX, placeholder: 'так тебя увидят друзья',
+              autocomplete: 'nickname', enterkeyhint: 'next',
+              oninput: e => {
+                st.name = e.target.value;
+                st.err = '';
+                syncFriendButtons();
+              },
+              onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) root.querySelector('#setup-code')?.focus(); },
+            })),
+          h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Код друга'), codeInput('setup-code', setupJoin))),
+        note || h('p', { key: 'f-foot', class: 'sec-foot', 'data-flip': '' },
+          'Код друга — если он уже прислал свой; нет — пропусти, добавишь потом. Друг видит твой прогресс, только когда вы оба согласились. Разделы и разбор недели не уходят никогда.'),
+      ];
+    }
+    return [
+      title('Друзья'),
+      art,
+      codeCard(),
+      secH('h-f-add', 'Код друга'),
+      h('section', { key: 'f-add', class: 'group form-row code-row', 'data-flip': '' },
+        codeInput('setup-code', setupRequest),
+        h('button', { class: 'pill-btn', id: 'setup-add', disabled: st.busy || !CODE_RE.test(cleanCode(st.code)), onclick: setupRequest }, st.busy ? 'Отправляю…' : 'Добавить')),
+      note || h('p', { key: 'f-foot', class: 'sec-foot', 'data-flip': '' }, 'Скинь другу свой код — он введёт его у себя. Или введи его код здесь.'),
+    ];
+  }
+
+  const joinLabel = () => {
+    const st = ui.setup;
+    return st.busy ? 'Включаю…' : CODE_RE.test(cleanCode(st.code)) ? 'Включить и добавить друга' : 'Включить друзей';
+  };
+  // Кнопки шага «Друзья» — без перерисовки, пока печатают.
+  function syncFriendButtons() {
+    const st = ui.setup;
+    const join = root.querySelector('#setup-join');
+    if (join) {
+      join.disabled = st.busy || !cleanName(st.name);
+      join.textContent = joinLabel();
+    }
+    const add = root.querySelector('#setup-add');
+    if (add) add.disabled = st.busy || !CODE_RE.test(cleanCode(st.code));
+    const res = root.querySelector('.setup .sec-foot.err');
+    if (res && !st.err) render(); // ошибка ушла, как только начали править
+  }
+
+  async function setupJoin() {
+    const st = ui.setup;
+    const name = cleanName(st?.name);
+    if (!st || !name || st.busy || cloud.joined) return;
+    st.busy = true;
+    st.err = '';
+    st.result = '';
+    render();
+    try {
+      await cloud.join(name);
+      M.haptic();
+      const code = cleanCode(st.code);
+      if (CODE_RE.test(code)) await setupSend(code);
+      else st.result = 'Друзья включены — скинь другу свой код или введи его код.';
+    } catch (e) {
+      st.err = failText(e);
+    } finally {
+      st.busy = false;
+      if (ui.setup === st) render();
+    }
+  }
+
+  async function setupRequest() {
+    const st = ui.setup;
+    const code = cleanCode(st?.code);
+    if (!st || !CODE_RE.test(code) || st.busy || !cloud.joined) return;
+    st.busy = true;
+    st.err = '';
+    st.result = '';
+    render();
+    await setupSend(code);
+    st.busy = false;
+    if (ui.setup === st) render();
+  }
+
+  // Запрос по коду: удача — поле очищается и видно, что дальше; иначе — понятная причина под полем.
+  async function setupSend(code) {
+    const st = ui.setup;
+    try {
+      const r = await cloud.request(code);
+      if (r === 'sent' || r === 'friends' || r === 'pending' || r === 'already') {
+        st.result = ADD_RESULT[r];
+        st.code = '';
+        if (r === 'sent' || r === 'friends') M.haptic();
+      } else st.err = ADD_RESULT[r] || FAIL.down;
+    } catch (e) {
+      st.err = failText(e);
+    }
   }
 
   // ---------- обновление

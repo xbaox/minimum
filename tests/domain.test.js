@@ -341,7 +341,9 @@ test('нормализация: битые поля → по умолчанию,
   assert.deepEqual(n.days, { '2026-09-02': { plan: ['i1'], done: [] } });
   assert.deepEqual(n.sleep.nights, { '2026-09-03': { wake: '07:30' } });
   assert.deepEqual(n.sleep.targets, [{ from: '2026-09-01', bed: '01:00' }]);
-  assert.deepEqual(n.ui, { welcomeSeen: false, news: '', lastExport: '' });
+  assert.deepEqual(n.ui, { welcomeSeen: false, news: '', lastExport: '', setup: false });
+  assert.deepEqual(n.sections, []);
+  assert.deepEqual(n.secMarks, {});
   assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(n)), '2026-09-10'), n);
   assert.equal(D.normalize({ schema: 2, items: [], weekly: [], sleep: {} }), null);
   assert.equal(D.normalize([]), null);
@@ -411,9 +413,11 @@ test('кольца дня: минимум, ночь, первый недельн
 test('ui: новости и дата экспорта переживают нормализацию, мусор — нет', () => {
   const s = mk('2026-09-01');
   s.ui = { welcomeSeen: true, news: 'v53', lastExport: '2026-09-20', junk: 1 };
-  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: 'v53', lastExport: '2026-09-20' });
-  s.ui = { welcomeSeen: true, news: 5, lastExport: '2026-02-30' };
-  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: '', lastExport: '' });
+  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: 'v53', lastExport: '2026-09-20', setup: false });
+  s.ui = { welcomeSeen: true, news: 5, lastExport: '2026-02-30', setup: 'да' };
+  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: '', lastExport: '', setup: false });
+  s.ui = { welcomeSeen: false, news: '', lastExport: '', setup: true }; // настройка не закончена — переживает перезапуск
+  assert.equal(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui.setup, true);
 });
 
 test('время до отбоя: шкала ночи, через полночь', () => {
@@ -540,4 +544,181 @@ test('итоги недели ночью: новый шаг — со следу�
   assert.ok(D.closeWeek(s, MON, {}, 'earlier30', SUN, new Date(2026, 8, 28, 0, 40).toISOString()));
   assert.equal(D.targetFor(s, '2026-09-28'), '01:00', 'эта ночь — по прежнему шагу');
   assert.equal(D.targetFor(s, '2026-09-29'), '00:30');
+});
+
+// ---------- разделы (v58)
+
+const sids = () => { let n = 0; return () => 's' + ++n; }; // id разделов не пересекаются с пунктами mk()
+
+test('разделы: добавить, править, выключить, порядок; пункт раздела — без привязки к отбою', () => {
+  const s = mk('2026-10-01');
+  const id = sids();
+  const w = D.addSection(s, { name: '  Работа ', icon: 'briefcase', color: 'blue' }, '2026-10-05', id);
+  assert.deepEqual(w, { id: 's1', name: 'Работа', icon: 'briefcase', color: 'blue', on: true, addedAt: '2026-10-05', items: [] });
+  assert.equal(D.addSection(s, { name: '   ' }, '2026-10-05', id), null);
+  const hb = D.addSection(s, { name: 'Хобби', icon: 'rocket', color: 'violet' }, '2026-10-05', id);
+  assert.equal(hb.icon, 'star');
+  assert.equal(hb.color, 'blue');
+  assert.equal(D.addSection(s, { name: 'x'.repeat(50) }, '2026-10-05', id).name.length, D.SECTION_NAME_MAX);
+  assert.ok(D.updateSection(s, hb.id, { name: 'Музыка', icon: 'music', color: 'orange' }));
+  assert.deepEqual([D.findSection(s, hb.id).name, D.findSection(s, hb.id).icon], ['Музыка', 'music']);
+  assert.equal(D.updateSection(s, hb.id, { name: '' }), false);
+  assert.ok(D.moveSection(s, hb.id, -1));
+  assert.deepEqual(s.sections.map(x => x.name).slice(0, 2), ['Музыка', 'Работа']);
+  assert.equal(D.moveSection(s, hb.id, -1), false);
+  assert.ok(D.setSectionOn(s, w.id, false));
+  assert.equal(D.findSection(s, w.id).on, false);
+  const a = D.addSecItem(s, w.id, { name: 'Главная задача', note: 'первым\nделом', icon: 'target', color: 'red', beforeBed: 30 }, '2026-10-05', id);
+  assert.deepEqual(a, { id: a.id, icon: 'target', name: 'Главная задача', note: 'первым делом', color: 'red', addedAt: '2026-10-05' });
+  const b = D.addSecItem(s, w.id, { name: 'Почта' }, '2026-10-05', id);
+  assert.equal(D.addSecItem(s, 'нет', { name: 'X' }, '2026-10-05', id), null);
+  assert.equal(D.addSecItem(s, w.id, { name: ' ' }, '2026-10-05', id), null);
+  assert.ok(D.moveSecItem(s, b.id, -1));
+  assert.deepEqual(D.findSection(s, w.id).items.map(i => i.name), ['Почта', 'Главная задача']);
+  assert.ok(D.updateSecItem(s, a.id, { name: 'Фокус', note: '90 минут', icon: 'clock', color: 'indigo' }));
+  assert.equal(D.findSecItem(s, a.id).item.name, 'Фокус');
+  assert.equal(D.findSecItem(s, a.id).section.id, w.id);
+  assert.equal(D.findItem(s, a.id), undefined, 'пункт раздела — не пункт минимума');
+});
+
+test('разделы: пределы — 8 разделов, 20 пунктов в разделе', () => {
+  const s = mk('2026-10-01');
+  const id = sids();
+  for (let i = 0; i < D.MAX_SECTIONS; i++) assert.ok(D.addSection(s, { name: 'Р' + i }, '2026-10-01', id));
+  assert.equal(D.addSection(s, { name: 'лишний' }, '2026-10-01', id), null);
+  const sec = s.sections[0];
+  for (let i = 0; i < D.MAX_SEC_ITEMS; i++) assert.ok(D.addSecItem(s, sec.id, { name: 'п' + i }, '2026-10-01', id));
+  assert.equal(D.addSecItem(s, sec.id, { name: 'лишний' }, '2026-10-01', id), null);
+});
+
+test('отметки разделов: сегодня и вчера, не раньше пункта; минимум, серия и итоги их не видят', () => {
+  const s = mk('2026-10-01');
+  const id = sids();
+  const sec = D.addSection(s, { name: 'Хобби' }, '2026-10-01', id);
+  const g = D.addSecItem(s, sec.id, { name: 'Гитара' }, '2026-10-03', id);
+  const before = JSON.stringify([D.progress(s, '2026-10-05', '2026-10-05'), D.history(s, '2026-10-05'), D.weekSummary(s, '2026-09-28', '2026-10-05')]);
+  assert.ok(D.toggleSecMark(s, g.id, '2026-10-05', '2026-10-05'));
+  assert.ok(D.toggleSecMark(s, g.id, '2026-10-04', '2026-10-05'), 'вчера — можно');
+  assert.equal(D.toggleSecMark(s, g.id, '2026-10-03', '2026-10-05'), false, 'раньше вчера — нельзя');
+  assert.equal(D.toggleSecMark(s, g.id, '2026-10-02', '2026-10-03'), false, 'до появления пункта — нельзя');
+  assert.equal(D.toggleSecMark(s, 'нет', '2026-10-05', '2026-10-05'), false);
+  assert.deepEqual(s.secMarks[g.id], ['2026-10-04', '2026-10-05']);
+  assert.ok(D.secDone(s, g.id, '2026-10-05'));
+  assert.deepEqual(D.secDay(s, sec, '2026-10-05'), { items: [g], k: 1, n: 1 });
+  assert.deepEqual(D.secDay(s, sec, '2026-10-02'), { items: [], k: 0, n: 0 });
+  assert.equal(JSON.stringify([D.progress(s, '2026-10-05', '2026-10-05'), D.history(s, '2026-10-05'), D.weekSummary(s, '2026-09-28', '2026-10-05')]), before);
+  assert.ok(D.toggleSecMark(s, g.id, '2026-10-05', '2026-10-05'));
+  assert.ok(D.toggleSecMark(s, g.id, '2026-10-04', '2026-10-05'));
+  assert.equal(s.secMarks[g.id], undefined, 'пустой список отметок не копится');
+  D.toggleSecMark(s, g.id, '2026-10-05', '2026-10-05');
+  assert.ok(D.removeSecItem(s, g.id));
+  assert.deepEqual(s.secMarks, {}, 'удалённый пункт уносит отметки');
+  const x = D.addSecItem(s, sec.id, { name: 'Рисунок' }, '2026-10-05', id);
+  D.toggleSecMark(s, x.id, '2026-10-05', '2026-10-05');
+  assert.ok(D.removeSection(s, sec.id));
+  assert.deepEqual([s.sections, s.secMarks], [[], {}], 'удалённый раздел уносит пункты и отметки');
+  assert.equal(D.removeSection(s, sec.id), false);
+});
+
+test('детали пункта раздела: неделя, 4 недели, всего; клетки без пропусков', () => {
+  const s = mk('2026-09-01');
+  const sec = D.addSection(s, { name: 'Работа' }, '2026-09-01', sids());
+  const it = D.addSecItem(s, sec.id, { name: 'Фокус' }, '2026-09-10', () => 'f');
+  s.secMarks.f = ['2026-09-11', '2026-09-20', '2026-09-28', '2026-09-30', '2026-10-01', '2026-10-09'];
+  const st = D.secStats(s, it.id, '2026-10-01'); // чт; неделя с 28.09
+  assert.deepEqual([st.week, st.month, st.total], [3, 5, 5], 'будущая отметка не считается');
+  assert.equal(st.cells.length, 42);
+  const at = d => st.cells.find(c => c.date === d).st;
+  assert.equal(at('2026-09-09'), 'off');
+  assert.equal(at('2026-09-12'), 'none');
+  assert.equal(at('2026-09-11'), 'done');
+  assert.equal(at('2026-10-02'), 'future');
+  assert.ok(!st.cells.some(c => c.st === 'miss'));
+  assert.equal(D.secStats(s, 'нет', '2026-10-01'), null);
+});
+
+test('нормализация разделов: мусор выброшен, id не повторяются, отметки только своих пунктов', () => {
+  const s = mk('2026-09-01');
+  const raw = JSON.parse(JSON.stringify(s));
+  raw.sections = [
+    { id: 'w', name: ' Работа ', icon: 'briefcase', color: 'blue', on: false, addedAt: '2026-09-02', junk: 1,
+      items: [{ id: 'w1', name: 'Фокус', note: 'утром', icon: 'clock', color: 'red', beforeBed: 30, addedAt: '2026-09-03' }, { id: 'w1', name: 'дубль' }, { id: 'i1', name: 'чужой id' }, { name: 'без id' }, null] },
+    { id: 'w', name: 'дубль раздела' },
+    { id: 'h', name: '', items: [] },
+    { id: 'i2', name: 'id пункта минимума' },
+    { id: 'm', name: 'Музыка', icon: 'rocket', color: 'violet', items: 'bad' },
+    'мусор',
+  ];
+  raw.secMarks = { w1: ['2026-09-05', '2026-09-05', 'не дата', '2026-09-04'], i1: ['2026-09-05'], zz: ['2026-09-05'], m: 'bad' };
+  const n = D.normalize(raw, '2026-09-10');
+  assert.deepEqual(n.sections, [
+    { id: 'w', name: 'Работа', icon: 'briefcase', color: 'blue', on: false, addedAt: '2026-09-02', items: [{ id: 'w1', icon: 'clock', name: 'Фокус', note: 'утром', color: 'red', addedAt: '2026-09-03' }] },
+    { id: 'm', name: 'Музыка', icon: 'star', color: 'blue', on: true, addedAt: '2026-09-01', items: [] },
+  ]);
+  assert.deepEqual(n.secMarks, { w1: ['2026-09-04', '2026-09-05'] });
+  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(n)), '2026-09-10'), n);
+  raw.sections = Array.from({ length: 12 }, (_, i) => ({ id: 's' + i, name: 'Р' + i, items: Array.from({ length: 30 }, (_, k) => ({ id: `s${i}-${k}`, name: 'п' }) ) }));
+  const big = D.normalize(raw, '2026-09-10');
+  assert.equal(big.sections.length, D.MAX_SECTIONS);
+  assert.ok(big.sections.every(x => x.items.length === D.MAX_SEC_ITEMS));
+});
+
+// ---------- первая настройка (v58)
+
+test('новый телефон: первая настройка, пустые разделы; подсказки — шаблон и ещё шесть', () => {
+  const s = D.seed('2026-10-26', ids());
+  assert.equal(s.ui.setup, true);
+  assert.deepEqual([s.sections, s.secMarks], [[], {}]);
+  assert.equal(D.SUGGESTIONS.length, 11);
+  assert.deepEqual(D.SUGGESTIONS.slice(0, 5).map(x => x.name), s.items.map(i => i.name), 'первые пять — шаблон');
+  assert.equal(new Set(D.SUGGESTIONS.map(x => x.name)).size, 11);
+  for (const x of D.SUGGESTIONS) {
+    assert.ok(ICON_IDS.includes(x.icon), x.icon);
+    assert.ok(D.COLORS.includes(x.color), x.color);
+    assert.ok(D.cleanFields(x, false), x.name);
+    assert.doesNotMatch(x.note, /встал|лёг|сделал/, 'подписи без рода');
+  }
+});
+
+test('первая настройка: пункт убирается бесследно, первый шаг — с первой ночи', () => {
+  const s = D.seed('2026-10-26', ids());
+  D.syncToday(s, '2026-10-26');
+  const id = s.items[1].id;
+  assert.ok(D.dropItem(s, id));
+  assert.equal(s.items.length, 4);
+  assert.ok(!s.days['2026-10-26'].plan.includes(id));
+  assert.equal(D.dropItem(s, id), false);
+  assert.ok(D.setFirstStep(s, '00:00'));
+  assert.deepEqual(s.sleep.targets, [{ from: '2026-10-26', bed: '00:00' }]);
+  assert.equal(D.stepTonight(s, '2026-10-26'), '00:00');
+  assert.equal(D.setFirstStep(s, '25:00'), false);
+  // подъём в настройке: шаг и цель сдвигаются, часы сна те же — тоже с первой ночи
+  D.setWake(s, '06:30', '2026-10-26', s.createdAt);
+  assert.deepEqual(s.sleep.targets, [{ from: '2026-10-26', bed: '23:00' }]);
+  assert.equal(s.sleep.goalBed, '22:30');
+});
+
+test('конец настройки: без отметок приложение начинается сегодня; «в системе с» после «Начать заново» — прежнее', () => {
+  const s = D.seed('2026-10-24', ids());
+  D.syncToday(s, '2026-10-24');
+  D.setFirstStep(s, '00:30');
+  const sec = D.addSection(s, { name: 'Работа' }, '2026-10-24', sids());
+  D.addSecItem(s, sec.id, { name: 'Фокус' }, '2026-10-24', () => 'f');
+  assert.equal(D.finishSetup(s, '2026-10-26'), true);
+  assert.deepEqual([s.createdAt, s.since], ['2026-10-26', '2026-10-26']);
+  assert.deepEqual(s.days, {});
+  assert.ok([...s.items, sec, ...sec.items].every(x => x.addedAt === '2026-10-26'));
+  assert.deepEqual(s.sleep.targets, [{ from: '2026-10-26', bed: '00:30' }]);
+  assert.deepEqual([s.ui.setup, s.ui.welcomeSeen], [false, true]);
+  assert.equal(D.status(s, '2026-10-25', '2026-10-26'), 'none', 'дни настройки не пропуски');
+  // после «Начать заново» — «в системе с» прежняя дата
+  const r = D.seed('2026-10-26', ids(), '2026-07-20');
+  D.finishSetup(r, '2026-10-26');
+  assert.equal(r.since, '2026-07-20');
+  // уже есть отметки (например, копия) — прошлое не трогаем
+  const t = D.seed('2026-10-20', ids());
+  t.sleep.nights['2026-10-21'] = { bed: '00:30', wake: '07:30' };
+  assert.equal(D.finishSetup(t, '2026-10-26'), false);
+  assert.equal(t.createdAt, '2026-10-20');
+  assert.equal(t.ui.setup, false);
 });
