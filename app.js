@@ -887,7 +887,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       ui.yOpen = true;
       return render();
     }
-    leave([...root.querySelectorAll('.yesterday .row[aria-pressed]')], () => {
+    leave([...root.querySelectorAll('.yesterday .row[aria-pressed], .yesterday .row-accent')], () => {
       ui.yOpen = false;
       render();
     });
