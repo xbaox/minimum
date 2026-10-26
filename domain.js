@@ -8,6 +8,7 @@ export const MAX_DAILY = 10;
 export const MAX_SECTIONS = 8;
 export const MAX_SEC_ITEMS = 20;
 export const SECTION_NAME_MAX = 30;
+export const SEC_NOTE_MAX = 300; // запись «Что сделано» — одна-две фразы
 export const SINCE = '2026-07-20';
 // Палитра плиток: под белый значок, контраст ≥ 3:1 (считает tests/style.test.js).
 export const COLORS = ['red', 'orange', 'yellow', 'green', 'mint', 'teal', 'blue', 'indigo', 'purple', 'pink', 'brown', 'gray'];
@@ -120,6 +121,7 @@ export function seed(today, id = makeId, since = today) {
     reviews: {},
     sections: [],
     secMarks: {},
+    secDays: {},
     ui: { welcomeSeen: false, news: '', lastExport: '', setup: true },
   };
 }
@@ -192,8 +194,10 @@ export function restoreItem(s, id) {
   return true;
 }
 
-// ---------- разделы (v58): «Работа», «Хобби» и свои. Отдельно от минимума: план дня, серия, кольца, итоги
-// и гонка их не видят, друзьям они не уходят. Отметка — дата в secMarks; пропусков нет — раздел не обязательство.
+// ---------- разделы (v58): «Работа», «Хобби» и свои. Отдельно от минимума: план дня, серия, кольца и итоги
+// их не видят; друзьям — только открытые. Отметка пункта — дата в secMarks; пропусков нет — раздел не обязательство.
+// «Что сделано» (v60) — отметка дня самого раздела и запись одной строкой, без пунктов: secDays[id][дата] = текст
+// (пустой — просто отметка). В гонке день с делом в разделе или недельным счётчиком — очко «сверх минимума».
 
 export const findSection = (s, id) => s.sections.find(x => x.id === id) || null;
 
@@ -243,11 +247,12 @@ export function setSectionOn(s, id, on) {
   return true;
 }
 
-// Удалить раздел — вместе с пунктами и их отметками (в интерфейсе — через подтверждение).
+// Удалить раздел — вместе с пунктами, их отметками и записями дня (в интерфейсе — через подтверждение).
 export function removeSection(s, id) {
   const k = s.sections.findIndex(x => x.id === id);
   if (k < 0) return false;
   for (const it of s.sections[k].items) delete s.secMarks[it.id];
+  delete s.secDays[id];
   s.sections.splice(k, 1);
   return true;
 }
@@ -308,11 +313,42 @@ export function toggleSecMark(s, id, date, today) {
   return true;
 }
 
-// Пункты раздела, которые уже были в этот день, и сколько из них отмечено.
+// Запись дня раздела: текст (пустой — просто отметка) или null — день не отмечен.
+export const secRec = (s, secId, date) => s.secDays[secId]?.[date] ?? null;
+
+// Запись — одна строка: переносы схлопываются, длина — до SEC_NOTE_MAX без половинки эмодзи.
+export const cleanNote = t => cut(String(t ?? '').replace(/\s+/g, ' ').trim(), SEC_NOTE_MAX);
+
+// Отметить день раздела (text — строка, можно пустую) или снять (null). Дни — как у минимума: сегодня и вчера,
+// не раньше самого раздела.
+export function setSecRec(s, secId, date, today, text) {
+  const sec = findSection(s, secId);
+  if (!sec || !canEdit(s, date, today) || date < sec.addedAt) return false;
+  const days = (s.secDays[secId] ||= {});
+  if (text == null) delete days[date];
+  else days[date] = cleanNote(text);
+  if (!Object.keys(days).length) delete s.secDays[secId];
+  return true;
+}
+
+// День в разделе: пункты, которые уже были, сколько отмечено, запись дня и было ли хоть какое-то дело.
 export function secDay(s, sec, date) {
   const items = sec.items.filter(i => i.addedAt <= date);
-  return { items, k: items.filter(i => secDone(s, i.id, date)).length, n: items.length };
+  const k = items.filter(i => secDone(s, i.id, date)).length, rec = secRec(s, sec.id, date);
+  return { items, k, n: items.length, rec, active: rec != null || k > 0 };
 }
+
+// Было ли в этот день дело в разделе: запись дня или отметка любого его пункта.
+export const secActive = (s, sec, date) => secRec(s, sec.id, date) != null || sec.items.some(i => secDone(s, i.id, date));
+
+// Записи с текстом за дни from…to, свежие первыми: [[дата, текст]].
+export function secNotes(s, sec, from, to) {
+  return Object.entries(s.secDays[sec.id] || {}).filter(([d, t]) => t && d >= from && d <= to).sort((a, b) => (a[0] < b[0] ? 1 : -1));
+}
+
+// Сверх минимума (гонка): в этот день отмечен недельный счётчик или было дело во включённом разделе.
+export const extraDay = (s, date) =>
+  s.weekly.some(w => (s.weekMarks[w.id] || []).includes(date)) || s.sections.some(sec => sec.on && secActive(s, sec, date));
 
 // Детали пункта раздела: эта неделя, 4 недели, всего и клетки 6 недель (пн–вс) — done | none | off | future.
 export function secStats(s, id, today) {
@@ -331,20 +367,15 @@ export function secStats(s, id, today) {
   };
 }
 
-// «Прогресс» раздела: 8 недель пн–вс до сегодня — сколько отметок и сколько их могло быть (пункт × день, когда он уже был).
+// «Прогресс» раздела: 8 недель пн–вс до сегодня — сколько дней было дело (запись или отметка пункта)
+// и сколько дней раздел уже был (0 — неделя до раздела).
 export function secWeeks(s, sec, today, n = 8) {
   const cur = weekStart(today);
   return Array.from({ length: n }, (_, i) => {
     const monday = addDays(cur, -7 * (n - 1 - i));
-    const last = minD(addDays(monday, 6), today);
-    let count = 0, possible = 0;
-    for (const it of sec.items) {
-      for (const d of range(maxD(monday, it.addedAt), last)) {
-        possible++;
-        if (secDone(s, it.id, d)) count++;
-      }
-    }
-    return { monday, count, possible };
+    const from = maxD(monday, sec.addedAt), last = minD(addDays(monday, 6), today);
+    const days = from <= last ? range(from, last) : [];
+    return { monday, count: days.filter(d => secActive(s, sec, d)).length, possible: days.length };
   });
 }
 
@@ -384,7 +415,7 @@ export function setFirstStep(s, bed) {
 // телефона (после «Начать заново» — прежняя дата), пункты, разделы и первый шаг сна; дни самой настройки не в счёт.
 export function finishSetup(s, today) {
   const blank = !Object.values(s.days).some(r => r.done.length) && !Object.keys(s.sleep.nights).length &&
-    !Object.values(s.weekMarks).some(a => a.length) && !Object.values(s.secMarks).some(a => a.length);
+    !Object.values(s.weekMarks).some(a => a.length) && !Object.values(s.secMarks).some(a => a.length) && !Object.keys(s.secDays).length;
   if (blank) {
     const bed = targetFor(s, addDays(today, 1));
     if (s.since === s.createdAt) s.since = today;
@@ -509,7 +540,10 @@ export function weekCount(s, id, date) {
   return (s.weekMarks[id] || []).filter(d => d >= a && d <= b).length;
 }
 
-export function toggleWeekMark(s, id, date) {
+// Отметка счётчика — в те же дни, что у минимума: сегодня и вчера (лист дня), не раньше самого счётчика.
+export function toggleWeekMark(s, id, date, today = date) {
+  const it = s.weekly.find(i => i.id === id);
+  if (!it || !canEdit(s, date, today) || date < it.addedAt) return false;
   const m = (s.weekMarks[id] ||= []);
   const i = m.indexOf(date);
   if (i >= 0) m.splice(i, 1);
@@ -517,6 +551,8 @@ export function toggleWeekMark(s, id, date) {
     m.push(date);
     m.sort();
   }
+  if (!m.length) delete s.weekMarks[id];
+  return true;
 }
 
 // ---------- сон (ночь хранится под датой утра)
@@ -869,6 +905,15 @@ export function normalize(raw, today) {
     const m = uniq(a.filter(isDate)).sort();
     if (m.length) secMarks[id] = m;
   }
+  // Записи дня — только у известных разделов; текст — одна строка не длиннее SEC_NOTE_MAX.
+  const secIds = new Set(sections.map(x => x.id));
+  const secDays = {};
+  for (const [id, o] of Object.entries(isObj(raw.secDays) ? raw.secDays : {})) {
+    if (!secIds.has(id) || !isObj(o)) continue;
+    const days = {};
+    for (const [d, t] of Object.entries(o)) if (isDate(d) && typeof t === 'string') days[d] = cleanNote(t);
+    if (Object.keys(days).length) secDays[id] = days;
+  }
   return {
     schema: 1,
     createdAt,
@@ -886,6 +931,7 @@ export function normalize(raw, today) {
     reviews,
     sections,
     secMarks,
+    secDays,
     ui: {
       welcomeSeen: raw.ui?.welcomeSeen === true,
       news: str(raw.ui?.news, 16),

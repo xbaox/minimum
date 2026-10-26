@@ -380,7 +380,7 @@ test('новый пункт с выключенным «Видно друзья�
   await a.tab('Настройки');
   a.click('Добавить пункт');
   await wait();
-  a.type(a.doc.querySelector('.sheet input[name="name"]'), 'Тайная привычка');
+  a.type(a.doc.querySelector('.sheet input[name="what"]'), 'Тайная привычка');
   const sw = a.find('Видно друзьям', '.sheet .switch-row');
   assert.equal(sw.getAttribute('aria-checked'), 'true');
   sw.click();
@@ -429,10 +429,10 @@ test('ответ на «Добавить» пришёл, когда открыт
   await a.tab('Настройки');
   a.click('Добавить пункт');
   await wait(10);
-  a.type(a.doc.querySelector('.sheet input[name="name"]'), 'Черновик');
+  a.type(a.doc.querySelector('.sheet input[name="what"]'), 'Черновик');
   await wait(500);
   assert.ok(a.doc.querySelector('.sheet'), 'лист пункта не закрыт чужим ответом');
-  assert.equal(a.doc.querySelector('.sheet input[name="name"]').value, 'Черновик');
+  assert.equal(a.doc.querySelector('.sheet input[name="what"]').value, 'Черновик');
   assert.match(a.bars(), /Запрос отправлен/);
   a.done();
   b.done();
@@ -465,9 +465,10 @@ async function racing(server, friends, opts = {}) {
   await a.tab('Сегодня');
   return a;
 }
+// Строка гонки: место, имя, сегодня (✓ или k/n), отбой прошлой ночи, счёт; дальше — раскладка недели: дни, ночи, сверх минимума.
 const raceRows = a => a.all('.race .race-row').map(r => {
   const t = sel => sp(r.querySelector(sel)?.textContent || '');
-  return [t('.race-place'), t('.name'), t('.race-a'), t('.race-b'), t('.race-score')];
+  return [t('.race-place'), t('.name'), t('.race-a'), t('.race-b'), t('.race-score'), t('.rk-day'), t('.rk-night'), t('.rk-extra')];
 });
 
 test('гонка недели: без друзей карточки нет; с друзьями — над минимумом, по местам, корона у лидера', async () => {
@@ -487,9 +488,9 @@ test('гонка недели: без друзей карточки нет; с �
   assert.ok(at('hero') >= 0 && at('hero') < at('race') && at('race') < at('list-min'), 'между героем и минимумом');
   assert.match(a.text(), /Гонка неделиещё 5 дней/);
   assert.deepEqual(raceRows(a), [
-    ['', 'Саша', '', '00:30', '6'], // корона вместо «1», день закрыт — галочка, отбой в цель
-    ['2', 'Ты', '0/8', '—', '2'],
-    ['3', 'Дима', '2/5', '01:30', '1'],
+    ['', 'Саша', '', '00:30', '6', '3', '3', '0'], // корона вместо «1», день закрыт — галочка, отбой в цель
+    ['2', 'Ты', '0/8', '—', '2', '2', '0', '0'],
+    ['3', 'Дима', '2/5', '01:30', '1', '1', '0', '0'],
   ]);
   const rows = a.all('.race .race-row');
   assert.ok(rows[0].querySelector('.race-crown'), 'корона у лидера');
@@ -497,8 +498,10 @@ test('гонка недели: без друзей карточки нет; с �
   assert.ok(rows[0].querySelector('.race-b').classList.contains('ok'), 'отбой в цель — синим');
   assert.ok(!rows[2].querySelector('.race-b').classList.contains('ok'), 'позже шага — серым');
   assert.match(sp(rows[1].textContent), /до лидера 4/);
-  assert.equal(sp(rows[0].getAttribute('aria-label')), 'Саша: 1-е место, счёт 6: закрыто 3 дня, 3 ночи в цель, сегодня день закрыт, отбой 00:30, в цель');
-  assert.match(a.text(), /Счёт — закрытые дни \+ ночи в цель\. Итоги — в понедельник\./);
+  assert.equal(sp(rows[0].getAttribute('aria-label')), 'Саша: 1-е место, счёт 6: закрыто 3 дня, 3 ночи в цель, 0 дней сверх минимума, сегодня день закрыт, отбой 00:30, в цель');
+  assert.match(a.text(), /день закрытночь в цельсверх минимума/, 'легенда раскладки');
+  // что ещё даст очки сегодня: день не закрыт, «Тренировка» не отмечена, прошлая ночь — тоже
+  assert.match(a.text(), /Сегодня ещё \+2: закрыть день и отметить счётчик\. Отметь прошлую ночь — в цель тоже очко\. Итоги — в понедельник\./);
   // тап — лист друга; своя строка — «так тебя видят друзья»
   rows[0].click();
   await wait();
@@ -538,16 +541,16 @@ test('гонка недели: в понедельник — итоги прош
   });
   assert.match(a.text(), /Итоги гонки12–18 октября/);
   assert.deepEqual(raceRows(a), [
-    ['', 'Саша', '7', '7', '14'],
-    ['2', 'Ты', '6', '0', '6'],
-    ['3', 'Костя', '5', '', '5'],
+    ['', 'Саша', '', '', '14', '7', '7', '0'], // итоги: без «сегодня» — только раскладка прошлой недели и счёт
+    ['2', 'Ты', '', '', '6', '6', '0', '0'],
+    ['3', 'Костя', '', '', '5', '5', '', '0'],
   ]);
   const rows = a.all('.race .race-row');
   assert.ok(rows[0].classList.contains('win'), 'победитель — на закатной полосе');
   assert.equal(a.all('.race .win').length, 1);
   assert.match(sp(rows[1].textContent), /\+6 к прошлой/);
-  assert.ok(rows[2].querySelector('.race-b svg'), 'сон скрыт — замок');
-  assert.equal(sp(rows[2].getAttribute('aria-label')), 'Костя: 3-е место, счёт 5: закрыто 5 дней, сон скрыт');
+  assert.ok(rows[2].querySelector('.rk-night.off svg'), 'сон скрыт — замок');
+  assert.equal(sp(rows[2].getAttribute('aria-label')), 'Костя: 3-е место, счёт 5: закрыто 5 дней, сон скрыт, 0 дней сверх минимума');
   assert.match(a.text(), /Новая гонка уже идёт/);
   a.done();
 });

@@ -7,7 +7,7 @@ import { ICONS, ICON_GROUPS, UI as G } from './icons.js';
 import { createDOM, EASE } from './dom.js';
 import { createStore, requestPersist, shareOrDownload, parseImport } from './store.js';
 import { createCloud, CODE_RE, cleanCode, cleanName, NAME_MAX, CloudError, CLOUD_KEY } from './cloud.js';
-import { shareOf, readShare, summaryOf, changes, deviceZone, weekScore, ranked, HIDDEN_NAME } from './share.js';
+import { shareOf, readShare, summaryOf, changes, deviceZone, weekScore, scoreLeft, ranked, HIDDEN_NAME } from './share.js';
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const WEEKDAYS = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье'];
@@ -27,7 +27,7 @@ const RULES = S => [
   'Одно улучшение в неделю — 1%.',
   'План дня — в Напоминаниях, не здесь.',
   `Сон — главное: отбой шагами к${NB}${S.sleep.goalBed}, подъём ${clock(S.sleep.goalWake)} — ${dur(D.sleepFor(S.sleep.goalBed, S.sleep.goalWake))} сна.`,
-  'Работа и хобби — в разделах, отдельно от минимума: серию они не трогают.',
+  'Работа, учёба и хобби — в разделах, отдельно от минимума: отметь, что сделано, и запиши пару слов. Серию они не трогают.',
 ];
 const CHOICE = { earlier30: 'Раньше на 30 минут', earlier15: 'Раньше на 15 минут', keep: 'Оставить', later15: 'Позже на 15 минут' };
 const TAB_FRIENDS = ['friends', 'Друзья', ICONS.people[1]];
@@ -36,11 +36,11 @@ const TABS = [['today', 'Сегодня', G.tabToday], ['progress', 'Прогр�
 const WELCOME = (n, now, goal) =>
   `${n ? `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках.` : 'Минимум пока пуст — пункты добавишь ниже: из подсказок или свои.'} Сон — шагами от ${dur(now)} к${NB}${dur(goal)}: шаг выбираешь на итогах недели или в${NB}Настройках.`;
 // «Что нового» — один раз для тех, кто уже пользовался; новичок видит первую настройку.
-const NEWS_ID = 'v59';
+const NEWS_ID = 'v60';
 const NEWS = [
-  'Минимум можно начать пустым: «Добавлю потом» в первой настройке, а на «Сегодня» — «Из подсказок» и «Свой пункт»',
-  '«Из подсказок» — и в Настройках, рядом с «Добавить пункт»; в новом разделе — готовые «Работа», «Хобби», «Учёба»',
-  'Новый пункт не попадает во вчерашний день: вчера из-за него не станет пропуском',
+  '«Что сделано» в разделах: кружок — отметка дня, тап по строке — запись пары слов. Пункты не обязательны',
+  'Гонка: очко за закрытый день, ночь в цель и дело сверх минимума — раздел или счётчик, до трёх в день. Под карточкой — что ещё можно сегодня',
+  'Новый раздел друзьям открыт, закрыть можно ещё в первой настройке. Забытую вчера тренировку можно отметить в листе дня',
 ];
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
 const SECTION_PRESETS = [
@@ -466,7 +466,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const sh = ui.sheet;
     if (!sh) return false;
     if (sh.kind === 'review') return !!sh.choice || sh.draft.notesDone || ['good', 'bad', 'learned', 'improvement'].some(k => sh.draft[k].trim());
-    if (sh.kind === 'item' || sh.kind === 'name' || sh.kind === 'section') return JSON.stringify(sh.draft) !== sh.orig;
+    if (sh.kind === 'item' || sh.kind === 'name' || sh.kind === 'section' || sh.kind === 'secday') return JSON.stringify(sh.draft) !== sh.orig;
     if (sh.kind === 'suggest') return sh.picks.length > 0;
     return false;
   }
@@ -555,7 +555,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
   }
 
-  // ---------- разделы на «Сегодня» (v58): ниже минимума, своим цветом отметки; на героя, серию и гонку не влияют.
+  // ---------- разделы на «Сегодня» (v58): ниже минимума, своим цветом отметки; на героя и серию не влияют.
+  // Под пунктами — «Что сделано» (v60): отметка дня раздела и запись; пунктов может и не быть.
 
   // Заголовок раздела — маленький значок его цвета и название.
   const secTitle = sec => h('span', { class: 'sec-name' },
@@ -565,14 +566,94 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
 
   function sectionBlocks() {
     return S.sections.filter(sec => sec.on).map(sec => {
-      const { items, k, n } = D.secDay(S, sec, today);
+      const { items, k, n, rec } = D.secDay(S, sec, today);
       return [
         secH(`h-sec-${sec.id}`, secTitle(sec), n > 0 && h('span', { class: 'sec-aside roll', 'data-roll': '' }, `${k} из ${n}`)),
-        h('section', { key: `sec-${sec.id}`, class: 'group list-sec', 'data-flip': '', 'aria-label': `Раздел «${sec.name}»` }, n > 0
-          ? items.map(it => secRow(it, sec, today, true))
-          : plusRow('add', 'Добавить пункт', () => openSecItem(null, sec.id))),
+        h('section', { key: `sec-${sec.id}`, class: 'group list-sec', 'data-flip': '', 'aria-label': `Раздел «${sec.name}»` },
+          items.map(it => secRow(it, sec, today, true)), secDayRow(sec, today, rec, true)),
       ];
     });
+  }
+
+  // «Что сделано» — строка дня раздела: кружок справа — отметка одним касанием, остальная строка — лист с записью.
+  // Не в те дни (раньше вчера) — только показ, и только если день отмечен.
+  function secDayRow(sec, date, rec, editable) {
+    const on = rec != null;
+    const name = rec || (on ? 'Сделано' : date === today ? 'Что сделано сегодня?' : 'Что сделано?');
+    const note = rec ? null : on ? 'добавить запись' : 'запиши или отметь кружком';
+    if (!editable) {
+      return h('div', { key: 'day', class: 'row static sec-row sec-day done' + (rec ? ' has-rec' : ''), style: tint(sec.color) },
+        tile('pencil'), txt(rec || 'Сделано'), h('span', { class: 'check', role: 'img', 'aria-label': 'сделано' }, gl(G.check, '', 1)));
+    }
+    const when = date === today ? 'сегодня' : 'вчера';
+    return h('div', { key: 'day', class: 'row sec-row sec-day' + (on ? ' done' : '') + (rec ? ' has-rec' : ''), style: tint(sec.color), 'data-flip': '' },
+      h('button', { class: 'sd-open', 'aria-label': `${sec.name}, ${when}: ${rec || (on ? 'сделано, без записи' : 'записать, что сделано')}`, onclick: () => openSecDay(sec.id, date) },
+        tile('pencil'), txt(name, note)),
+      h('button', { class: 'sd-check', 'aria-pressed': pressed(on), 'aria-label': `${sec.name}, ${when}: ${on ? 'снять отметку' : 'отметить'}`, onclick: () => secDayToggle(sec, date) },
+        h('span', { class: 'check' }, gl(G.check, '', 1))));
+  }
+
+  // Кружок: отметить день раздела без записи или снять отметку; с записью — через подтверждение (текст сотрётся).
+  function secDayToggle(sec, date) {
+    if (stale() || closing) return;
+    const rec = D.secRec(S, sec.id, date);
+    const go = () => {
+      if (!D.setSecRec(S, sec.id, date, today, rec == null ? '' : null)) return;
+      M.haptic();
+      commit();
+    };
+    if (rec) showAlert({ title: 'Снять отметку?', msg: 'Запись этого дня сотрётся.', yes: 'Снять', danger: true, action: go });
+    else go();
+  }
+
+  function openSecDay(secId, date) {
+    if (stale() || !D.findSection(S, secId)) return;
+    const rec = D.secRec(S, secId, date);
+    const draft = { on: rec != null, text: rec || '' };
+    openSheet({ kind: 'secday', sec: secId, date, draft, orig: JSON.stringify(draft) });
+  }
+
+  // Лист записи: «Сделано» и что именно — одной-двумя фразами. Набрал текст — день отмечен сам.
+  function secDaySheet(sh) {
+    const sec = D.findSection(S, sh.sec), d = sh.draft;
+    if (!sec) return h('p', { key: 'gone', class: 'group empty first' }, 'Этого раздела больше нет');
+    const shared = cloud.prefs.sections.includes(sec.id);
+    return [
+      h('p', { key: 'sub', class: 'sheet-sub' }, `${cap(dayWord(sh.date, today))}, ${dm(sh.date)}`),
+      h('div', { key: 'preview', class: 'preview', style: tint(sec.color) },
+        h('span', { class: 'tile' }, icon(sec.icon)), h('p', { class: 'pv-name' }, sec.name), h('p', { class: 'pv-note' }, 'отдельно от минимума')),
+      h('section', { key: 'sd', class: 'group group-gap-l', 'data-flip': '' },
+        h('button', {
+          class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.on),
+          onclick: () => { d.on = !d.on; M.haptic(); render(); },
+        }, txt('Сделано', d.on ? 'день отмечен в разделе' : 'можно и без записи'), h('span', { class: 'switch', 'aria-hidden': 'true' })),
+        h('label', { class: 'form-row form-row-top' },
+          h('textarea', {
+            class: 'form-input form-area area sd-area', name: 'done-text', rows: 2, value: d.text, maxlength: D.SEC_NOTE_MAX,
+            placeholder: 'Что сделано — одной-двумя фразами', enterkeyhint: 'done', autocomplete: 'off', 'aria-label': 'Что сделано',
+            oninput: e => {
+              d.text = e.target.value;
+              autosize(e.target);
+              if (d.text.trim() && !d.on) {
+                d.on = true; // запись без отметки не бывает
+                render();
+              }
+            },
+            onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.target.blur(); } },
+          }))),
+      h('p', { key: 'sd-foot', class: 'sec-foot', 'data-flip': '' }, !cloud.enabled ? 'Запись видна только тебе.'
+        : shared ? 'Раздел открыт: друзья увидят отметку и запись.' : 'Раздел закрыт для друзей — запись видна только тебе.'),
+    ];
+  }
+
+  function saveSecDay(sh) {
+    if (closing || stale()) return;
+    const ok = D.setSecRec(S, sh.sec, sh.date, today, sh.draft.on ? sh.draft.text : null);
+    if (ok) {
+      save();
+      M.haptic();
+    }
+    closeSheet();
   }
 
   // Строка пункта раздела: тап — отметка, удержание — детали (в листе дня — только отметка).
@@ -795,7 +876,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('button', { key: 'head', class: 'row', 'aria-expanded': pressed(ui.yOpen), onclick: toggleYesterday },
         tile(k === n ? 'checklist' : 'clock', k === n ? 'green' : 'gray'),
         txt(`Вчера: ${k} из ${n}`, k === n ? 'день закрыт' : `доотметить можно до${NB}${D.DAY_START_HOUR}:00`), chev(ui.yOpen)),
-      ui.yOpen && plan.map(id => D.findItem(S, id)).filter(Boolean).map(it => itemRow(it, done.includes(it.id), y, '')));
+      ui.yOpen && plan.map(id => D.findItem(S, id)).filter(Boolean).map(it => itemRow(it, done.includes(it.id), y, '')),
+      // Доотметить вчера целиком: счётчики и разделы — в листе дня.
+      ui.yOpen && (S.weekly.some(w => !w.archivedAt) || S.sections.some(sec => sec.on)) &&
+        h('button', { key: 'y-day', class: 'row row-t row-accent', 'data-flip': '', onclick: () => openDay(y) }, 'Весь вчерашний день — счётчики и разделы'));
   }
 
   function toggleYesterday() {
@@ -853,6 +937,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       titleText = sh.id ? 'Раздел' : 'Новый раздел';
       right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: !sh.draft.name.trim(), onclick: () => saveSection(sh) }, 'Готово');
       body = sectionSheet(sh);
+    } else if (sh.kind === 'secday') {
+      titleText = D.findSection(S, sh.sec)?.name || 'Раздел';
+      right = h('button', { class: 'sheet-act right', id: 'sheet-done', onclick: () => saveSecDay(sh) }, 'Готово');
+      body = secDaySheet(sh);
     } else if (sh.kind === 'suggest') {
       titleText = 'Подсказки';
       body = suggestSheet(sh); // первым: выбор чистится от того, что уже в минимуме
@@ -913,6 +1001,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           stat(sum.total ? `${sum.closed} из ${sum.total}` : '—', 'дней закрыто'),
           stat(String(D.history(S, today).streak), 'серия'),
           w && stat(`${wc} из ${w.perWeek}`, lcFirst(w.name)))),
+      reviewSections(W),
       sum.missingNights.length > 0 && [
         secH('h-nights', 'Ночи по памяти'),
         h('div', { key: 'nights', class: 'stack stack-tight', 'data-flip': '' }, sum.missingNights.map(d => h('section', { key: d, class: 'group sleep-card', 'data-flip': '' },
@@ -957,6 +1046,25 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           closeSheet(() => toast('Неделя закрыта'));
         },
       }, 'Закрыть неделю'),
+    ];
+  }
+
+  // Разделы за неделю в итогах: сколько дней было дело и записи «Что сделано» по порядку — подспорье для разбора.
+  function reviewSections(W) {
+    const sun = D.addDays(W, 6), last = sun < today ? sun : today;
+    const list = S.sections.map(sec => {
+      const from = W > sec.addedAt ? W : sec.addedAt;
+      const n = from <= last ? D.range(from, last).filter(d => D.secActive(S, sec, d)).length : 0;
+      return { sec, n, notes: D.secNotes(S, sec, W, sun).reverse() };
+    }).filter(x => x.n);
+    if (!list.length) return null;
+    return [
+      secH('h-rv-secs', 'Разделы за неделю'),
+      h('section', { key: 'rv-secs', class: 'group', 'data-flip': '' }, list.map(({ sec, n, notes }) =>
+        h('div', { key: sec.id, class: 'row rv-sec', style: tint(sec.color) }, tile(sec.icon),
+          h('span', { class: 'txt' }, h('span', { class: 'name' }, sec.name),
+            notes.map(([d, t]) => h('span', { key: d, class: 'note' }, h('b', {}, `${WD[D.weekday(d)]} `), t))),
+          h('span', { class: 'value' }, days(n))))),
     ];
   }
 
@@ -1006,20 +1114,48 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         : h('div', { key: it.id, class: 'row' + (done.includes(it.id) ? ' done' : ' missed'), style: tint(it.color) },
           tile(it.icon), txt(it.name, it.note), h('span', { class: 'check', role: 'img', 'aria-label': done.includes(it.id) ? 'сделано' : 'не сделано' }, gl(G.check, '', 1))))
         : h('p', { class: 'empty' }, d === today ? 'Минимум пока пуст' : 'В этот день минимума ещё не было')),
+      dayWeekly(d, editable),
       daySections(d, editable),
     ];
   }
 
-  // Разделы в листе дня: включённые и те, где в этот день есть отметки. Вчера и сегодня — можно отметить.
+  // Недельные счётчики в листе дня: вчера и сегодня — можно отметить (забыл вчера — не беда), раньше — только отмеченные.
+  function dayWeekly(d, editable) {
+    const list = S.weekly.filter(it => it.addedAt <= d && (!it.archivedAt || it.archivedAt > d))
+      .filter(it => editable ? !it.archivedAt : (S.weekMarks[it.id] || []).includes(d));
+    if (!list.length) return null;
+    return [
+      secH('h-day-week', editable ? 'На неделе · можно отметить' : 'На неделе'),
+      h('section', { key: 'day-week', class: 'group', 'data-flip': '' }, list.map(it => {
+        const on = (S.weekMarks[it.id] || []).includes(d);
+        const kids = [tile(it.icon), txt(it.name, `${D.weekCount(S, it.id, d)} из ${it.perWeek} за${NB}неделю`), h('span', { class: 'check', role: editable ? null : 'img', 'aria-label': editable ? null : 'отмечено' }, gl(G.check, '', 1))];
+        return editable
+          ? h('button', { key: it.id, class: 'row wk-row' + (on ? ' done' : ''), style: tint(it.color), 'aria-pressed': pressed(on), onclick: () => weekToggleOn(it, d) }, kids)
+          : h('div', { key: it.id, class: 'row static wk-row done', style: tint(it.color) }, kids);
+      })),
+    ];
+  }
+
+  function weekToggleOn(it, d) {
+    if (stale() || closing) return;
+    if (!D.toggleWeekMark(S, it.id, d, today)) return;
+    M.haptic();
+    commit();
+  }
+
+  // Разделы в листе дня. Вчера и сегодня — включённые разделы, можно отметить пункты и «Что сделано»;
+  // раньше — только те, где в этот день было дело.
   function daySections(d, editable) {
-    return S.sections.map(sec => ({ sec, ...D.secDay(S, sec, d) })).filter(x => x.n && (x.sec.on || x.k)).map(({ sec, items, k, n }) => [
-      secH(`d-h-${sec.id}`, secTitle(sec), h('span', { class: 'sec-aside' }, `${k} из ${n}`)),
-      h('section', { key: `d-sec-${sec.id}`, class: 'group', 'data-flip': '' }, items.map(it => editable
-        ? secRow(it, sec, d, false)
-        : h('div', { key: it.id, class: 'row static sec-row' + (D.secDone(S, it.id, d) ? ' done' : ''), style: tint(it.color) },
-          tile(it.icon), txt(it.name, it.note),
-          h('span', { class: 'check', role: 'img', 'aria-label': D.secDone(S, it.id, d) ? 'сделано' : 'без отметки' }, gl(G.check, '', 1))))),
-    ]);
+    return S.sections.filter(sec => sec.addedAt <= d).map(sec => ({ sec, ...D.secDay(S, sec, d) }))
+      .filter(x => (editable ? x.sec.on || x.active : x.active)).map(({ sec, items, k, n, rec }) => [
+        secH(`d-h-${sec.id}`, secTitle(sec), n > 0 && h('span', { class: 'sec-aside' }, `${k} из ${n}`)),
+        h('section', { key: `d-sec-${sec.id}`, class: 'group', 'data-flip': '' }, items.map(it => editable
+          ? secRow(it, sec, d, false)
+          : h('div', { key: it.id, class: 'row static sec-row' + (D.secDone(S, it.id, d) ? ' done' : ''), style: tint(it.color) },
+            tile(it.icon), txt(it.name, it.note),
+            h('span', { class: 'check', role: 'img', 'aria-label': D.secDone(S, it.id, d) ? 'сделано' : 'без отметки' }, gl(G.check, '', 1)))),
+        (editable || rec != null) && secDayRow(sec, d, rec, editable)),
+      ]);
   }
 
   function openItem(id, weekly) {
@@ -1071,10 +1207,14 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       st && (sec ? secStatsView(st, sh) : itemStatsView(st, sh)),
       h('section', { key: 'form', class: 'group group-gap-l', 'data-flip': '' },
         h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Название'),
-          h('input', { class: 'form-input', name: 'name', value: d.name, maxlength: 60, placeholder: sec ? 'что сделать' : 'например, Растяжка', oninput: onText('name', '.pv-name', placeholder) })),
+          h('input', {
+            class: 'form-input', name: 'what', value: d.name, maxlength: 60, placeholder: sec ? 'что сделать' : 'например, Растяжка', enterkeyhint: 'next',
+            autocomplete: 'off', oninput: onText('name', '.pv-name', placeholder), // не name="name": iOS предлагал «Автозаполнение контакта»
+            onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); root.querySelector('.sheet textarea[name="when"]')?.focus(); } },
+          })),
         h('label', { class: 'form-row form-row-top' }, h('span', { class: 'form-label' }, 'Подпись'),
           h('textarea', {
-            class: 'form-input form-area area', name: 'note', rows: 1, value: d.note, maxlength: 120, placeholder: 'когда / после чего', enterkeyhint: 'done',
+            class: 'form-input form-area area', name: 'when', rows: 1, value: d.note, maxlength: 120, placeholder: 'когда / после чего', enterkeyhint: 'done', autocomplete: 'off',
             oninput: e => { onText('note', '.pv-note', 'когда / после чего')(e); autosize(e.target); },
             autocapitalize: 'none',
             onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.target.blur(); } }, // подпись — одна строка, длинная переносится
@@ -1131,7 +1271,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const sec = id && D.findSection(S, id);
     if (id && !sec) return;
     const draft = sec ? { icon: sec.icon, name: sec.name, color: sec.color } : { icon: 'star', name: '', color: 'blue' };
-    if (cloud.joined) draft.shared = !!sec && cloud.prefs.sections.includes(sec.id); // новый раздел друзьям закрыт
+    // Видимость — и до включения друзей (v60): новый раздел друзьям открыт, закрыть — переключателем.
+    if (cloud.enabled) draft.shared = sec ? cloud.prefs.sections.includes(sec.id) : true;
     openSheet({ kind: 'section', id, draft, orig: JSON.stringify(draft), icons: !id });
   }
 
@@ -1147,7 +1288,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const presets = sec || S.ui.setup ? [] : SECTION_PRESETS.filter(p => !S.sections.some(x => x.name === p.name));
     const usePreset = p => {
       Object.assign(d, { name: p.name, icon: p.icon, color: p.color });
-      const input = root.querySelector('.sheet input[name="name"]');
+      const input = root.querySelector('.sheet input[name="what"]');
       if (input) input.value = p.name; // поле в фокусе перерисовка не трогает — ставим сами
       set('icon', p.icon);
     };
@@ -1163,7 +1304,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('section', { key: 'form', class: 'group group-gap-l', 'data-flip': '' },
         h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Название'),
           h('input', {
-            class: 'form-input', name: 'name', value: d.name, maxlength: D.SECTION_NAME_MAX, placeholder: 'например, Работа', enterkeyhint: 'done',
+            class: 'form-input', name: 'what', value: d.name, maxlength: D.SECTION_NAME_MAX, placeholder: 'например, Работа', enterkeyhint: 'done', autocomplete: 'off',
             oninput: e => {
               d.name = e.target.value;
               const pv = root.querySelector('.sheet .pv-name');
@@ -1176,7 +1317,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       lookPicker(sh, set),
       'shared' in d && h('section', { key: 'shared', class: 'group group-gap-l', 'data-flip': '' }, h('button', {
         class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.shared), onclick: () => set('shared', !d.shared),
-      }, txt('Видно друзьям', d.shared ? 'друзья видят пункты и отметки за две недели' : 'закрыт — друзья не видят'),
+      }, txt('Видно друзьям', d.shared ? 'друзья видят пункты, отметки и записи' : 'закрыт — друзья не видят'),
       h('span', { class: 'switch', 'aria-hidden': 'true' }))),
       sec && h('section', { key: 'remove', class: 'group group-gap-l', 'data-flip': '' },
         h('button', { class: 'row row-t row-danger', onclick: () => askRemoveSection(sec) }, 'Удалить раздел')),
@@ -1189,7 +1330,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (sh.id) D.updateSection(S, sh.id, sh.draft);
     else id = D.addSection(S, sh.draft, today)?.id;
     // Видимость — до сохранения: первый же снимок с этим разделом уже её учитывает.
-    if (id && 'shared' in sh.draft && cloud.joined) cloud.setSectionShared(id, sh.draft.shared);
+    if (id && 'shared' in sh.draft && cloud.enabled) cloud.setSectionShared(id, sh.draft.shared);
     save();
     M.haptic();
     closeSheet();
@@ -1202,13 +1343,14 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       yes: 'Удалить', danger: true,
       action: () => {
         D.removeSection(S, sec.id);
+        if (cloud.enabled) cloud.setSectionShared(sec.id, false);
         save();
         closeSheet();
       },
     });
   }
 
-  const secCount = sec => (sec.items.length ? `${sec.items.length}${NB}${plural(sec.items.length, ['пункт', 'пункта', 'пунктов'])}` : 'пока пусто');
+  const secCount = sec => (sec.items.length ? `${sec.items.length}${NB}${plural(sec.items.length, ['пункт', 'пункта', 'пунктов'])}` : 'без пунктов — «Что сделано»');
 
   // Детали пункта: серия, рекорд, доля и 6 недель клеток цвета пункта; у счётчика — недели в цель.
   function itemStatsView(st, sh) {
@@ -1374,27 +1516,34 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   // с отметкой по пунктам за 4 недели; тап по пункту — его детали. Цвет столбиков — цвет раздела.
   function progressSections() {
     const mon = D.weekStart(today);
-    return S.sections.filter(sec => sec.on && sec.items.length).map(sec => {
-      const weeks = D.secWeeks(S, sec, today), top = Math.max(1, ...weeks.map(w => w.count));
+    const list = S.sections.filter(sec => sec.on && (sec.items.length || S.secDays[sec.id]));
+    return list.map(sec => {
+      const weeks = D.secWeeks(S, sec, today);
+      const notes = D.secNotes(S, sec, sec.addedAt, today).slice(0, 3);
       return [
         secH(`h-ps-${sec.id}`, secTitle(sec), h('span', { class: 'sec-aside' }, `8${NB}недель`)),
         h('section', { key: `ps-${sec.id}`, class: 'group rv-card', style: tint(sec.color), 'data-flip': '' },
+          // Столбик — дни с делом за неделю (запись «Что сделано» или отметка пункта), полный — все семь.
           h('div', {
-            class: 'sbars', role: 'img', 'aria-label': `${sec.name}, отметок по неделям: ${weeks.map(w => w.count).join(', ')}`,
+            class: 'sbars', role: 'img', 'aria-label': `${sec.name}, дней с делом по неделям: ${weeks.map(w => w.count).join(', ')}`,
             'data-reveal': '', 'data-stagger': 'grow-y', 'data-stagger-sel': '.sbar-fill', 'data-step': '40',
           }, weeks.map(w => h('div', { key: w.monday, class: 'sbar' + (w.monday === mon ? ' now' : '') + (w.possible ? '' : ' none'), 'aria-hidden': 'true' },
             h('span', { class: 'sbar-n' }, w.possible ? String(w.count) : ''),
-            h('span', { class: 'sbar-track' }, h('span', { class: 'sbar-fill', style: `--p:${(w.count / top).toFixed(3)}` })),
+            h('span', { class: 'sbar-track' }, h('span', { class: 'sbar-fill', style: `--p:${(w.count / 7).toFixed(3)}` })),
             h('span', { class: 'sbar-label' }, `${+w.monday.slice(8)}.${+w.monday.slice(5, 7)}`)))),
-          h('div', { class: 'sc-sep' }),
-          h('div', { class: 'sec-rates', 'data-reveal': '', 'data-stagger': 'grow-x', 'data-stagger-sel': '.rate-fill', 'data-step': '50' },
-            D.secRates(S, sec, today).map(r => h('button', { key: r.item.id, class: 'rate', style: tint(r.item.color), onclick: () => openSecItem(r.item.id, sec.id) },
-              tile(r.item.icon), h('span', { class: 'rate-name' }, r.item.name),
-              h('span', { class: 'rate-bar' }, h('span', { class: 'rate-fill', style: `--p:${r.rate ?? 0}` })),
-              h('span', { class: 'rate-val' }, r.rate == null ? '—' : `${Math.round(r.rate * 100)}%`))))),
+          sec.items.length > 0 && [h('div', { class: 'sc-sep' }),
+            h('div', { class: 'sec-rates', 'data-reveal': '', 'data-stagger': 'grow-x', 'data-stagger-sel': '.rate-fill', 'data-step': '50' },
+              D.secRates(S, sec, today).map(r => h('button', { key: r.item.id, class: 'rate', style: tint(r.item.color), onclick: () => openSecItem(r.item.id, sec.id) },
+                tile(r.item.icon), h('span', { class: 'rate-name' }, r.item.name),
+                h('span', { class: 'rate-bar' }, h('span', { class: 'rate-fill', style: `--p:${r.rate ?? 0}` })),
+                h('span', { class: 'rate-val' }, r.rate == null ? '—' : `${Math.round(r.rate * 100)}%`))))],
+          // Последние записи «Что сделано» — тап открывает тот день.
+          notes.length > 0 && [h('div', { class: 'sc-sep' }),
+            h('div', { class: 'ps-notes' }, notes.map(([d, t]) => h('button', { key: d, class: 'ps-note', onclick: () => openDay(d) },
+              h('span', { class: 'ps-note-d' }, `${WD[D.weekday(d)]}, ${dm(d)}`), h('span', { class: 'ps-note-t' }, t))))]),
       ];
-    }).concat(S.sections.some(sec => sec.on && sec.items.length)
-      ? [h('p', { key: 'ps-foot', class: 'sec-foot', 'data-flip': '' }, `Столбики — отметки за неделю, проценты — дни с отметкой за 4${NB}недели. На серию разделы не влияют.`)]
+    }).concat(list.length
+      ? [h('p', { key: 'ps-foot', class: 'sec-foot', 'data-flip': '' }, `Столбики — дни с делом за неделю: запись «Что сделано» или отметка пункта; проценты — дни с отметкой пункта за 4${NB}недели. На серию разделы не влияют.`)]
       : []);
   }
 
@@ -1516,8 +1665,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   }
 
   // ---------- Гонка недели: друзья на «Сегодня»
-  // Карточка над минимумом: ты и друзья по местам — кольца, отметки сегодня, отбой прошлой ночи и счёт недели
-  // (закрытые дни + ночи в цель, share.js → weekScore). В понедельник — итоги прошлой недели, со вторника — новая гонка.
+  // Карточка над минимумом: ты и друзья по местам — кольца, отметки сегодня, отбой прошлой ночи и счёт недели.
+  // Очко (v60) — за закрытый день, ночь в цель и дело сверх минимума (раздел, открытый друзьям, или недельный счётчик):
+  // до трёх в день, раскладка — под именем (share.js → weekScore). Под карточкой — что ещё даст очки сегодня.
+  // В понедельник — итоги прошлой недели, со вторника — новая гонка.
   // «Ты» — из своего снимка: место и счёт ровно те, что видят друзья. Нет друзей с данными — карточки нет.
   const RACE_ROWS = 4; // первые четыре; «Ты» ниже — вместо четвёртого: строк всегда столько же, минимум не прыгает
 
@@ -1541,33 +1692,49 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       const rival = Math.max(...people.filter(p => !p.me).map(p => p.score));
       note = me.score > rival ? `впереди на${NB}${me.score - rival}` : me.score === rival ? 'вровень' : `до лидера${NB}${top - me.score}`;
     }
+    const leg = (cls, d, label) => h('span', {}, gl(d, 'rk-ic ' + cls), label);
     return [
       secH('h-race', results ? 'Итоги гонки' : 'Гонка недели',
         h('span', { class: 'sec-aside' }, results ? weekRange(monday) : wd === 6 ? 'последний день' : `ещё ${days(7 - wd)}`)),
       h('section', { key: 'race', class: 'group race', 'data-flip': '' },
         shown.map(p => raceRow(p, { results, top, note: p.me ? note : '' }))),
-      h('p', { key: 'race-foot', class: 'sec-foot', 'data-flip': '' }, results
-        ? 'Счёт — закрытые дни + ночи в цель. Новая гонка уже идёт.'
-        : `Счёт — закрытые дни + ночи в цель. Итоги${NB}— в${NB}понедельник.`),
+      h('div', { key: 'race-legend', class: 'race-legend', 'aria-hidden': 'true', 'data-flip': '' },
+        leg('rk-day', G.check, 'день закрыт'), leg('rk-night', ICONS.moon[1], 'ночь в цель'), leg('rk-extra', ICONS.star[1], 'сверх минимума')),
+      h('p', { key: 'race-foot', class: 'sec-foot', 'data-flip': '' }, results ? 'Новая гонка уже идёт.' : `${raceTip(me0)} Итоги${NB}— в${NB}понедельник.`),
     ];
   }
 
+  // Что ещё даст очки сегодня — действием, а не советом: закрыть день, отметить раздел или счётчик, прошлую ночь.
+  function raceTip(v) {
+    const left = scoreLeft(v);
+    const sec = v.F.sections.length > 0, wk = v.F.weekly.some(w => !w.archivedAt);
+    const can = [left.day && 'закрыть день', left.extra && `отметить ${sec && wk ? 'раздел или счётчик' : sec ? 'раздел' : 'счётчик'}`].filter(Boolean);
+    const out = [];
+    if (can.length) out.push(`Сегодня ещё +${can.length}: ${can.join(' и ')}.`);
+    if (left.night) out.push('Отметь прошлую ночь — в цель тоже очко.');
+    return out.length ? out.join(' ') : 'Сегодня в счёте всё, что можно.';
+  }
+
   // Строка гонки. Неделя идёт: отметки сегодня (✓ или k/n) и отбой прошлой ночи — синим, если в цель.
-  // Итоги: закрытые дни и ночи за неделю, победитель — на закатной полосе. Скрытый сон — замок, ночи не в счёт.
+  // Под именем — раскладка очков недели: дни, ночи, сверх минимума (у «Ты» — ещё и «до лидера»).
+  // Итоги: только раскладка прошлой недели и счёт, победитель — на закатной полосе. Скрытый сон — замок, ночи не в счёт.
   function raceRow(p, { results, top, note }) {
     const { v } = p, sum = v.sum, lead = p.place === 1 && top > 0;
     const parts = results
-      ? [{ kind: 'sun', f: p.closed / 7 }, v.sleep && { kind: 'sleep', f: p.nights / 7 }]
+      ? [{ kind: 'sun', f: p.closed / 7 }, v.sleep && { kind: 'sleep', f: p.nights / 7 }, { kind: 'train', f: p.extra / 7 }]
       : [{ kind: 'sun', f: sum.n ? sum.k / sum.n : 0 }, v.sleep && { kind: 'sleep', f: sum.sh.n ? sum.sh.k / sum.sh.n : 0 }, sum.w && { kind: 'train', f: sum.wc / sum.w.perWeek }];
     const night = v.sleep ? v.F.sleep.nights[v.today] : null;
     const hit = !!night?.bed && D.onTarget(v.F, v.today);
-    const day = results ? h('span', { class: 'race-a' }, gl(G.check, 'race-ic'), String(p.closed))
-      : h('span', { class: 'race-a' }, sum.closed ? h('span', { class: 'race-check' }, gl(G.check)) : sum.n ? `${sum.k}/${sum.n}` : '—');
-    const sleep = !v.sleep ? h('span', { class: 'race-b off' }, gl(G.lock, 'race-ic'))
-      : h('span', { class: 'race-b' + (!results && hit ? ' ok' : '') }, gl(ICONS.moon[1], 'race-ic'), results ? String(p.nights) : night?.bed || '—');
+    const day = !results && h('span', { class: 'race-a' }, sum.closed ? h('span', { class: 'race-check' }, gl(G.check)) : sum.n ? `${sum.k}/${sum.n}` : '—');
+    const sleep = !results && (!v.sleep ? h('span', { class: 'race-b off' }, gl(G.lock, 'race-ic'))
+      : h('span', { class: 'race-b' + (hit ? ' ok' : '') }, gl(ICONS.moon[1], 'race-ic'), night?.bed || '—'));
+    const rk = (cls, d, n) => h('span', { class: 'rk ' + cls }, gl(d, 'rk-ic'), n);
+    const split = h('span', { class: 'rk-line' }, rk('rk-day', G.check, String(p.closed)),
+      v.sleep ? rk('rk-night', ICONS.moon[1], String(p.nights)) : rk('rk-night off', G.lock, ''), rk('rk-extra', ICONS.star[1], String(p.extra)));
     const said = [
       top > 0 && `${p.place}-е место`,
       `счёт ${p.score}: закрыто ${days(p.closed)}`, v.sleep ? `${p.nights} ${plural(p.nights, ['ночь', 'ночи', 'ночей'])} в${NB}цель` : 'сон скрыт',
+      `${days(p.extra)} сверх минимума`,
       !results && (sum.closed ? 'сегодня день закрыт' : sum.n ? `сегодня ${sum.k} из ${sum.n}` : 'минимум пуст'),
       !results && v.sleep && (night?.bed ? `отбой ${night.bed}${hit ? ', в цель' : ''}` : 'ночь не отмечена'),
       note,
@@ -1578,7 +1745,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     },
     h('span', { class: 'race-place', 'aria-hidden': 'true' }, lead ? gl(G.crown, 'race-crown') : top > 0 ? String(p.place) : ''),
     rings('r-rings', 32, [14, 9.5, 5], 3.6, parts.filter(Boolean)),
-    h('span', { class: 'txt' }, h('span', { class: 'name strong' }, p.name), note && h('span', { class: 'note' }, note)),
+    h('span', { class: 'txt' }, h('span', { class: 'name strong' }, p.name), h('span', { class: 'note' }, split), note && h('span', { class: 'note' }, note)),
     day, sleep,
     h('span', { class: 'race-score' }, String(p.score)));
   }
@@ -1709,7 +1876,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const code = cloud.me.code;
     const link = String(win.location.href).split(/[?#]/)[0];
     try {
-      if (typeof win.navigator.share === 'function') return void (await win.navigator.share({ text: `Добавь меня в «Минимуме»: мой код ${code}\n${link}` }));
+      // Другу, у которого приложения ещё нет: как поставить и где ввести код.
+      const text = `Добавь меня в «Минимуме»: мой код ${code}. Открой ссылку в Safari → «Поделиться» → «На экран „Домой“», код — на шаге «Друзья».\n${link}`;
+      if (typeof win.navigator.share === 'function') return void (await win.navigator.share({ text }));
     } catch (e) {
       if (e?.name === 'AbortError') return;
     }
@@ -1929,20 +2098,22 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
   }
 
-  // Открытые другом разделы: сегодняшние отметки цветом пункта, только для чтения. Сверх минимума — на гонку не влияют.
+  // Открытые другом разделы: сегодняшние отметки цветом пункта и «Что сделано», только для чтения.
   function friendSections(F, day) {
-    const list = F.sections.map(sec => ({ sec, ...D.secDay(F, sec, day) })).filter(x => x.n);
+    const list = F.sections.map(sec => ({ sec, ...D.secDay(F, sec, day) }));
     if (!list.length) return null;
     return [
-      list.map(({ sec, items, k, n }) => [
-        secH(`f-h-sec-${sec.id}`, secTitle(sec), h('span', { class: 'sec-aside' }, `${k} из ${n}`)),
+      list.map(({ sec, items, k, n, rec }) => [
+        secH(`f-h-sec-${sec.id}`, secTitle(sec), n > 0 && h('span', { class: 'sec-aside' }, `${k} из ${n}`)),
         h('section', { key: `f-sec-${sec.id}`, class: 'group', 'data-flip': '' }, items.map(it => {
           const on = D.secDone(F, it.id, day);
           return h('div', { key: it.id, class: 'row static sec-row' + (on ? ' done' : ''), style: tint(it.color) },
             tile(it.icon), txt(it.name, it.note), h('span', { class: 'check', role: 'img', 'aria-label': on ? 'сделано' : 'ещё не отмечено' }, gl(G.check, '', 1)));
-        })),
+        }), rec != null ? secDayRow(sec, day, rec, false)
+          : n === 0 && h('div', { key: 'day', class: 'row static sec-row sec-day', style: tint(sec.color) },
+            tile('pencil'), txt('Сегодня без записи'), h('span', { class: 'check', role: 'img', 'aria-label': 'ещё не отмечено' }, gl(G.check, '', 1)))),
       ]),
-      h('p', { key: 'f-sec-foot', class: 'sec-foot', 'data-flip': '' }, 'Разделы — сверх минимума: на серию и гонку не влияют.'),
+      h('p', { key: 'f-sec-foot', class: 'sec-foot', 'data-flip': '' }, 'Разделы — сверх минимума: на серию не влияют, в гонке — очко «сверх минимума».'),
     ];
   }
 
@@ -1988,6 +2159,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     } else if (e.kind === 'onepct') {
       node = h('span', { class: 'tile', style: tint('yellow') }, icon('sparkles'));
       text = `1% недели: ${e.text}`;
+    } else if (e.kind === 'note') {
+      node = h('span', { class: 'tile', style: tint(e.section.color) }, icon(e.section.icon));
+      text = `${e.section.name}: ${e.text}`;
     } else {
       node = e.hidden ? lockTile() : h('span', { class: 'tile', style: tint(e.kind === 'remove' ? 'gray' : e.item.color) }, icon(e.item.icon));
       text = e.kind === 'add' ? (e.hidden ? (e.weekly ? 'Новый личный счётчик' : 'Новый личный пункт') : `${e.weekly ? 'Новый счётчик' : 'Новый пункт'} «${name}»`)
@@ -2051,8 +2225,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             M.haptic();
             render();
           },
-        }, tile(sec.icon), txt(sec.name, open ? 'друзья видят пункты и отметки' : 'закрыт — друзья не видят'), h('span', { class: 'switch', 'aria-hidden': 'true' }));
-      })), h('p', { key: 'p-secs-foot', class: 'sec-foot' }, 'Открытый раздел друзья видят в твоём листе: пункты и отметки за две недели. На гонку разделы не влияют.')],
+        }, tile(sec.icon), txt(sec.name, open ? 'друзья видят пункты, отметки и записи' : 'закрыт — друзья не видят'), h('span', { class: 'switch', 'aria-hidden': 'true' }));
+      })), h('p', { key: 'p-secs-foot', class: 'sec-foot' }, 'Открытый раздел друзья видят в твоём листе: пункты и отметки за три недели, записи «Что сделано» — за неделю. В гонке он даёт очко «сверх минимума», закрытый — нет.')],
       secH('p-h-more', 'Ещё'),
       h('section', { key: 'p-more', class: 'group' },
         shareSwitch('sleep', p.sleep, 'Сон', 'отбой, подъём, шаг отбоя и график ночей'),
@@ -2270,7 +2444,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             onclick: () => toggleSection(sec),
           }, tile(sec.icon), txt(sec.name, sec.on ? secCount(sec) : `выключен · ${secCount(sec)}`), h('span', { class: 'switch', 'aria-hidden': 'true' }))),
         !ui.edit && list.length < D.MAX_SECTIONS && plusRow('add', 'Добавить раздел', () => openSection(null))),
-      h('p', { key: 'secs-foot', class: 'sec-foot', 'data-flip': '' }, `${list.length ? 'Отдельно' : 'Работа, хобби, учёба — отдельно'} от минимума: на серию, кольца и гонку не влияют.${cloud.enabled ? ' Друзьям — только открытые в «Что видят друзья».' : ''}`),
+      h('p', { key: 'secs-foot', class: 'sec-foot', 'data-flip': '' }, `${list.length ? 'Отдельно' : 'Работа, хобби, учёба — отдельно'} от минимума: на серию и кольца не влияют.${cloud.enabled ? ' Друзьям — только открытые: в гонке они дают очко «сверх минимума».' : ''}`),
       list.filter(sec => sec.on && (!ui.edit || sec.items.length)).map(sec => [
         secH(`h-s-${sec.id}`, secTitle(sec), !ui.edit && h('button', { class: 'link', onclick: () => openSection(sec.id) }, 'Настроить')),
         h('section', { key: `s-${sec.id}`, class: 'group', 'data-flip': '' },
@@ -2688,17 +2862,29 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const row = (key, sec, on, note, onclick) => h('button', {
       key, class: 'switch-row item-switch', role: 'switch', 'aria-checked': pressed(on), style: tint(sec.color), 'data-flip': '', onclick,
     }, tile(sec.icon), txt(sec.name, note), h('span', { class: 'switch', 'aria-hidden': 'true' }));
+    const open = cloud.prefs.sections;
+    const share = sec => {
+      cloud.setSectionShared(sec.id, !open.includes(sec.id));
+      M.haptic();
+      render();
+    };
     return [
       title('Разделы'),
-      h('p', { key: 'lead', class: 'setup-lead left' }, 'Работа, хобби, учёба — отдельно от минимума: отмечай, когда получается. На серию и гонку не влияют.'),
+      h('p', { key: 'lead', class: 'setup-lead left' }, 'Работа, хобби, учёба — отдельно от минимума: отмечай, что сделано, и записывай пару слов. На серию не влияют.'),
       h('section', { key: 'secs', class: 'group group-gap-l', 'data-flip': '' },
         SECTION_PRESETS.map(p => row(`p-${p.name}`, p, S.sections.some(x => fromPreset(x, p)), p.note, () => presetToggle(p))),
         S.sections.filter(x => !SECTION_PRESETS.some(p => fromPreset(x, p))).map(sec => row(sec.id, sec, true, 'свой раздел', () => dropSection(sec.id))),
         S.sections.length < D.MAX_SECTIONS && plusRow('own', 'Свой раздел', () => openSection(null))),
-      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, (S.sections.length
-        ? 'Пункты разделов добавишь потом — на «Сегодня» или в Настройках.'
-        : 'Можно и без разделов — добавишь потом в Настройках.') +
-        (cloud.enabled ? ' Друзьям разделы не видны, пока не откроешь их в «Что видят друзья».' : '')),
+      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, S.sections.length
+        ? 'Пункты добавишь потом — на «Сегодня» или в Настройках; можно и без них: «Что сделано» — отметка и запись дня.'
+        : 'Можно и без разделов — добавишь потом в Настройках.'),
+      // Что видят друзья (v60) — сразу здесь: новый раздел открыт, закрыть — переключателем.
+      cloud.enabled && S.sections.length > 0 && [
+        secH('h-secs-share', 'Видно друзьям'),
+        h('section', { key: 'secs-share', class: 'group secs-share', 'data-flip': '' }, S.sections.map(sec => row(`v-${sec.id}`, sec, open.includes(sec.id),
+          open.includes(sec.id) ? 'отметки и записи видны друзьям' : 'закрыт — друзья не видят', () => share(sec)))),
+        h('p', { key: 'share-foot', class: 'sec-foot', 'data-flip': '' }, 'Открытый раздел в гонке — очко «сверх минимума». Поменять — в «Что видят друзья».'),
+      ],
     ];
   }
 
@@ -2706,7 +2892,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (stale()) return;
     const sec = S.sections.find(x => fromPreset(x, p));
     if (sec) return dropSection(sec.id);
-    D.addSection(S, p, today);
+    const added = D.addSection(S, p, today);
+    if (added && cloud.enabled) cloud.setSectionShared(added.id, true); // новый раздел друзьям открыт (v60)
     const rank = x => {
       const k = SECTION_PRESETS.findIndex(y => fromPreset(x, y));
       return k < 0 ? SECTION_PRESETS.length : k;
@@ -2719,6 +2906,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function dropSection(id) {
     if (stale()) return;
     D.removeSection(S, id);
+    if (cloud.enabled) cloud.setSectionShared(id, false);
     M.haptic();
     commit();
   }

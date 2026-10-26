@@ -240,6 +240,7 @@
   --race-score: 30px;
   --race-check: 22px;
   --race-ic: 14px;
+  --rk-ic: 12px;
   --tile-xs: 18px;
   --gl-xs: 12px;
   --setup-foot: 140px;
@@ -387,6 +388,7 @@ input::placeholder, textarea::placeholder { color: var(--text-2); opacity: 1; }
 :focus { outline: none; }
 :focus-visible { outline: var(--bw) solid var(--accent); outline-offset: var(--bw); }
 .sheet-panel:focus, .alert-box:focus { outline: none; } /* фокус ставится программно — для VoiceOver, без рамки */
+input:focus-visible, textarea:focus-visible { outline: none; } /* поле в фокусе видно по курсору, как в iOS, — без рамки */
 
 .gl {
   flex: none;
@@ -1126,9 +1128,20 @@ button.cell.closed::after, button.cell.break::after { inset: calc(var(--u4) * -1
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+/* раскладка очков недели под именем (v60): дни — закатом, ночи — синим, сверх минимума — зелёным */
+.rk-line { display: inline-flex; align-items: center; gap: var(--u8); vertical-align: top; }
+.rk { display: inline-flex; align-items: center; gap: var(--u2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.rk-ic { flex: none; width: var(--rk-ic); height: var(--rk-ic); stroke-width: 2.6; }
+.rk-day { color: var(--accent); }
+.rk-night { color: var(--sleep); }
+.rk-extra { color: var(--train-text); }
+.rk.off { color: var(--text-2); }
+.race-legend { display: flex; flex-wrap: wrap; gap: var(--u4) var(--u14); margin: var(--u8) var(--inset) 0; font-size: var(--fs-foot); line-height: var(--lh-foot); color: var(--text-2); }
+.race-legend span { display: inline-flex; align-items: center; gap: var(--u4); }
+.race-legend + .sec-foot { margin-top: var(--u4); }
 /* итоги в понедельник: победитель — на закате, как закрытый день */
 .race-row.win { background: var(--g-sunset); color: var(--on-sun); }
-.race-row.win .note, .race-row.win .race-a, .race-row.win .race-b { color: var(--on-sun); }
+.race-row.win .note, .race-row.win .race-a, .race-row.win .race-b, .race-row.win .rk { color: var(--on-sun); }
 .race-row.win .race-crown { fill: var(--on-sun); }
 .race-row.win .tr-sun, .race-row.win .tr-sleep, .race-row.win .tr-train { stroke: var(--sun-track); }
 .race-row.win .arc-sun, .race-row.win .arc-sleep, .race-row.win .arc-train { stroke: var(--on-sun); }
@@ -1140,7 +1153,32 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .sec-name { display: inline-flex; align-items: center; gap: var(--u8); }
 .sec-ic { flex: none; display: grid; place-items: center; width: var(--tile-xs); height: var(--tile-xs); border-radius: var(--r-tile-xs); background: var(--item); color: var(--on-tile); }
 .sec-ic .gl { width: var(--gl-xs); height: var(--gl-xs); stroke-width: 2.4; }
-.sec-row .check::before { background: var(--item); }
+.sec-row .check::before, .wk-row .check::before { background: var(--item); }
+/* «Что сделано» (v60): строка — лист записи, кружок справа — отметка одним касанием */
+.sec-day:not(.static) { padding: 0; gap: 0; }
+.sd-open {
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: var(--u14);
+  padding: var(--u10) var(--u8) var(--u10) var(--u16);
+  text-align: left;
+  color: var(--text);
+}
+.sd-check { flex: none; align-self: stretch; display: grid; place-items: center; min-width: var(--tap); padding: 0 var(--u16) 0 var(--u8); }
+.sd-open:active, .sd-check:active { background: var(--press); }
+.sec-day.has-rec .name { color: var(--text); }
+/* «Прогресс» раздела: последние записи — дата и текст, тап — тот день */
+.ps-notes { display: flex; flex-direction: column; margin: calc(var(--u6) * -1) 0; }
+.ps-note { display: flex; flex-direction: column; gap: var(--u2); padding: var(--u6) 0; text-align: left; }
+.ps-note-d { font-size: var(--fs-foot); line-height: var(--lh-foot); color: var(--text-2); }
+.ps-note-t { font-size: var(--fs-sub); line-height: var(--lh-sub); }
+.ps-note:active { opacity: 0.6; }
+/* итоги недели: разделы — дни с делом справа, записи по дням под названием */
+.rv-sec { align-items: flex-start; }
+.rv-sec .note b { font-weight: 600; color: var(--text); }
 /* «Прогресс» раздела: 8 недель столбиками цвета раздела, ниже — доля по пунктам за 4 недели */
 .sbars { display: flex; justify-content: space-between; gap: var(--u6); }
 .sbar { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: var(--u4); }

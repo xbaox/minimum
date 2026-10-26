@@ -141,7 +141,7 @@ test('первый старт со старыми ключами: стёрто, 
   assert.doesNotMatch(a.text(), /На неделе/);
   assert.equal(a.doc.querySelectorAll('.tile svg path').length >= 5, true); // значки, а не эмодзи
   assert.doesNotMatch(a.text(), /Новый минимум|Что нового/); // настройка уже всё объяснила
-  assert.equal(a.app.state.ui.news, 'v59');
+  assert.equal(a.app.state.ui.news, 'v60');
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Новый минимум|Что нового/);
   assert.equal(b.doc.querySelector('main.setup'), null);
@@ -156,7 +156,7 @@ test('«Что нового» — один раз для тех, кто уже �
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
   assert.equal(a.doc.querySelectorAll('.news li').length, 3);
-  assert.match(a.text(), /Минимум можно начать пустым/);
+  assert.match(a.text(), /«Что сделано» в разделах/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
   const b = await reboot(a);
@@ -213,7 +213,7 @@ test('базовый шаблон с историей: нигде нет «null�
   a.doc.querySelector('.rate').click(); clean('детали из прогресса'); a.click('Отмена', '.sheet-act');
   a.click('Настройки', '.tab');
   a.click('Добавить счётчик');
-  a.type(a.sheet().querySelector('input[name="name"]'), 'Бег');
+  a.type(a.sheet().querySelector('input[name="what"]'), 'Бег');
   a.doc.getElementById('sheet-done').click();
   assert.equal(a.app.state.weekly.length, 1);
   a.click('Сегодня', '.tab');
@@ -524,12 +524,12 @@ test('лист: тап мимо и свайп вниз закрывают; вв�
   assert.equal(a.sheet(), null);
   assert.equal(main.hasAttribute('inert'), false);
   a.click('Добавить пункт');
-  a.type(a.sheet().querySelector('input[name=name]'), 'Растяжка');
+  a.type(a.sheet().querySelector('input[name=what]'), 'Растяжка');
   a.doc.querySelector('.sheet-back').click();
   assert.match(sp(a.alertBox().textContent), /Закрыть без сохранения\?/);
   a.alertBtn('Отмена');
   assert.ok(a.sheet());
-  assert.equal(a.sheet().querySelector('input[name=name]').value, 'Растяжка');
+  assert.equal(a.sheet().querySelector('input[name=what]').value, 'Растяжка');
   // свайп за шапку
   const head = a.sheet().querySelector('.sheet-head');
   a.touch(head, 'touchstart', 100);
@@ -665,12 +665,12 @@ test('Настройки: добавить (11-й — переспрос), пе�
   const names = () => [...a.all('.screen > .group')[0].querySelectorAll('.row .name')].map(n => n.textContent).filter(n => n !== 'Добавить пункт' && n !== 'Из подсказок');
   const doneBtn = () => a.doc.getElementById('sheet-done');
   const add = name => {
-    a.type(a.sheet().querySelector('input[name=name]'), name);
+    a.type(a.sheet().querySelector('input[name=what]'), name);
     doneBtn().click();
   };
   a.click('Добавить пункт');
   assert.equal(doneBtn().disabled, true); // пустое название
-  a.type(a.sheet().querySelector('input[name=name]'), '   ');
+  a.type(a.sheet().querySelector('input[name=what]'), '   ');
   assert.equal(doneBtn().disabled, true);
   a.doc.querySelector('.sheet [aria-label="красный"]').click(); // цвет и значок
   a.doc.querySelector('.sheet [aria-label="стакан"]').click();
@@ -690,7 +690,7 @@ test('Настройки: добавить (11-й — переспрос), пе�
   // переименовать
   const rowsBefore = [...a.all('.screen > .group')[0].querySelectorAll('.row')];
   a.find('Шторы + умыться', '.row').click();
-  a.type(a.sheet().querySelector('input[name=name]'), 'Шторы');
+  a.type(a.sheet().querySelector('input[name=what]'), 'Шторы');
   assert.equal(a.sheet().querySelector('.pv-name').textContent, 'Шторы'); // превью без перерисовки
   doneBtn().click();
   assert.equal(names()[0], 'Шторы');
@@ -797,7 +797,7 @@ test('Правила открываются листом', async () => {
   a.click('Настройки', '.tab');
   a.click('Правила', '.row');
   assert.equal(a.sheet().querySelectorAll('.rules-list .row').length, 7);
-  assert.match(a.sheet().textContent, /Работа и хобби — в разделах/);
+  assert.match(a.sheet().textContent, /Работа, учёба и хобби — в разделах/);
   assert.match(a.sheet().textContent, /Не пропускай дважды/);
   a.click('Готово', '.sheet-act');
   assert.equal(a.sheet(), null);
@@ -895,7 +895,7 @@ test('Прогресс рисуется: серия, цепь 6 недель, н
 test('пустой минимум — не тупик: «Из подсказок» и «Свой пункт» на «Сегодня», пустые «Прогресс» и лист дня', async () => {
   const S = seed('2026-09-30');
   Object.assign(S, { items: [] });
-  Object.assign(S.ui, { setup: false, welcomeSeen: true, news: 'v59' });
+  Object.assign(S.ui, { setup: false, welcomeSeen: true, news: 'v60' });
   const a = await start(WED, { storage: { 'minimum.v2': JSON.stringify(S) } });
   const clean = where => assert.doesNotMatch(a.doc.getElementById('app').textContent, /null|undefined|NaN/, where);
   assert.equal(a.rows().length, 0);
@@ -965,6 +965,18 @@ test('подсказка, убранная раньше, возвращаетс�
   assert.equal(act.at(-1), water, 'тот же пункт, не копия');
   assert.equal(a.app.state.items.filter(i => i.name === 'Стакан воды').length, 1);
   assert.doesNotMatch(a.text(), /Убранные/);
+  a.done();
+});
+
+test('название пункта и раздела — не поле «name»: iOS не предлагает «Автозаполнение контакта»', async () => {
+  const a = await start(WED);
+  a.click('Настройки', '.tab');
+  for (const [open, sheet] of [['Добавить пункт', 'пункт'], ['Добавить раздел', 'раздел']]) {
+    a.click(open);
+    assert.equal(a.sheet().querySelector('[name="name"]'), null, sheet);
+    for (const f of a.sheet().querySelectorAll('input:not([type]), textarea')) assert.equal(f.getAttribute('autocomplete'), 'off', `${sheet}: ${f.name}`);
+    a.click('Отмена', '.sheet-act');
+  }
   a.done();
 });
 
@@ -1055,7 +1067,7 @@ test('уезжающий лист и гаснущее подтверждение
   const a = await start(WED, { holdMotion: true, storage: fresh() });
   a.click('Настройки', '.tab');
   a.find('Спорт', '.row').click();
-  a.type(a.sheet().querySelector('input[name=name]'), 'Спорт+');
+  a.type(a.sheet().querySelector('input[name=what]'), 'Спорт+');
   a.doc.getElementById('sheet-done').click(); // сохранено, лист уезжает
   assert.equal(a.app.state.items.find(i => i.name === 'Спорт+') != null, true);
   assert.equal(a.sheet().inert, true);

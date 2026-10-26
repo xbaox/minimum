@@ -12,7 +12,9 @@ export const SHARE_V = 1;
 export const NIGHTS_KEEP = 42; // 6 недель: цепь, неделя, график сна
 export const WINDOW_DAYS = 1096; // история — три года: снимок не растёт вечно (≈ 40 КБ), серия длиннее — редкость
 export const HIDDEN_NAME = 'Личный пункт';
-export const SEC_DAYS = 14; // разделы друзьям — отметки за две недели: сегодня, эта неделя и прошлая
+export const SEC_DAYS = 21; // разделы друзьям — отметки за три недели: эта, прошлая (итоги гонки) и позапрошлая (сравнение)
+export const SEC_NOTE_DAYS = 7; // записи «Что сделано» — за неделю
+export const SEC_NOTE_SHARE = 200; // и не длиннее двухсот знаков
 export const HIDDEN_COLOR = 'gray';
 const MAX_ITEMS = 60, MAX_WEEKLY = 20; // больше в чужом снимке — мусор, а не привычки
 
@@ -107,17 +109,24 @@ export function shareOf(S, today, { tz = '', hidden = [], sleep = true, onepct =
     const closedAt = Number.isNaN(at.getTime()) ? '' : logicalDateIn(tz, at);
     reviews[m] = { closedAt, improvement: onepct ? clean(r.improvement) : '', sleep: sleep ? { ...r.sleep } : {} };
   }
-  // Разделы — только открытые и включённые: пункты и отметки за SEC_DAYS дней строкой «0/1», последняя буква — сегодня.
+  // Разделы — только открытые и включённые: пункты и отметки за SEC_DAYS дней строкой «0/1», последняя буква — сегодня;
+  // отметки дня самого раздела («Что сделано») — такой же строкой d, записи с текстом за неделю — t { дата: текст }.
   const open = new Set(sections);
   let next = ids.size;
-  const secFrom = D.addDays(today, -(SEC_DAYS - 1));
-  const secs = (S.sections || []).filter(sec => sec.on && open.has(sec.id)).map(sec => ({
-    id: (next++).toString(36), name: clean(sec.name), icon: sec.icon, color: sec.color, on: true, addedAt: sec.addedAt,
-    items: sec.items.map(it => ({
-      id: (next++).toString(36), icon: it.icon, name: clean(it.name), note: clean(it.note), color: it.color, addedAt: it.addedAt,
-      m: D.range(secFrom, today).map(d => (D.secDone(S, it.id, d) ? '1' : '0')).join(''),
-    })),
-  }));
+  const secFrom = D.addDays(today, -(SEC_DAYS - 1)), noteFrom = D.addDays(today, -(SEC_NOTE_DAYS - 1));
+  const secs = (S.sections || []).filter(sec => sec.on && open.has(sec.id)).map(sec => {
+    const t = {};
+    for (const [d, text] of D.secNotes(S, sec, noteFrom, today)) t[d] = clean(text).slice(0, SEC_NOTE_SHARE);
+    return {
+      id: (next++).toString(36), name: clean(sec.name), icon: sec.icon, color: sec.color, on: true, addedAt: sec.addedAt,
+      items: sec.items.map(it => ({
+        id: (next++).toString(36), icon: it.icon, name: clean(it.name), note: clean(it.note), color: it.color, addedAt: it.addedAt,
+        m: D.range(secFrom, today).map(d => (D.secDone(S, it.id, d) ? '1' : '0')).join(''),
+      })),
+      d: D.range(secFrom, today).map(d => (D.secRec(S, sec.id, d) != null ? '1' : '0')).join(''),
+      ...(Object.keys(t).length ? { t } : {}),
+    };
+  });
   return {
     schema: 1,
     createdAt,
@@ -148,7 +157,7 @@ export function readShare(doc, now = new Date()) {
   const day = D.isDate(meta.day) && meta.day <= D.addDays(real, 2) ? meta.day : null;
   let today = real;
   if (day && today < day) today = day; // часы смотрящего отстают — не показываем «вчера» вместо «сегодня»
-  const F = D.normalize({ ...doc, days: unpackDays(doc.plans, doc.days), secMarks: unpackSecMarks(doc.sections, day) }, today);
+  const F = D.normalize({ ...doc, days: unpackDays(doc.plans, doc.days), ...unpackSections(doc.sections, day) }, today);
   if (!F) return null;
   // Чужой снимок не должен подвесить вкладку: окно истории и число пунктов — как у честного снимка.
   const from0 = D.addDays(today, -(WINDOW_DAYS - 1));
@@ -166,6 +175,7 @@ export function readShare(doc, now = new Date()) {
     else delete F.weekMarks[id];
   }
   for (const id of Object.keys(F.secMarks)) F.secMarks[id] = F.secMarks[id].filter(d => d <= today);
+  for (const o of Object.values(F.secDays)) for (const d of Object.keys(o)) if (d > today) delete o[d];
   const hidden = new Set((Array.isArray(meta.hidden) ? meta.hidden : []).filter(id => typeof id === 'string' && known.has(id)));
   return { F, today, day, tz, hidden, sleep: meta.sleep !== false, onepct: meta.onepct !== false };
 }
@@ -184,20 +194,31 @@ function unpackDays(plans, days) {
 }
 
 // Отметки разделов из снимка: строка «0/1» по дням, последняя буква — день снимка. Без дня снимка — без отметок.
-function unpackSecMarks(sections, day) {
-  const out = {};
-  if (!Array.isArray(sections) || !day) return out;
+// Пункты → secMarks; день самого раздела (d) и записи (t) → secDays.
+function unpackSections(sections, day) {
+  const secMarks = {}, secDays = {};
+  if (!Array.isArray(sections) || !day) return { secMarks, secDays };
+  const dates = bits => {
+    const m = typeof bits === 'string' ? bits.slice(-SEC_DAYS) : '';
+    const out = [];
+    for (let i = 0; i < m.length; i++) if (m[i] === '1') out.push(D.addDays(day, i - (m.length - 1)));
+    return out;
+  };
+  const okId = id => typeof id === 'string' && !(id in Object.prototype);
   for (const sec of sections) {
-    if (!sec || typeof sec !== 'object' || !Array.isArray(sec.items)) continue;
-    for (const it of sec.items) {
-      if (!it || typeof it.id !== 'string' || it.id in Object.prototype || typeof it.m !== 'string') continue;
-      const m = it.m.slice(-SEC_DAYS);
-      const dates = [];
-      for (let i = 0; i < m.length; i++) if (m[i] === '1') dates.push(D.addDays(day, i - (m.length - 1)));
-      if (dates.length) out[it.id] = dates;
+    if (!sec || typeof sec !== 'object') continue;
+    for (const it of Array.isArray(sec.items) ? sec.items : []) {
+      if (!it || !okId(it.id)) continue;
+      const m = dates(it.m);
+      if (m.length) secMarks[it.id] = m;
     }
+    if (!okId(sec.id)) continue;
+    const t = sec.t && typeof sec.t === 'object' && !Array.isArray(sec.t) ? sec.t : {};
+    const o = {};
+    for (const d of dates(sec.d)) o[d] = typeof t[d] === 'string' ? t[d] : ''; // ключ — дата: имён Object.prototype не бывает
+    if (Object.keys(o).length) secDays[sec.id] = o;
   }
-  return out;
+  return { secMarks, secDays };
 }
 
 // Сводка дня — для героя, строки друга и «Я».
@@ -210,14 +231,28 @@ export function summaryOf(F, today) {
   return { plan, done: D.doneOf(F, today), k, n, closed: n > 0 && k === n, streak, best, sh, w, wc: w ? D.weekCount(F, w.id, today) : 0 };
 }
 
-// Гонка недели: счёт — закрытые дни + ночи в цель с monday по воскресенье, но не дальше своего «сегодня».
-// Каждый идёт против своего минимума и своего шага отбоя. Ночи считаются, только если сон виден друзьям:
-// скрыл сон — в счёте одни дни (у всех одинаково, и у «Я»). Недельные счётчики в счёт не идут.
+// Гонка недели (v60): очко за закрытый день, за ночь в цель и за дело сверх минимума (раздел, открытый друзьям, или
+// недельный счётчик) — до трёх в день, с monday по воскресенье, но не дальше своего «сегодня». Каждый идёт против своего
+// минимума и своего шага отбоя. Ночи считаются, только если сон виден друзьям: скрыл сон — ночей в счёте нет (у всех
+// одинаково, и у «Я»); закрытый раздел очков не даёт — друзья его не видят.
 export function weekScore({ F, today, sleep = true }, monday) {
   const sun = D.addDays(monday, 6), last = sun < today ? sun : today;
-  const closed = monday > last ? 0 : D.range(monday, last).filter(d => D.status(F, d, today) === 'closed').length;
+  const days = monday > last ? [] : D.range(monday, last);
+  const closed = days.filter(d => D.status(F, d, today) === 'closed').length;
   const nights = sleep ? D.sleepHits(F, D.knownMornings(F, monday, sun, today)).k : 0;
-  return { closed, nights, score: closed + nights };
+  const extra = days.filter(d => D.extraDay(F, d)).length;
+  return { closed, nights, extra, score: closed + nights + extra };
+}
+
+// Что ещё даст очки сегодня: закрыть день, отметить прошлую ночь (если она в цель — очко), дело сверх минимума.
+// Сверх минимума — только если есть где: раздел, открытый друзьям, или недельный счётчик.
+export function scoreLeft({ F, today, sleep = true }) {
+  const { k, n } = D.progress(F, today, today);
+  return {
+    day: n > 0 && k < n,
+    night: sleep && !F.sleep.nights[today]?.bed,
+    extra: !D.extraDay(F, today) && (F.sections.some(sec => sec.on) || F.weekly.some(w => !w.archivedAt)),
+  };
 }
 
 // Места: больше счёт — выше; при равном счёте выше тот, у кого больше закрытых дней, но место общее: 1, 1, 3.
@@ -228,9 +263,10 @@ export function ranked(list) {
   return out;
 }
 
-const ORDER = { streak: 0, week: 1, step: 2, onepct: 3, add: 4, remove: 5 };
+const ORDER = { streak: 0, week: 1, note: 2, step: 3, onepct: 4, add: 5, remove: 6 };
 
-// Лента изменений: новые и убранные пункты, шаг отбоя, «1% недели», круглые серии, неделя счётчика в цель.
+// Лента изменений: новые и убранные пункты, шаг отбоя, «1% недели», круглые серии, неделя счётчика в цель,
+// записи «Что сделано» в открытых разделах.
 // Всё выводится из самого состояния — отдельного журнала нет. Свежие сверху.
 export function changes({ F, today, hidden = new Set(), sleep = true, onepct = true, tz = '' }, limit = 12) {
   const out = [];
@@ -269,6 +305,7 @@ export function changes({ F, today, hidden = new Set(), sleep = true, onepct = t
       if (D.isMilestone(run)) push(d, 'streak', { n: run });
     } else if (st === 'miss' && ++misses >= 2) run = 0;
   }
+  for (const sec of F.sections) for (const [d, text] of D.secNotes(F, sec, F.createdAt, today)) push(d, 'note', { section: sec, text });
   for (const w of F.weekly) {
     const weeks = new Map();
     for (const d of F.weekMarks[w.id] || []) {

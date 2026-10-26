@@ -124,3 +124,8 @@ test('закрытый день: белый текст на всём закат�
     need(t, 'on-sun', mix(t['sunset-2'], t['sunset-3'], 0.5), 4.5, name + ' середина 2');
   }
 });
+
+test('поле в фокусе — без розовой рамки (видно по курсору, как в iOS); кнопкам с клавиатуры рамка остаётся', () => {
+  assert.match(noComments, /input:focus-visible, textarea:focus-visible\s*\{\s*outline:\s*none;\s*\}/);
+  assert.match(noComments, /:focus-visible\s*\{\s*outline:\s*var\(--bw\) solid var\(--accent\)/);
+});

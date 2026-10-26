@@ -644,8 +644,8 @@ test('отметки разделов: сегодня и вчера, не ран
   assert.equal(D.toggleSecMark(s, 'нет', '2026-10-05', '2026-10-05'), false);
   assert.deepEqual(s.secMarks[g.id], ['2026-10-04', '2026-10-05']);
   assert.ok(D.secDone(s, g.id, '2026-10-05'));
-  assert.deepEqual(D.secDay(s, sec, '2026-10-05'), { items: [g], k: 1, n: 1 });
-  assert.deepEqual(D.secDay(s, sec, '2026-10-02'), { items: [], k: 0, n: 0 });
+  assert.deepEqual(D.secDay(s, sec, '2026-10-05'), { items: [g], k: 1, n: 1, rec: null, active: true });
+  assert.deepEqual(D.secDay(s, sec, '2026-10-02'), { items: [], k: 0, n: 0, rec: null, active: false });
   assert.equal(JSON.stringify([D.progress(s, '2026-10-05', '2026-10-05'), D.history(s, '2026-10-05'), D.weekSummary(s, '2026-09-28', '2026-10-05')]), before);
   assert.ok(D.toggleSecMark(s, g.id, '2026-10-05', '2026-10-05'));
   assert.ok(D.toggleSecMark(s, g.id, '2026-10-04', '2026-10-05'));
@@ -658,6 +658,59 @@ test('отметки разделов: сегодня и вчера, не ран
   assert.ok(D.removeSection(s, sec.id));
   assert.deepEqual([s.sections, s.secMarks], [[], {}], 'удалённый раздел уносит пункты и отметки');
   assert.equal(D.removeSection(s, sec.id), false);
+});
+
+test('«Что сделано» (v60): день раздела без пунктов — отметка и запись одной строкой; сегодня и вчера', () => {
+  const s = mk('2026-10-01');
+  const sec = D.addSection(s, { name: 'Учёба', icon: 'cap', color: 'purple' }, '2026-10-03', sids());
+  const before = JSON.stringify([D.progress(s, '2026-10-05', '2026-10-05'), D.history(s, '2026-10-05')]);
+  assert.equal(D.secRec(s, sec.id, '2026-10-05'), null);
+  assert.ok(D.setSecRec(s, sec.id, '2026-10-05', '2026-10-05', ''), 'просто отметка — пустая запись');
+  assert.equal(D.secRec(s, sec.id, '2026-10-05'), '');
+  assert.ok(D.setSecRec(s, sec.id, '2026-10-04', '2026-10-05', '  домашка\nпо алгебре  '), 'вчера — можно');
+  assert.equal(D.secRec(s, sec.id, '2026-10-04'), 'домашка по алгебре', 'одна строка без краёв');
+  assert.equal(D.setSecRec(s, sec.id, '2026-10-03', '2026-10-05', 'x'), false, 'раньше вчера — нельзя');
+  assert.equal(D.setSecRec(s, sec.id, '2026-10-02', '2026-10-03', 'x'), false, 'до раздела — нельзя');
+  assert.equal(D.setSecRec(s, 'нет', '2026-10-05', '2026-10-05', 'x'), false);
+  assert.ok(D.setSecRec(s, sec.id, '2026-10-05', '2026-10-05', 'ф'.repeat(500)));
+  assert.equal(D.secRec(s, sec.id, '2026-10-05').length, D.SEC_NOTE_MAX);
+  assert.deepEqual(D.secDay(s, sec, '2026-10-04'), { items: [], k: 0, n: 0, rec: 'домашка по алгебре', active: true });
+  assert.ok(D.secActive(s, sec, '2026-10-04'));
+  assert.deepEqual(D.secNotes(s, sec, '2026-10-01', '2026-10-05').map(x => x[0]), ['2026-10-05', '2026-10-04'], 'свежие первыми');
+  assert.equal(JSON.stringify([D.progress(s, '2026-10-05', '2026-10-05'), D.history(s, '2026-10-05')]), before, 'минимум и серия не видят');
+  assert.ok(D.setSecRec(s, sec.id, '2026-10-05', '2026-10-05', null));
+  assert.ok(D.setSecRec(s, sec.id, '2026-10-04', '2026-10-05', null));
+  assert.equal(s.secDays[sec.id], undefined, 'пустой раздел записей не копится');
+  D.setSecRec(s, sec.id, '2026-10-05', '2026-10-05', 'x');
+  assert.ok(D.removeSection(s, sec.id));
+  assert.deepEqual(s.secDays, {}, 'удалённый раздел уносит записи');
+});
+
+test('«Прогресс» раздела — дни с делом: запись или пункт; сверх минимума — раздел или недельный счётчик', () => {
+  const s = mk('2026-09-01');
+  const sec = D.addSection(s, { name: 'Работа' }, '2026-10-07', sids()); // ср
+  const it = D.addSecItem(s, sec.id, { name: 'Фокус' }, '2026-10-07', () => 'f');
+  s.secMarks.f = ['2026-10-07', '2026-10-08', '2026-10-13'];
+  s.secDays[sec.id] = { '2026-10-08': 'созвон', '2026-10-09': '', '2026-10-14': 'отчёт' };
+  const w = D.secWeeks(s, sec, '2026-10-14', 3); // недели 28.09, 5.10, 12.10; сегодня — ср 14.10
+  assert.deepEqual(w.map(x => [x.monday, x.count, x.possible]), [['2026-09-28', 0, 0], ['2026-10-05', 3, 5], ['2026-10-12', 2, 3]]);
+  assert.ok(D.extraDay(s, '2026-10-09'));
+  assert.ok(!D.extraDay(s, '2026-10-10'));
+  D.toggleWeekMark(s, s.weekly[0].id, '2026-10-10', '2026-10-10');
+  assert.ok(D.extraDay(s, '2026-10-10'), 'недельный счётчик — тоже сверх минимума');
+  D.setSectionOn(s, sec.id, false);
+  assert.ok(!D.extraDay(s, '2026-10-09'), 'выключенный раздел не считается');
+  assert.equal(it.id, 'f');
+});
+
+test('недельный счётчик: отметить можно сегодня и вчера (лист дня), не раньше счётчика', () => {
+  const s = mk('2026-10-01');
+  const id = s.weekly[0].id;
+  assert.ok(D.toggleWeekMark(s, id, '2026-10-04', '2026-10-05'), 'вчера — можно');
+  assert.equal(D.toggleWeekMark(s, id, '2026-10-03', '2026-10-05'), false, 'позавчера — нельзя');
+  assert.equal(D.toggleWeekMark(s, 'нет', '2026-10-05', '2026-10-05'), false);
+  assert.ok(D.toggleWeekMark(s, id, '2026-10-04', '2026-10-05'));
+  assert.equal(s.weekMarks[id], undefined, 'пустой список отметок не копится');
 });
 
 test('детали пункта раздела: неделя, 4 недели, всего; клетки без пропусков', () => {
@@ -696,6 +749,8 @@ test('нормализация разделов: мусор выброшен, id
     { id: 'm', name: 'Музыка', icon: 'star', color: 'blue', on: true, addedAt: '2026-09-01', items: [] },
   ]);
   assert.deepEqual(n.secMarks, { w1: ['2026-09-04', '2026-09-05'] });
+  raw.secDays = { w: { '2026-09-05': ' созвон\n', 'не дата': 'x', '2026-09-06': 5 }, zz: { '2026-09-05': 'чужой' }, m: 'bad', constructor: { '2026-09-05': 'x' } };
+  assert.deepEqual(D.normalize(raw, '2026-09-10').secDays, { w: { '2026-09-05': 'созвон' } }, 'записи — только своих разделов');
   assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(n)), '2026-09-10'), n);
   raw.sections = Array.from({ length: 12 }, (_, i) => ({ id: 's' + i, name: 'Р' + i, items: Array.from({ length: 30 }, (_, k) => ({ id: `s${i}-${k}`, name: 'п' }) ) }));
   const big = D.normalize(raw, '2026-09-10');

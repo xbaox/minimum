@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as D from '../domain.js';
 import { baoSeed } from './fixtures.js';
-import { shareOf, readShare, summaryOf, changes, logicalDateIn, clean, weekScore, ranked, HIDDEN_NAME, NIGHTS_KEEP } from '../share.js';
+import { shareOf, readShare, summaryOf, changes, logicalDateIn, clean, weekScore, scoreLeft, ranked, HIDDEN_NAME, NIGHTS_KEEP, SEC_DAYS } from '../share.js';
 
 const ids = () => { let n = 0; return () => 'uuid-' + ++n + '-xxxxxxxxxxxxxxxx'; };
 const mk = createdAt => baoSeed(createdAt, ids());
@@ -221,27 +221,33 @@ test('чистка текста: без \\u0000 и половинок сурро
   assert.equal(clean('\uDE00x'), '�x');
 });
 
-test('гонка недели: счёт — закрытые дни + ночи в цель с понедельника, у друга — из его снимка', () => {
-  const s = life(); // пн 19 и вт 20 закрыты, сегодня 3 из 8; шаг с 19-го — 00:30, отбой 00:45 — мимо
+test('гонка недели: очко за закрытый день, ночь в цель и дело сверх минимума; у друга — из его снимка', () => {
+  const s = life(); // пн 19 и вт 20 закрыты и отмечена «Тренировка», сегодня 3 из 8; шаг с 19-го — 00:30, отбой 00:45 — мимо
   const me = { F: s, today: TODAY, sleep: true };
-  assert.deepEqual(weekScore(me, '2026-10-19'), { closed: 2, nights: 0, score: 2 });
-  // прошлая неделя целиком: 7 закрытых дней, 7 ночей в цель (шаг тогда был 01:00)
-  assert.deepEqual(weekScore(me, '2026-10-12'), { closed: 7, nights: 7, score: 14 });
+  assert.deepEqual(weekScore(me, '2026-10-19'), { closed: 2, nights: 0, extra: 2, score: 4 });
+  // прошлая неделя целиком: 7 закрытых дней, 7 ночей в цель (шаг тогда был 01:00), сверх минимума — ничего
+  assert.deepEqual(weekScore(me, '2026-10-12'), { closed: 7, nights: 7, extra: 0, score: 14 });
   // тот же счёт — у друга из снимка; скрыл сон — ночи не в счёт
   const v = readShare(shareOf(s, TODAY, { tz: 'America/Toronto' }), at(TODAY, 20));
-  assert.deepEqual(weekScore(v, '2026-10-12'), { closed: 7, nights: 7, score: 14 });
+  assert.deepEqual(weekScore(v, '2026-10-12'), { closed: 7, nights: 7, extra: 0, score: 14 });
+  assert.deepEqual(weekScore(v, '2026-10-19'), weekScore(me, '2026-10-19'));
   const hidden = readShare(shareOf(s, TODAY, { tz: 'America/Toronto', sleep: false }), at(TODAY, 20));
   assert.equal(hidden.sleep, false);
-  assert.deepEqual(weekScore(hidden, '2026-10-12'), { closed: 7, nights: 0, score: 7 });
-  // сегодня закрыт — +1 сразу; будущие дни недели не считаются
+  assert.deepEqual(weekScore(hidden, '2026-10-12'), { closed: 7, nights: 0, extra: 0, score: 7 });
+  // что ещё даст очки сегодня: день не закрыт, ночь отмечена, сверх минимума — ещё нет
+  assert.deepEqual(scoreLeft(me), { day: true, night: false, extra: true });
+  // сегодня закрыт и отмечена тренировка — +2 сразу; будущие дни недели не считаются
   closeDay(s, TODAY);
-  assert.deepEqual(weekScore(me, '2026-10-19'), { closed: 3, nights: 0, score: 3 });
-  // новичок с середины недели: дни до посева и утро посева — не в счёт
-  const fresh = mk(TODAY);
+  D.toggleWeekMark(s, s.weekly[0].id, TODAY, TODAY);
+  assert.deepEqual(weekScore(me, '2026-10-19'), { closed: 3, nights: 0, extra: 3, score: 6 });
+  assert.deepEqual(scoreLeft(me), { day: false, night: false, extra: false });
+  // новичок с середины недели: дни до посева и утро посева — не в счёт; сверх минимума ему негде — не предлагаем
+  const fresh = D.seed(TODAY);
   fresh.sleep.nights['2026-10-20'] = { bed: '23:00', wake: '07:00' };
-  assert.deepEqual(weekScore({ F: fresh, today: TODAY, sleep: true }, '2026-10-19'), { closed: 0, nights: 0, score: 0 });
+  assert.deepEqual(weekScore({ F: fresh, today: TODAY, sleep: true }, '2026-10-19'), { closed: 0, nights: 0, extra: 0, score: 0 });
+  assert.deepEqual(scoreLeft({ F: fresh, today: TODAY, sleep: true }), { day: true, night: true, extra: false });
   // неделя, которая ещё не началась у этого «сегодня», — ноль
-  assert.deepEqual(weekScore(me, '2026-10-26'), { closed: 0, nights: 0, score: 0 });
+  assert.deepEqual(weekScore(me, '2026-10-26'), { closed: 0, nights: 0, extra: 0, score: 0 });
 });
 
 test('гонка недели: места по счёту, при равном — общее место, выше тот, у кого больше закрытых дней', () => {
@@ -279,7 +285,7 @@ test('чужой снимок с id «constructor» не роняет сводк
   assert.ok(!v.F.weekly.some(w => w.id === 'constructor') && !v.F.items.some(i => i.id === 'toString'));
 });
 
-test('открытый раздел уходит с пунктами и отметками за две недели; закрытый и выключенный — нет', () => {
+test('открытый раздел уходит с пунктами и отметками за три недели; закрытый и выключенный — нет', () => {
   const s = life();
   const id = (() => { let n = 0; return () => 'sec-' + ++n; })();
   const work = D.addSection(s, { name: 'Работа', icon: 'briefcase', color: 'blue' }, '2026-10-01', id);
@@ -289,7 +295,7 @@ test('открытый раздел уходит с пунктами и отме
   D.addSecItem(s, hobby.id, { name: 'Тайный пункт' }, '2026-10-01', id);
   const off = D.addSection(s, { name: 'Выключенный' }, '2026-10-01', id);
   off.on = false;
-  s.secMarks[focus.id] = ['2026-10-02', '2026-10-08', '2026-10-15', '2026-10-21'];
+  s.secMarks[focus.id] = ['2026-09-29', '2026-10-02', '2026-10-08', '2026-10-15', '2026-10-21'];
   s.secMarks[mail.id] = ['2026-10-20'];
   const snap = shareOf(s, TODAY, { tz: 'America/Toronto', sections: [work.id, off.id, 'нет такого'] });
   assert.equal(snap.sections.length, 1);
@@ -297,15 +303,20 @@ test('открытый раздел уходит с пунктами и отме
   for (const secret of ['Тайное хобби', 'Тайный пункт', 'Выключенный', 'sec-']) assert.ok(!text.includes(secret), secret);
   const [sec] = snap.sections;
   assert.deepEqual([sec.name, sec.icon, sec.color, sec.items.length], ['Работа', 'briefcase', 'blue', 2]);
-  assert.equal(sec.items[0].m, '10000001000001', 'две недели: 08.10 — первая буква, 21.10 — последняя');
+  assert.equal(sec.items[0].m, '010000010000001000001', 'три недели: 01.10 — первая буква, 21.10 — последняя');
+  assert.equal(sec.items[0].m.length, SEC_DAYS);
+  assert.equal(sec.d, '0'.repeat(SEC_DAYS), 'день раздела без записей — нули');
+  assert.equal('t' in sec, false, 'записей с текстом нет — поля нет');
   assert.equal(new Set([...snap.items, ...snap.weekly, sec, ...sec.items].map(x => x.id)).size, snap.items.length + snap.weekly.length + 3, 'id не пересекаются');
   const v = readShare(JSON.parse(text), at(TODAY, 20));
   assert.equal(v.F.sections.length, 1);
   const [fs] = v.F.sections;
   assert.deepEqual(fs.items.map(i => i.name), ['Фокус', 'Почта']);
-  assert.deepEqual(v.F.secMarks[fs.items[0].id], ['2026-10-08', '2026-10-15', '2026-10-21'], 'старше двух недель — не уходит');
-  assert.deepEqual(D.secDay(v.F, fs, v.today), { items: fs.items, k: 1, n: 2 });
-  assert.deepEqual(weekScore(v, '2026-10-19'), weekScore(readShare(JSON.parse(JSON.stringify(shareOf(s, TODAY, { tz: 'America/Toronto' }))), at(TODAY, 20)), '2026-10-19'), 'гонка — только минимум');
+  assert.deepEqual(v.F.secMarks[fs.items[0].id], ['2026-10-02', '2026-10-08', '2026-10-15', '2026-10-21'], 'старше трёх недель — не уходит');
+  assert.deepEqual(D.secDay(v.F, fs, v.today), { items: fs.items, k: 1, n: 2, rec: null, active: true });
+  // гонка: открытый раздел — дело сверх минимума (сегодня 21-го), закрытый — нет
+  const closed = readShare(JSON.parse(JSON.stringify(shareOf(s, TODAY, { tz: 'America/Toronto' }))), at(TODAY, 20));
+  assert.deepEqual([weekScore(v, '2026-10-19').extra, weekScore(closed, '2026-10-19').extra], [3, 2]);
   // без открытых разделов снимок прежний — без поля sections
   assert.equal('sections' in shareOf(s, TODAY, { tz: 'America/Toronto' }), false);
 });
@@ -318,8 +329,40 @@ test('чужие разделы — недоверенные данные: ст�
   ];
   const v = readShare(snap, at(TODAY, 20));
   assert.deepEqual(v.F.sections.map(x => x.items.map(i => i.id)), [['s2', 's3']]);
-  assert.equal(v.F.secMarks.s2.length, 14, 'не больше двух недель');
+  assert.equal(v.F.secMarks.s2.length, SEC_DAYS, 'не больше трёх недель');
   assert.equal(v.F.secMarks.s2.at(-1), TODAY);
   assert.equal(v.F.secMarks.s3, undefined);
   assert.equal(Object.getPrototypeOf(v.F.secMarks), Object.prototype);
+  // день раздела: строка обрезается, текст — только строкой и не длиннее SEC_NOTE_MAX, мусор — пустая отметка
+  snap.sections = [{ id: 's1', name: 'Учёба', d: '1'.repeat(500), t: { [TODAY]: 'х'.repeat(900), '2026-10-20': 42, 'не дата': 'x', constructor: 'x' } }];
+  const w = readShare(snap, at(TODAY, 20));
+  const days = w.F.secDays.s1;
+  assert.equal(Object.keys(days).length, SEC_DAYS);
+  assert.equal(days[TODAY].length, D.SEC_NOTE_MAX);
+  assert.equal(days['2026-10-20'], '');
+  assert.equal(Object.getPrototypeOf(w.F.secDays), Object.prototype);
+});
+
+test('«Что сделано» друзьям (v60): у открытого раздела — отметки дня за три недели и записи за неделю; в ленте — записи', () => {
+  const s = life();
+  const study = D.addSection(s, { name: 'Учёба', icon: 'cap', color: 'purple' }, '2026-10-01', () => 'sec-study');
+  const secret = D.addSection(s, { name: 'Тайный раздел' }, '2026-10-01', () => 'sec-secret');
+  s.secDays[study.id] = { '2026-10-10': 'давняя запись', '2026-10-16': '', '2026-10-19': 'домашка', [TODAY]: 'ф'.repeat(250) };
+  s.secDays[secret.id] = { [TODAY]: 'никому' };
+  const snap = shareOf(s, TODAY, { tz: 'America/Toronto', sections: [study.id] });
+  const text = JSON.stringify(snap);
+  for (const x of ['Тайный раздел', 'никому', 'давняя запись']) assert.ok(!text.includes(x), x);
+  const [sec] = snap.sections;
+  assert.equal(sec.d.length, SEC_DAYS);
+  assert.equal(sec.d.slice(-6), '100101', '16.10, 19.10 и сегодня');
+  assert.deepEqual(Object.keys(sec.t).sort(), ['2026-10-19', TODAY], 'тексты — за неделю, пустая отметка — без текста');
+  assert.equal(sec.t[TODAY].length, 200);
+  const v = readShare(JSON.parse(text), at(TODAY, 20));
+  const [fs] = v.F.sections;
+  assert.deepEqual(v.F.secDays[fs.id], { '2026-10-10': '', '2026-10-16': '', '2026-10-19': 'домашка', [TODAY]: 'ф'.repeat(200) }, 'старая запись — только отметкой');
+  assert.deepEqual(D.secDay(v.F, fs, v.today), { items: [], k: 0, n: 0, rec: 'ф'.repeat(200), active: true });
+  const notes = changes(v).filter(e => e.kind === 'note');
+  assert.deepEqual(notes.map(e => [e.date, e.section.name, e.text.length]), [[TODAY, 'Учёба', 200], ['2026-10-19', 'Учёба', 7]]);
+  // раздел без пунктов — тоже сверх минимума: 19-го уже была тренировка, сегодня — запись
+  assert.deepEqual(weekScore(v, '2026-10-19').extra, 3);
 });
