@@ -404,13 +404,21 @@ export function finishSetup(s, today) {
 
 // ---------- план и статус дня
 
-// Сегодня (и вчера без записи) — живой план; прошлые дни — свой снимок;
-// день без записи восстанавливается по addedAt/archivedAt.
+// Сегодня — живой план; прошлые дни — свой снимок; день без записи (и вчера тоже) восстанавливается по
+// addedAt/archivedAt: пункт, добавленный сегодня, не попадает во вчера — пустой вчера минимум не становится пропуском.
 export function planOf(s, date, today) {
+  if (date === today) return activeIds(s);
   const rec = s.days[date];
-  if (date === today || (!rec && date === addDays(today, -1))) return activeIds(s);
   if (rec) return rec.plan;
   return s.items.filter(i => i.addedAt <= date && (!i.archivedAt || i.archivedAt > date)).map(i => i.id);
+}
+
+// Первый день минимума: день посева, а если минимум начинали пустым — день первого пункта.
+// Незакрытым он не пропуск: пункты могли появиться и вечером.
+export function firstDay(s) {
+  let d = '';
+  for (const i of s.items) if (!d || i.addedAt < d) d = i.addedAt;
+  return d > s.createdAt ? d : s.createdAt;
 }
 
 export const doneOf = (s, date) => s.days[date]?.done || [];
@@ -426,7 +434,7 @@ export function status(s, date, today) {
   if (!n) return 'none';
   if (k === n) return 'closed';
   if (date === today) return 'pending';
-  return date === s.createdAt ? 'none' : 'miss';
+  return date === s.createdAt || date === firstDay(s) ? 'none' : 'miss';
 }
 
 export const canEdit = (s, date, today) => date >= s.createdAt && (date === today || date === addDays(today, -1));
@@ -491,7 +499,7 @@ export function itemStatus(s, id, date, today) {
   if (date < s.createdAt || date > today || !planOf(s, date, today).includes(id)) return 'none';
   if (doneOf(s, date).includes(id)) return 'closed';
   if (date === today) return 'pending';
-  return date === s.createdAt ? 'none' : 'miss';
+  return date === s.createdAt || date === firstDay(s) ? 'none' : 'miss';
 }
 
 // ---------- недельные счётчики

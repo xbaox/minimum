@@ -26,7 +26,7 @@ afterEach(() => {
 function withSections(today, back = 10) {
   let n = 0;
   const S = baoSeed(addDays(today, -back), () => 'i' + ++n);
-  S.ui = { welcomeSeen: true, news: 'v58', lastExport: today };
+  S.ui = { welcomeSeen: true, news: 'v59', lastExport: today };
   const ids = activeIds(S);
   for (const d of range(S.createdAt, addDays(today, -1))) S.days[d] = { plan: ids.slice(), done: [] };
   const w = addSection(S, { name: 'Работа', icon: 'briefcase', color: 'blue' }, S.createdAt, () => 'sec-w');
@@ -141,9 +141,12 @@ test('первая настройка: привет → минимум → со�
   a.click('Отжимания', '.pick'); // свой — снимается и исчезает
   assert.ok(!a.app.state.items.some(i => i.name === 'Отжимания'));
   for (const n of ['Стакан воды', 'План на завтра', 'Телефон на кухню', 'Чтение', 'Растяжка']) a.click(n, '.pick');
-  assert.equal(a.doc.querySelector('.setup-foot .btn-primary').disabled, true, 'пустой минимум — дальше нельзя');
-  assert.match(a.text(), /Выбери хотя бы один пункт/);
+  const main = () => a.doc.querySelector('.setup-foot .btn-primary');
+  assert.deepEqual([main().disabled, main().textContent], [false, 'Добавлю потом'], 'пустой минимум — можно: пункты добавятся потом');
+  assert.match(a.text(), /Выбрано 0/);
+  assert.match(a.text(), /Можно и без пунктов: добавишь потом на «Сегодня» — из этих же подсказок или свои/);
   for (const n of ['Стакан воды', 'Телефон на кухню', 'Чтение']) a.click(n, '.pick');
+  assert.equal(main().textContent, 'Дальше');
   a.clean('минимум');
   a.next();
 
@@ -225,7 +228,7 @@ test('первая настройка: привет → минимум → со�
   assert.equal(a.doc.querySelector('main.setup'), null);
   assert.ok(a.doc.querySelector('.tabbar'));
   const S = a.app.state;
-  assert.deepEqual([S.createdAt, S.since, S.ui.setup, S.ui.welcomeSeen, S.ui.news], ['2026-10-26', '2026-10-26', false, true, 'v58']);
+  assert.deepEqual([S.createdAt, S.since, S.ui.setup, S.ui.welcomeSeen, S.ui.news], ['2026-10-26', '2026-10-26', false, true, 'v59']);
   assert.deepEqual(S.sleep.targets, [{ from: '2026-10-26', bed: '23:15' }]); // 7 ч 15 мин до подъёма 6:30
   assert.deepEqual([...a.doc.querySelectorAll('.list-min > .row .name')].map(e => e.textContent), ['Стакан воды', 'Телефон на кухню', 'Чтение']);
   assert.doesNotMatch(a.text(), /Новый минимум|Что нового/);
@@ -258,6 +261,71 @@ test('настройка переживает перезапуск: выборы
   b.next();
   assert.equal(b.doc.querySelector('main.setup'), null);
   assert.equal(b.all('.list-min > .row').length, 5);
+  b.done();
+});
+
+test('«Добавлю потом»: настройка без пунктов → «Сегодня» с подсказками; пункты вечером — ни вчера, ни их первый день не пропуск', async () => {
+  const a = await start(); // понедельник 26 октября, без сервера
+  a.next();
+  for (const n of ['Стакан воды', 'Зарядка', 'План на завтра', 'Телефон на кухню', 'Чтение']) a.click(n, '.pick');
+  a.click('Добавлю потом', '.setup-foot button');
+  a.next();
+  assert.match(a.text(), /Можно и без разделов — добавишь потом в Настройках/);
+  assert.doesNotMatch(a.text(), /Что видят друзья/, 'без сервера — ни слова о друзьях');
+  assert.equal(a.doc.querySelector('.setup-foot .btn-primary').textContent, 'Начать');
+  a.next();
+  assert.equal(a.doc.querySelector('main.setup'), null);
+  assert.deepEqual([a.app.state.items, a.app.state.createdAt], [[], '2026-10-26']);
+  assert.equal(a.all('.list-min > .row').length, 0);
+  assert.match(a.text(), /Из подсказок11 пунктов на выборСвой пункт/);
+  a.clean('пустое «Сегодня»');
+  // вторник прошёл пустым; в среду вечером — первые пункты
+  a.t.now = new Date(2026, 9, 28, 21, 0);
+  a.app.render();
+  a.click('Из подсказок', '.row');
+  a.click('Стакан воды', '.sheet .pick');
+  a.click('Зарядка', '.sheet .pick');
+  a.doc.getElementById('sheet-done').click();
+  await wait();
+  assert.deepEqual(a.all('.list-min > .row .name').map(e => e.textContent), ['Стакан воды', 'Зарядка']);
+  assert.doesNotMatch(a.text(), /Вчера/, 'во вторник минимум был пуст — он не пропуск и не «доотметить»');
+  // среду не закрыли: в четверг она не пропуск — первый день минимума; доотметить её можно
+  a.t.now = new Date(2026, 9, 29, 9, 0);
+  a.app.render();
+  assert.match(a.text(), /Вчера: 0 из 2/);
+  assert.doesNotMatch(a.text(), /не пропускай дважды/);
+  a.click('Прогресс', '.tab');
+  a.all('.chain button.cell').find(c => sp(c.getAttribute('aria-label')).includes('28 октября')).click();
+  assert.equal(sp(a.sheet().querySelector('.day-status').textContent), 'Первый день — не в счёт · 0 из 2');
+  a.click('Готово', '.sheet-act');
+  // четверг тоже не закрыли — в пятницу обычное правило: пропуск, прощённый
+  a.t.now = new Date(2026, 9, 30, 9, 0);
+  a.click('Сегодня', '.tab');
+  assert.match(a.text(), /Вчера пропуск — сегодня не пропускай дважды/);
+  a.done();
+});
+
+test('новый раздел после настройки — готовые одним касанием; в самой настройке их нет — там они списком', async () => {
+  const a = await start({ storage: withSections('2026-10-26') }); // уже есть «Работа» и «Хобби»
+  a.click('Настройки', '.tab');
+  a.click('Добавить раздел', '.plus-row');
+  assert.deepEqual([...a.sheet().querySelectorAll('.chip')].map(c => c.textContent), ['Учёба']);
+  a.click('Учёба', '.sheet .chip');
+  assert.equal(a.sheet().querySelector('input[name="name"]').value, 'Учёба');
+  assert.equal(a.sheet().querySelector('.pv-name').textContent, 'Учёба');
+  assert.equal(a.sheet().querySelector('.chip').getAttribute('aria-pressed'), 'true');
+  a.doc.getElementById('sheet-done').click();
+  await wait();
+  const sec = a.app.state.sections.at(-1);
+  assert.deepEqual([sec.name, sec.icon, sec.color], ['Учёба', 'cap', 'purple']);
+  a.click('Добавить раздел', '.plus-row');
+  assert.equal(a.sheet().querySelector('.chip'), null, 'все готовые уже есть');
+  a.click('Отмена', '.sheet-act');
+  a.done();
+  const b = await start();
+  for (let i = 0; i < 3; i++) b.next();
+  b.click('Свой раздел', '.plus-row');
+  assert.equal(b.sheet().querySelector('.chip'), null);
   b.done();
 });
 

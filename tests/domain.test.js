@@ -151,6 +151,46 @@ test('вчера правится (запись создаётся с актив
   assert.equal(D.toggleDone(s2, '2026-09-09', s2.items[0].id, '2026-09-10'), false);
 });
 
+test('вчера без записи — пункты, которые вчера уже были: добавленный сегодня не там, убранный сегодня — там', () => {
+  const s = mk('2026-09-01');
+  const today = '2026-09-10', old = s.items[0].id;
+  const it = D.addItem(s, { name: 'Вода', icon: 'glass', color: 'teal' }, false, today, () => 'new');
+  D.archiveItem(s, old, today);
+  const y = D.planOf(s, '2026-09-09', today);
+  assert.ok(!y.includes(it.id), 'вчера пункта ещё не было');
+  assert.ok(y.includes(old), 'вчера пункт ещё был');
+  assert.ok(D.toggleDone(s, '2026-09-09', old, today));
+  assert.deepEqual(s.days['2026-09-09'].plan, y, 'запись вчера — с тем же планом');
+  assert.equal(D.toggleDone(s, '2026-09-09', it.id, today), false);
+});
+
+test('минимум начали пустым: первые пункты вчера не делают пропуском, а их первый день незакрытым — не пропуск', () => {
+  const s = D.seed('2026-10-01', ids());
+  s.items = [];
+  s.ui.setup = false;
+  assert.equal(D.firstDay(s), '2026-10-01');
+  assert.equal(D.status(s, '2026-10-02', '2026-10-04'), 'none');
+  const it = D.addItem(s, { name: 'Вода', icon: 'glass', color: 'teal' }, false, '2026-10-04');
+  D.syncToday(s, '2026-10-04');
+  assert.equal(D.firstDay(s), '2026-10-04');
+  assert.deepEqual(D.planOf(s, '2026-10-03', '2026-10-04'), []);
+  assert.equal(D.status(s, '2026-10-03', '2026-10-04'), 'none', 'вчера минимум был пуст — не пропуск');
+  assert.equal(D.status(s, '2026-10-04', '2026-10-04'), 'pending');
+  // первый день с пунктами не закрыт — не пропуск (как день посева); дальше — обычное правило
+  assert.equal(D.status(s, '2026-10-04', '2026-10-06'), 'none');
+  assert.equal(D.status(s, '2026-10-05', '2026-10-06'), 'miss');
+  assert.equal(D.itemStatus(s, it.id, '2026-10-04', '2026-10-06'), 'none');
+  assert.equal(D.itemStatus(s, it.id, '2026-10-05', '2026-10-06'), 'miss');
+  const h = D.history(s, '2026-10-06');
+  assert.deepEqual([h.marks['2026-10-04'], h.marks['2026-10-05'], h.streak], ['none', 'forgiven', 0]);
+  // закрыт — считается как обычно
+  s.days['2026-10-04'].done = [it.id];
+  assert.equal(D.status(s, '2026-10-04', '2026-10-06'), 'closed');
+  assert.equal(D.history(s, '2026-10-06').streak, 1);
+  // у старого телефона первый день — день посева
+  assert.equal(D.firstDay(mk('2026-09-01')), '2026-09-01');
+});
+
 test('недельный счёт пн–вс, не больше одной отметки в день', () => {
   const s = mk('2026-09-01');
   const id = s.weekly[0].id;

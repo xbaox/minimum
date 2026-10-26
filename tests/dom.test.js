@@ -141,7 +141,7 @@ test('первый старт со старыми ключами: стёрто, 
   assert.doesNotMatch(a.text(), /На неделе/);
   assert.equal(a.doc.querySelectorAll('.tile svg path').length >= 5, true); // значки, а не эмодзи
   assert.doesNotMatch(a.text(), /Новый минимум|Что нового/); // настройка уже всё объяснила
-  assert.equal(a.app.state.ui.news, 'v58');
+  assert.equal(a.app.state.ui.news, 'v59');
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Новый минимум|Что нового/);
   assert.equal(b.doc.querySelector('main.setup'), null);
@@ -156,7 +156,7 @@ test('«Что нового» — один раз для тех, кто уже �
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
   assert.equal(a.doc.querySelectorAll('.news li').length, 3);
-  assert.match(a.text(), /Разделы: «Работа», «Хобби» и свои/);
+  assert.match(a.text(), /Минимум можно начать пустым/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
   const b = await reboot(a);
@@ -662,7 +662,7 @@ test('итоги: выбранный шаг сна или «Notes разобра
 test('Настройки: добавить (11-й — переспрос), переименовать, ↑↓, убрать и вернуть', async () => {
   const a = await start(WED, { storage: fresh() });
   a.click('Настройки', '.tab');
-  const names = () => [...a.all('.screen > .group')[0].querySelectorAll('.row .name')].map(n => n.textContent).filter(n => n !== 'Добавить пункт');
+  const names = () => [...a.all('.screen > .group')[0].querySelectorAll('.row .name')].map(n => n.textContent).filter(n => n !== 'Добавить пункт' && n !== 'Из подсказок');
   const doneBtn = () => a.doc.getElementById('sheet-done');
   const add = name => {
     a.type(a.sheet().querySelector('input[name=name]'), name);
@@ -892,11 +892,79 @@ test('Прогресс рисуется: серия, цепь 6 недель, н
   a.done();
 });
 
-test('пустой минимум', async () => {
+test('пустой минимум — не тупик: «Из подсказок» и «Свой пункт» на «Сегодня», пустые «Прогресс» и лист дня', async () => {
+  const S = seed('2026-09-30');
+  Object.assign(S, { items: [] });
+  Object.assign(S.ui, { setup: false, welcomeSeen: true, news: 'v59' });
+  const a = await start(WED, { storage: { 'minimum.v2': JSON.stringify(S) } });
+  const clean = where => assert.doesNotMatch(a.doc.getElementById('app').textContent, /null|undefined|NaN/, where);
+  assert.equal(a.rows().length, 0);
+  assert.equal(sp(a.doc.querySelector('.topbar .tb-progress').textContent), 'Минимум пуст', 'не «0 из 0»');
+  assert.equal(a.doc.querySelector('.hero .count').textContent, '—');
+  assert.match(a.text(), /минимум пуст/);
+  assert.match(a.text(), /МинимумИз подсказок11 пунктов на выборСвой пункт/);
+  assert.match(a.text(), /Пока он пуст, день не закрывается и серия не растёт/);
+  assert.doesNotMatch(a.text(), /Настройках/, 'не отсылаем в Настройки — добавить можно прямо здесь');
+  clean('сегодня');
+  // «Прогресс» и лист сегодняшнего дня — без «0 из 0»
+  a.click('Прогресс', '.tab');
+  assert.match(a.text(), /Минимум пуст — пункты добавляются на «Сегодня» и в Настройках/);
+  a.cell('30 сентября').click();
+  assert.equal(sp(a.sheet().querySelector('.day-status').textContent), 'Без минимума');
+  assert.match(sp(a.sheet().textContent), /Минимум пуст.*Минимум пока пуст/);
+  clean('лист дня');
+  a.click('Готово', '.sheet-act');
+  a.click('Сегодня', '.tab');
+  // подсказки: выбор — в листе, «Добавить» — только с выбором, случайный тап мимо переспрашивает
+  a.click('Из подсказок', '.row');
+  assert.equal(sp(a.sheet().querySelector('.sheet-title').textContent), 'Подсказки');
+  assert.equal(a.sheet().querySelectorAll('.pick').length, 11);
+  assert.equal(a.sheet().querySelectorAll('.pick[aria-pressed="true"]').length, 0);
+  const add = () => a.doc.getElementById('sheet-done');
+  assert.equal(add().disabled, true);
+  a.click('Растяжка', '.sheet .pick');
+  a.click('Стакан воды', '.sheet .pick');
+  assert.equal(add().disabled, false);
+  a.doc.querySelector('.sheet-back').click();
+  assert.match(sp(a.alertBox().textContent), /Закрыть без сохранения/);
+  a.alertBtn('Отмена');
+  clean('подсказки');
+  add().click();
+  await wait(10);
+  assert.equal(a.sheet(), null);
+  assert.deepEqual([...a.rows()].map(r => r.querySelector('.name').textContent), ['Стакан воды', 'Растяжка'], 'по порядку подсказок');
+  assert.equal(a.doc.querySelector('.min-empty'), null);
+  assert.equal(sp(a.doc.querySelector('.topbar .tb-progress').textContent), '0 из 2');
+  // в Настройках — рядом с «Добавить пункт»; больше десяти — переспрос; все подсказки взяты — строки нет
+  a.click('Настройки', '.tab');
+  assert.match(a.text(), /Добавить пунктИз подсказок9 пунктов на выбор/);
+  a.click('Из подсказок', '.row');
+  for (const p of [...a.sheet().querySelectorAll('.pick')]) p.click();
+  add().click();
+  assert.match(sp(a.alertBox().textContent), /В минимуме будет 11 пунктов/);
+  a.alertBtn('Добавить');
+  await wait(10);
+  assert.equal(a.app.state.items.length, 11);
+  assert.doesNotMatch(a.text(), /Из подсказок/);
+  a.done();
+});
+
+test('подсказка, убранная раньше, возвращается своим пунктом — с историей, в конец минимума', async () => {
   const a = await start(WED);
-  for (const it of a.app.state.items) it.archivedAt = '2026-09-30';
-  a.app.render();
-  assert.match(a.text(), /Минимум пуст — добавь пункты в Настройках/);
+  const water = a.app.state.items.find(i => i.name === 'Стакан воды');
+  a.click('Настройки', '.tab');
+  a.find('Стакан воды', '.row').click();
+  a.click('Убрать из минимума', '.sheet button');
+  a.alertBtn('Убрать');
+  await wait(10);
+  a.click('Из подсказок', '.row');
+  a.click('Стакан воды', '.sheet .pick');
+  a.doc.getElementById('sheet-done').click();
+  await wait(10);
+  const act = a.app.state.items.filter(i => !i.archivedAt);
+  assert.equal(act.at(-1), water, 'тот же пункт, не копия');
+  assert.equal(a.app.state.items.filter(i => i.name === 'Стакан воды').length, 1);
+  assert.doesNotMatch(a.text(), /Убранные/);
   a.done();
 });
 

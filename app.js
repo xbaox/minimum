@@ -34,13 +34,13 @@ const TAB_FRIENDS = ['friends', 'Друзья', ICONS.people[1]];
 const TABS = [['today', 'Сегодня', G.tabToday], ['progress', 'Прогресс', G.tabProgress], ['settings', 'Настройки', G.tabSettings]];
 // Новичку — шаблон, который правится в Настройках; цифры — из его же состояния.
 const WELCOME = (n, now, goal) =>
-  `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках. Сон — шагами от ${dur(now)} к${NB}${dur(goal)}: шаг выбираешь на итогах недели или в${NB}Настройках.`;
+  `${n ? `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках.` : 'Минимум пока пуст — пункты добавишь ниже: из подсказок или свои.'} Сон — шагами от ${dur(now)} к${NB}${dur(goal)}: шаг выбираешь на итогах недели или в${NB}Настройках.`;
 // «Что нового» — один раз для тех, кто уже пользовался; новичок видит первую настройку.
-const NEWS_ID = 'v58';
+const NEWS_ID = 'v59';
 const NEWS = [
-  'Разделы: «Работа», «Хобби» и свои — отдельно от минимума, на серию и гонку не влияют. Включаются в Настройках',
-  'На «Прогрессе» — графики разделов; открыть раздел друзьям — в «Что видят друзья»',
-  'Новый телефон начинает с первой настройки: минимум, сон, разделы и сразу код друга',
+  'Минимум можно начать пустым: «Добавлю потом» в первой настройке, а на «Сегодня» — «Из подсказок» и «Свой пункт»',
+  '«Из подсказок» — и в Настройках, рядом с «Добавить пункт»; в новом разделе — готовые «Работа», «Хобби», «Учёба»',
+  'Новый пункт не попадает во вчерашний день: вчера из-за него не станет пропуском',
 ];
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
 const SECTION_PRESETS = [
@@ -73,7 +73,7 @@ const FAIL = {
   bad_name: 'Нужно имя',
 };
 const failText = e => FAIL[e instanceof CloudError ? e.kind : ''] || 'Что-то пошло не так — попробуй ещё раз';
-const DAY_STATUS = { closed: 'День закрыт', forgiven: 'Пропуск — прощён', break: 'Пропуск', pending: 'Идёт сейчас', none: 'Без минимума' };
+const DAY_STATUS = { closed: 'День закрыт', forgiven: 'Пропуск — прощён', break: 'Пропуск', pending: 'Идёт сейчас', none: 'Без минимума', first: 'Первый день — не в счёт' };
 const CELL = { closed: 'закрыт', forgiven: 'пропуск прощён', break: 'пропуск', pending: 'сегодня', none: 'без отметок', future: '' };
 const BEFORE = [15, 30, 45, 60];
 const NIGHT_AUTOCLOSE = 1600;
@@ -467,6 +467,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (!sh) return false;
     if (sh.kind === 'review') return !!sh.choice || sh.draft.notesDone || ['good', 'bad', 'learned', 'improvement'].some(k => sh.draft[k].trim());
     if (sh.kind === 'item' || sh.kind === 'name' || sh.kind === 'section') return JSON.stringify(sh.draft) !== sh.orig;
+    if (sh.kind === 'suggest') return sh.picks.length > 0;
     return false;
   }
   function guardDirty() {
@@ -521,7 +522,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     return [
       topbar(h('p', { class: 'overline' }, `${WEEKDAYS[D.weekday(today)]}, ${dm(today)}`),
         h('span', { class: 'tb-progress' }, rings('tb-ring', 22, [8.5], 3.5, [{ kind: 'sun', f: n ? k / n : 0 }]),
-          h('span', { class: 'roll', 'data-roll': '' }, closed ? 'День закрыт' : `${k} из ${n}`)),
+          h('span', { class: 'roll', 'data-roll': '' }, closed ? 'День закрыт' : n ? `${k} из ${n}` : 'Минимум пуст')),
         h('span', { class: 'streak', role: 'img', 'aria-label': `Серия ${streak}` }, gl(G.flame), h('span', { class: 'roll', 'data-roll': '', 'aria-hidden': 'true' }, String(streak)))),
       title('Сегодня'),
       ui.restored && h('p', { key: 'restored', class: 'group notice-card', 'data-flip': '' }, 'Данные восстановлены из резервной копии'),
@@ -544,7 +545,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           const it = D.findItem(S, id);
           return itemRow(it, sum.done.includes(id), today, it.beforeBed ? `до${NB}${D.deadline(step, it.beforeBed)}` : '');
         }))
-        : h('p', { key: 'empty', class: 'group empty', 'data-flip': '' }, 'Минимум пуст — добавь пункты в Настройках'),
+        // Пустой минимум — не тупик: подсказки и свой пункт прямо здесь (первую настройку можно пройти без пунктов).
+        : [h('section', { key: 'min-empty', class: 'group min-empty', 'data-flip': '' }, suggestRow(), plusRow('own', 'Свой пункт', () => tryAdd(false))),
+          h('p', { key: 'min-foot', class: 'sec-foot', 'data-flip': '' }, 'Минимум — пара дел, выполнимых даже в худший день. Пока он пуст, день не закрывается и серия не растёт.')],
       weekly.length > 0 && [secH('h-week', 'На неделе'), h('section', { key: 'list-week', class: 'group list-week', 'data-flip': '' }, weekly.map(weekRow))],
       improvement && h('section', { key: 'onepct', class: 'group onepct', 'data-flip': '' }, h('div', { class: 'row' }, tile('sparkles', 'yellow'),
         h('span', { class: 'txt' }, h('span', { class: 'note' }, '1% недели'), h('span', { class: 'name' }, improvement)))),
@@ -850,6 +853,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       titleText = sh.id ? 'Раздел' : 'Новый раздел';
       right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: !sh.draft.name.trim(), onclick: () => saveSection(sh) }, 'Готово');
       body = sectionSheet(sh);
+    } else if (sh.kind === 'suggest') {
+      titleText = 'Подсказки';
+      body = suggestSheet(sh); // первым: выбор чистится от того, что уже в минимуме
+      right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: !sh.picks.length, onclick: () => addPicks(sh) }, 'Добавить');
     } else {
       titleText = sh.id ? (sh.weekly ? 'Счётчик' : 'Пункт') : sh.weekly ? 'Новый счётчик' : 'Новый пункт';
       right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: !sh.draft.name.trim(), onclick: () => saveItem(sh) }, 'Готово');
@@ -903,7 +910,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           h('span', { class: 'wr-label', 'aria-hidden': 'true' }, WDL[i]), miniRings(D.dayRings(S, d, today), w, cap(WEEKDAYS[i]))))),
         h('div', { class: 'sc-sep' }),
         h('div', { class: 'stats' },
-          stat(`${sum.closed} из ${sum.total}`, 'дней закрыто'),
+          stat(sum.total ? `${sum.closed} из ${sum.total}` : '—', 'дней закрыто'),
           stat(String(D.history(S, today).streak), 'серия'),
           w && stat(`${wc} из ${w.perWeek}`, lcFirst(w.name)))),
       sum.missingNights.length > 0 && [
@@ -966,8 +973,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function daySheet(sh) {
     const d = sh.date;
     const { marks } = D.history(S, today);
-    const mark = d === today ? (D.status(S, d, today) === 'closed' ? 'closed' : 'pending') : marks[d] || 'none';
     const { plan, k, n } = D.progress(S, d, today);
+    // Без пунктов — «Без минимума»; незакрытый первый день минимума (посев) — не пропуск, так и сказано.
+    let mark = d === today ? (D.status(S, d, today) === 'closed' ? 'closed' : n ? 'pending' : 'none') : marks[d] || 'none';
+    if (mark === 'none' && n) mark = 'first';
+    const minText = n ? `Минимум ${k} из ${n}` : d === today ? 'Минимум пуст' : 'Минимума не было';
     const done = D.doneOf(S, d);
     const editable = D.canEdit(S, d, today);
     const r = D.dayRings(S, d, today);
@@ -980,13 +990,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       sleepText = `Отбой ${night.bed}${night.wake ? ` → ${clock(night.wake)}` : ''}${du ? ` · ${dur(du)}` : ''} · ${late > 0 ? `на${NB}${dur(late)} позже шага` : 'в цель'}`;
     }
     return [
-      h('p', { key: 'status', class: 'sheet-sub day-status ds-' + mark }, `${DAY_STATUS[mark]} · ${k} из ${n}`),
+      h('p', { key: 'status', class: 'sheet-sub day-status ds-' + mark }, n ? `${DAY_STATUS[mark]} · ${k} из ${n}` : DAY_STATUS[mark]),
       h('section', { key: 'day', class: 'group day-hero first', 'data-flip': '' },
         rings('day-rings', 96, [41, 28.5, 16], 10, [
           { kind: 'sun', f: r.min }, { kind: 'sleep', f: r.sleep ? 1 : 0 }, w && { kind: 'train', f: r.week ? 1 : 0 },
-        ].filter(Boolean), `Минимум ${k} из ${n}`),
+        ].filter(Boolean), minText),
         h('div', { class: 'day-info' },
-          h('p', { class: 'lg' }, h('span', { class: 'lg-dot min' }), h('span', {}, `Минимум ${k} из ${n}`)),
+          h('p', { class: 'lg' }, h('span', { class: 'lg-dot min' }), h('span', {}, minText)),
           h('p', { class: 'lg' }, h('span', { class: 'lg-dot' }), h('span', {}, sleepText)),
           w && h('p', { class: 'lg' }, h('span', { class: 'lg-dot train' }), h('span', {}, `${w.name}: ${r.week ? 'была' : 'не было'}`)))),
       secH('h-day-items', editable ? 'Пункты · можно отметить' : 'Пункты'),
@@ -995,7 +1005,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           tile(it.icon), txt(it.name, it.note), h('span', { class: 'check' }, gl(G.check, '', 1)))
         : h('div', { key: it.id, class: 'row' + (done.includes(it.id) ? ' done' : ' missed'), style: tint(it.color) },
           tile(it.icon), txt(it.name, it.note), h('span', { class: 'check', role: 'img', 'aria-label': done.includes(it.id) ? 'сделано' : 'не сделано' }, gl(G.check, '', 1))))
-        : h('p', { class: 'empty' }, 'В этот день минимума ещё не было')),
+        : h('p', { class: 'empty' }, d === today ? 'Минимум пока пуст' : 'В этот день минимума ещё не было')),
       daySections(d, editable),
     ];
   }
@@ -1133,11 +1143,23 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       render();
       if (k === 'icon' || k === 'color') M.anim(root.querySelector('.preview .tile'), [{ transform: 'scale(0.82)' }, { transform: 'none' }], { duration: 460, easing: EASE.spring });
     };
+    // Новый раздел после настройки — готовые из неё же, одним касанием (в настройке они и так списком).
+    const presets = sec || S.ui.setup ? [] : SECTION_PRESETS.filter(p => !S.sections.some(x => x.name === p.name));
+    const usePreset = p => {
+      Object.assign(d, { name: p.name, icon: p.icon, color: p.color });
+      const input = root.querySelector('.sheet input[name="name"]');
+      if (input) input.value = p.name; // поле в фокусе перерисовка не трогает — ставим сами
+      set('icon', p.icon);
+    };
     return [
       h('div', { key: 'preview', class: 'preview', style: tint(d.color) },
         h('span', { class: 'tile' }, icon(d.icon)),
         h('p', { class: 'pv-name' }, d.name.trim() || 'Новый раздел'),
         h('p', { class: 'pv-note' }, sec ? secCount(sec) : 'отдельно от минимума')),
+      presets.length > 0 && [secH('h-presets', 'Готовые'), h('section', { key: 'presets', class: 'group sub-block sub-first', 'data-flip': '' },
+        h('div', { class: 'chips' }, presets.map(p => h('button', {
+          key: p.name, class: 'chip chip-hint', 'aria-pressed': pressed(fromPreset(d, p) && d.color === p.color), onclick: () => usePreset(p),
+        }, p.name))))],
       h('section', { key: 'form', class: 'group group-gap-l', 'data-flip': '' },
         h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Название'),
           h('input', {
@@ -1300,6 +1322,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const weekly = S.weekly.filter(i => !i.archivedAt);
     const mon = D.weekStart(today);
     const revs = Object.keys(S.reviews).sort().reverse();
+    const rates = D.itemRates(S, today);
     return [
       topbar(h('p', { class: 'overline' }, `В системе с ${dm(S.since)} · ${days(total)}`), h('span', {}, 'Прогресс'), null),
       title('Прогресс'),
@@ -1319,10 +1342,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       sleepSection({ sel: ui.chartSel, onPick: d => { ui.chartSel = ui.chartSel === d ? null : d; } }),
       secH('h-rates', 'Пункты · 4 недели'),
       h('section', { key: 'rates', class: 'group rates', 'data-flip': '', 'data-reveal': '', 'data-stagger': 'grow-x', 'data-stagger-sel': '.rate-fill', 'data-step': '50' },
-        D.itemRates(S, today).map(r => h('button', { key: r.item.id, class: 'rate', style: tint(r.item.color), onclick: () => openItem(r.item.id, false) },
+        rates.length ? rates.map(r => h('button', { key: r.item.id, class: 'rate', style: tint(r.item.color), onclick: () => openItem(r.item.id, false) },
           tile(r.item.icon), h('span', { class: 'rate-name' }, r.item.name),
           h('span', { class: 'rate-bar' }, h('span', { class: 'rate-fill', style: `--p:${r.rate ?? 0}` })),
-          h('span', { class: 'rate-val' }, r.rate == null ? '—' : `${Math.round(r.rate * 100)}%`)))),
+          h('span', { class: 'rate-val' }, r.rate == null ? '—' : `${Math.round(r.rate * 100)}%`)))
+          : h('p', { key: 'none', class: 'empty' }, 'Минимум пуст — пункты добавляются на «Сегодня» и в Настройках')),
       weekly.map(it => [secH(`h-w8-${it.id}`, `${it.name} · 8 недель`),
         h('section', { key: `w8-${it.id}`, class: 'group rv-card', 'data-flip': '' },
           w8(Array.from({ length: 8 }, (_, i) => D.addDays(mon, -7 * (7 - i))).map(wk => ({ monday: wk, count: D.weekCount(S, it.id, wk) })), it.perWeek, mon))]),
@@ -2144,6 +2168,63 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     } else go();
   }
 
+  // ---------- подсказки (v59): те же, что в первой настройке, — когда минимум собирают потом
+
+  // Пункт из подсказки — по названию и подписи: свой «Чтение» с другой подписью остаётся своим.
+  const fromSuggestion = (it, sg) => it.name === sg.name && it.note === sg.note;
+  const freeSuggestions = () => D.SUGGESTIONS.filter(sg => !D.activeItems(S).some(i => fromSuggestion(i, sg)));
+  // Строка выбора: та же галочка, что у отметки; невыбранный значок притушен.
+  const pickRow = (key, it, on, onclick) => h('button', { key, class: 'row pick', style: tint(it.color), 'aria-pressed': pressed(on), 'data-flip': '', onclick },
+    tile(it.icon), txt(it.name, it.note), h('span', { class: 'check' }, gl(G.check, '', 1)));
+  // «Из подсказок» — на «Сегодня» (пока минимум пуст) и в Настройках; все подсказки уже в минимуме — строки нет.
+  function suggestRow() {
+    const n = freeSuggestions().length;
+    return n > 0 && h('button', { key: 'suggest', class: 'row row-s', style: tint('yellow'), 'data-flip': '', onclick: openSuggest },
+      tile('sparkles'), txt('Из подсказок', `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])} на выбор`), chev());
+  }
+
+  function openSuggest() {
+    if (!stale()) openSheet({ kind: 'suggest', picks: [] });
+  }
+
+  function suggestSheet(sh) {
+    const free = freeSuggestions();
+    sh.picks = sh.picks.filter(name => free.some(sg => sg.name === name));
+    const flip = sg => {
+      sh.picks = sh.picks.includes(sg.name) ? sh.picks.filter(x => x !== sg.name) : [...sh.picks, sg.name];
+      M.haptic();
+      render();
+    };
+    return [
+      h('p', { key: 'sub', class: 'sheet-sub' }, 'Малые дела — выполнимы даже в худший день'),
+      h('section', { key: 'picks', class: 'group first', 'data-flip': '' }, free.length
+        ? free.map(sg => pickRow(`sg-${sg.name}`, sg, sh.picks.includes(sg.name), () => flip(sg)))
+        : h('p', { class: 'empty' }, 'Все подсказки уже в минимуме')),
+      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, 'Добавятся в конец минимума — с сегодняшнего дня. Названия, подписи и значки — потом в Настройках.'),
+    ];
+  }
+
+  // Выбранное — в конец минимума по порядку подсказок; убранный раньше такой же пункт возвращается со своей историей.
+  function addPicks(sh) {
+    if (closing || stale()) return;
+    const list = freeSuggestions().filter(sg => sh.picks.includes(sg.name));
+    if (!list.length) return;
+    const go = () => {
+      for (const sg of list) {
+        const old = S.items.find(i => i.archivedAt && fromSuggestion(i, sg));
+        if (!old) D.addItem(S, sg, false, today);
+        else if (D.restoreItem(S, old.id)) S.items.push(...S.items.splice(S.items.indexOf(old), 1)); // и он — в конец
+      }
+      save();
+      M.haptic();
+      closeSheet();
+    };
+    const n = D.activeItems(S).length + list.length;
+    if (n > D.MAX_DAILY) {
+      showAlert({ title: `В минимуме будет ${n} ${plural(n, ['пункт', 'пункта', 'пунктов'])}`, msg: 'Минимум должен выполняться в худший день. Всё равно добавить?', yes: 'Добавить', action: go });
+    } else go();
+  }
+
   // Стрелки «выше / ниже» в режиме «Изменить». move(dir) — сдвиг в своём списке.
   const upDown = (name, i, n, move) => h('span', { class: 'up-down' },
     h('button', { class: 'icon-btn', 'aria-label': `${name}: выше`, disabled: i === 0, onclick: () => move(-1) }, gl(G.up)),
@@ -2363,7 +2444,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       }, ui.edit ? 'Готово' : 'Изменить')),
       title('Настройки'),
       secH('h-items', `Минимум · ${act.length}`),
-      h('section', { key: 'items', class: 'group', 'data-flip': '' }, listRows(S.items, false), !ui.edit && addRow(false)),
+      h('section', { key: 'items', class: 'group', 'data-flip': '' }, listRows(S.items, false), !ui.edit && [addRow(false), suggestRow()]),
       h('p', { key: 'items-foot', class: 'sec-foot', 'data-flip': '' }, 'Минимум должен выполняться в худший день. На 11\u2011м пункте приложение переспросит.'),
       arch.length > 0 && [secH('h-arch', 'Убранные'), h('section', { key: 'arch', class: 'group', 'data-flip': '' }, arch.map(it => h('div', {
         key: it.id, class: 'row row-s archived', style: tint(it.color), 'data-flip': '',
@@ -2464,8 +2545,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       main = h('button', { class: 'btn-primary', id: 'setup-join', disabled: st.busy || !cleanName(st.name), onclick: setupJoin }, joinLabel());
       alt = h('button', { class: 'btn-text setup-alt', disabled: st.busy, onclick: finishSetup }, 'Пропустить');
     } else {
-      const empty = kind === 'minimum' && !D.activeItems(S).length;
-      main = h('button', { class: 'btn-primary', disabled: empty || st.busy, onclick: last ? finishSetup : () => goStep(1) }, last ? 'Начать' : 'Дальше');
+      // Пустой минимум — тоже можно: пункты добавятся потом, на «Сегодня» или в Настройках.
+      const later = kind === 'minimum' && !D.activeItems(S).length;
+      main = h('button', { class: 'btn-primary', disabled: st.busy, onclick: last ? finishSetup : () => goStep(1) }, last ? 'Начать' : later ? 'Добавлю потом' : 'Дальше');
     }
     return h('div', { key: 'setup-foot', class: 'setup-foot' }, main, alt);
   }
@@ -2491,25 +2573,21 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
   }
 
-  // Пункт из подсказки — по названию и подписи: свой «Чтение» с другой подписью остаётся своим.
-  const fromSuggestion = (it, sg) => it.name === sg.name && it.note === sg.note;
-
   // Минимум: шаблон уже выбран, ещё шесть подсказок и свой пункт. Убранный в настройке пункт исчезает бесследно.
+  // Можно снять всё — «Добавлю потом»: на «Сегодня» те же подсказки и свой пункт.
   function minimumStep() {
     const act = D.activeItems(S);
-    const pick = (key, it, on, onclick) => h('button', { key, class: 'row pick', style: tint(it.color), 'aria-pressed': pressed(on), 'data-flip': '', onclick },
-      tile(it.icon), txt(it.name, it.note), h('span', { class: 'check' }, gl(G.check, '', 1)));
     return [
       title('Твой минимум'),
       h('p', { key: 'lead', class: 'setup-lead left' }, 'Выбери то, что сделаешь даже в худший день. Лучше меньше, но каждый день.'),
       secH('h-pick', `Выбрано ${act.length}`),
       h('section', { key: 'picks', class: 'group', 'data-flip': '' },
-        D.SUGGESTIONS.map(sg => pick(`sg-${sg.name}`, sg, act.some(i => fromSuggestion(i, sg)), () => pickToggle(sg))),
-        act.filter(i => !D.SUGGESTIONS.some(sg => fromSuggestion(i, sg))).map(it => pick(it.id, it, true, () => unpick(it.id))),
+        D.SUGGESTIONS.map(sg => pickRow(`sg-${sg.name}`, sg, act.some(i => fromSuggestion(i, sg)), () => pickToggle(sg))),
+        act.filter(i => !D.SUGGESTIONS.some(sg => fromSuggestion(i, sg))).map(it => pickRow(it.id, it, true, () => unpick(it.id))),
         plusRow('own', 'Свой пункт', () => tryAdd(false))),
       h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, act.length
         ? 'Названия, подписи, значки и порядок — в Настройках, в любой момент.'
-        : 'Выбери хотя бы один пункт.'),
+        : 'Можно и без пунктов: добавишь потом на «Сегодня» — из этих же подсказок или свои.'),
     ];
   }
 
@@ -2617,7 +2695,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         SECTION_PRESETS.map(p => row(`p-${p.name}`, p, S.sections.some(x => fromPreset(x, p)), p.note, () => presetToggle(p))),
         S.sections.filter(x => !SECTION_PRESETS.some(p => fromPreset(x, p))).map(sec => row(sec.id, sec, true, 'свой раздел', () => dropSection(sec.id))),
         S.sections.length < D.MAX_SECTIONS && plusRow('own', 'Свой раздел', () => openSection(null))),
-      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, 'Пункты разделов добавишь потом — на «Сегодня» или в Настройках. Друзьям разделы не видны, пока не откроешь их в «Что видят друзья».'),
+      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, (S.sections.length
+        ? 'Пункты разделов добавишь потом — на «Сегодня» или в Настройках.'
+        : 'Можно и без разделов — добавишь потом в Настройках.') +
+        (cloud.enabled ? ' Друзьям разделы не видны, пока не откроешь их в «Что видят друзья».' : '')),
     ];
   }
 
