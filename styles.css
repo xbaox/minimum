@@ -244,6 +244,8 @@
   --gl-xs: 12px;
   --setup-foot: 140px;
   --nb-h: 14px;
+  --sbar-w: 28px;
+  --sbar-h: 64px;
   --font-code: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
   /* радиусы */
@@ -1139,6 +1141,16 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .sec-ic { flex: none; display: grid; place-items: center; width: var(--tile-xs); height: var(--tile-xs); border-radius: var(--r-tile-xs); background: var(--item); color: var(--on-tile); }
 .sec-ic .gl { width: var(--gl-xs); height: var(--gl-xs); stroke-width: 2.4; }
 .sec-row .check::before { background: var(--item); }
+/* «Прогресс» раздела: 8 недель столбиками цвета раздела, ниже — доля по пунктам за 4 недели */
+.sbars { display: flex; justify-content: space-between; gap: var(--u6); }
+.sbar { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: var(--u4); }
+.sbar-n { min-height: var(--u14); font-size: var(--fs-cap); line-height: var(--u14); color: var(--text-2); }
+.sbar.now .sbar-n, .sbar.now .sbar-label { color: var(--text); font-weight: 600; }
+.sbar-track { position: relative; width: 100%; max-width: var(--sbar-w); height: var(--sbar-h); border-radius: var(--r-mini); background: var(--track); overflow: hidden; }
+.sbar.none .sbar-track { background: none; border: var(--hair) dashed var(--chain-empty); }
+.sbar-fill { position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--p) * 100%); background: var(--bar); transform-origin: center bottom; }
+.sbar-label { font-size: var(--fs-axis); color: var(--text-2); }
+.sec-rates { display: flex; flex-direction: column; margin: calc(var(--u6) * -1) 0; }
 
 /* ---------- первая настройка (v58): шаги без таб-бара, точки сверху, кнопка снизу */
 

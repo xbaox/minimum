@@ -253,7 +253,7 @@ test('гонка недели: места по счёту, при равном �
   assert.deepEqual(ranked([]), []);
 });
 
-test('разделы (v58) друзьям не уходят: ни названий, ни пунктов, ни отметок; счёт гонки тот же', () => {
+test('закрытые разделы (v58) друзьям не уходят: ни названий, ни пунктов, ни отметок; счёт гонки тот же', () => {
   const s = life();
   const before = shareOf(s, TODAY, { tz: 'America/Toronto' });
   const sec = D.addSection(s, { name: 'Секретная работа', icon: 'briefcase', color: 'blue' }, TODAY, () => 'sec-1');
@@ -277,4 +277,49 @@ test('чужой снимок с id «constructor» не роняет сводк
   assert.doesNotThrow(() => summaryOf(v.F, v.today));
   assert.doesNotThrow(() => weekScore(v, '2026-10-19'));
   assert.ok(!v.F.weekly.some(w => w.id === 'constructor') && !v.F.items.some(i => i.id === 'toString'));
+});
+
+test('открытый раздел уходит с пунктами и отметками за две недели; закрытый и выключенный — нет', () => {
+  const s = life();
+  const id = (() => { let n = 0; return () => 'sec-' + ++n; })();
+  const work = D.addSection(s, { name: 'Работа', icon: 'briefcase', color: 'blue' }, '2026-10-01', id);
+  const focus = D.addSecItem(s, work.id, { name: 'Фокус', note: '90 минут', icon: 'clock', color: 'indigo' }, '2026-10-01', id);
+  const mail = D.addSecItem(s, work.id, { name: 'Почта' }, '2026-10-01', id);
+  const hobby = D.addSection(s, { name: 'Тайное хобби' }, '2026-10-01', id);
+  D.addSecItem(s, hobby.id, { name: 'Тайный пункт' }, '2026-10-01', id);
+  const off = D.addSection(s, { name: 'Выключенный' }, '2026-10-01', id);
+  off.on = false;
+  s.secMarks[focus.id] = ['2026-10-02', '2026-10-08', '2026-10-15', '2026-10-21'];
+  s.secMarks[mail.id] = ['2026-10-20'];
+  const snap = shareOf(s, TODAY, { tz: 'America/Toronto', sections: [work.id, off.id, 'нет такого'] });
+  assert.equal(snap.sections.length, 1);
+  const text = JSON.stringify(snap);
+  for (const secret of ['Тайное хобби', 'Тайный пункт', 'Выключенный', 'sec-']) assert.ok(!text.includes(secret), secret);
+  const [sec] = snap.sections;
+  assert.deepEqual([sec.name, sec.icon, sec.color, sec.items.length], ['Работа', 'briefcase', 'blue', 2]);
+  assert.equal(sec.items[0].m, '10000001000001', 'две недели: 08.10 — первая буква, 21.10 — последняя');
+  assert.equal(new Set([...snap.items, ...snap.weekly, sec, ...sec.items].map(x => x.id)).size, snap.items.length + snap.weekly.length + 3, 'id не пересекаются');
+  const v = readShare(JSON.parse(text), at(TODAY, 20));
+  assert.equal(v.F.sections.length, 1);
+  const [fs] = v.F.sections;
+  assert.deepEqual(fs.items.map(i => i.name), ['Фокус', 'Почта']);
+  assert.deepEqual(v.F.secMarks[fs.items[0].id], ['2026-10-08', '2026-10-15', '2026-10-21'], 'старше двух недель — не уходит');
+  assert.deepEqual(D.secDay(v.F, fs, v.today), { items: fs.items, k: 1, n: 2 });
+  assert.deepEqual(weekScore(v, '2026-10-19'), weekScore(readShare(JSON.parse(JSON.stringify(shareOf(s, TODAY, { tz: 'America/Toronto' }))), at(TODAY, 20)), '2026-10-19'), 'гонка — только минимум');
+  // без открытых разделов снимок прежний — без поля sections
+  assert.equal('sections' in shareOf(s, TODAY, { tz: 'America/Toronto' }), false);
+});
+
+test('чужие разделы — недоверенные данные: строка отметок обрезается, дни из будущего и мусор выброшены', () => {
+  const snap = JSON.parse(JSON.stringify(shareOf(life(), TODAY, { tz: 'America/Toronto' })));
+  snap.sections = [
+    { id: 's1', name: 'Хобби', icon: 'heart', color: 'orange', items: [{ id: 's2', name: 'Гитара', m: '1'.repeat(500) }, { id: '__proto__', name: 'x', m: '1' }, { id: 's3', name: 'y', m: 42 }] },
+    'мусор',
+  ];
+  const v = readShare(snap, at(TODAY, 20));
+  assert.deepEqual(v.F.sections.map(x => x.items.map(i => i.id)), [['s2', 's3']]);
+  assert.equal(v.F.secMarks.s2.length, 14, 'не больше двух недель');
+  assert.equal(v.F.secMarks.s2.at(-1), TODAY);
+  assert.equal(v.F.secMarks.s3, undefined);
+  assert.equal(Object.getPrototypeOf(v.F.secMarks), Object.prototype);
 });

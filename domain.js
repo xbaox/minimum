@@ -331,6 +331,34 @@ export function secStats(s, id, today) {
   };
 }
 
+// «Прогресс» раздела: 8 недель пн–вс до сегодня — сколько отметок и сколько их могло быть (пункт × день, когда он уже был).
+export function secWeeks(s, sec, today, n = 8) {
+  const cur = weekStart(today);
+  return Array.from({ length: n }, (_, i) => {
+    const monday = addDays(cur, -7 * (n - 1 - i));
+    const last = minD(addDays(monday, 6), today);
+    let count = 0, possible = 0;
+    for (const it of sec.items) {
+      for (const d of range(maxD(monday, it.addedAt), last)) {
+        possible++;
+        if (secDone(s, it.id, d)) count++;
+      }
+    }
+    return { monday, count, possible };
+  });
+}
+
+// Доля дней с отметкой за 4 недели до вчера — по дням, когда пункт уже был (как «Пункты · 4 недели» у минимума).
+export function secRates(s, sec, today) {
+  const y = addDays(today, -1);
+  return sec.items.map(item => {
+    const from = maxD(addDays(today, -28), item.addedAt);
+    const days = from <= y ? range(from, y) : [];
+    const done = days.filter(d => secDone(s, item.id, d)).length;
+    return { item, days: days.length, done, rate: days.length ? done / days.length : null };
+  });
+}
+
 // ---------- первая настройка (v58)
 
 // Убрать пункт бесследно — только в первой настройке: у нового телефона ещё нет истории, которую надо беречь.

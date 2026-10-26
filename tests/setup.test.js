@@ -377,7 +377,7 @@ test('разделы в Настройках: переключатель, нов
   assert.equal(sw('Работа').getAttribute('aria-checked'), 'true');
   assert.equal(sw('Хобби').getAttribute('aria-checked'), 'false');
   assert.match(sp(sw('Хобби').textContent), /выключен · 1 пункт/);
-  assert.match(a.text(), /Отдельно от минимума: на серию, кольца и гонку не влияют, друзьям не видны/);
+  assert.match(a.text(), /Отдельно от минимума: на серию, кольца и гонку не влияют\.РаботаНастроить/); // без сервера — ни слова о друзьях
   sw('Работа').click();
   a.click('Сегодня', '.tab');
   assert.doesNotMatch(a.text(), /Главная задача/, 'выключенный — пропал с «Сегодня»');
@@ -549,5 +549,83 @@ test('свой пункт с названием подсказки — свой;
   assert.match(a.text(), /Запрос отправлен/);
   assert.equal(a.doc.getElementById('setup-code').value, '', 'поле в фокусе тоже очищено');
   assert.equal(a.doc.getElementById('setup-add').disabled, true);
+  a.done();
+});
+
+test('«Прогресс»: разделы — 8 недель столбиками и доля по пунктам; выключенный не показан; тап — детали пункта', async () => {
+  const a = await start({ storage: withSections('2026-10-26') });
+  a.click('Прогресс', '.tab');
+  assert.match(a.text(), /Работа8 недель/);
+  assert.doesNotMatch(a.text(), /Хобби8 недель/, 'выключенный раздел не показан');
+  assert.deepEqual(a.all('.sbar-n').map(e => e.textContent), ['', '', '', '', '', '0', '1', '0'], 'до раздела — пусто, дальше отметки по неделям');
+  assert.equal(a.all('.sbar.none').length, 5);
+  assert.ok(a.all('.sbar').at(-1).classList.contains('now'));
+  assert.match(a.doc.querySelector('.sbars').getAttribute('aria-label'), /Работа, отметок по неделям: 0, 0, 0, 0, 0, 0, 1, 0/);
+  assert.deepEqual(a.all('.sec-rates .rate-val').map(e => e.textContent), ['10%', '0%']); // 1 из 10 дней с появления
+  assert.match(a.text(), /Столбики — отметки за неделю/);
+  a.find('Главная задача', '.sec-rates .rate').click();
+  assert.match(a.sheetText(), /Раздел «Работа»/);
+  a.clean('прогресс');
+  a.done();
+});
+
+test('раздел друзьям: закрыт по умолчанию; открытый друг видит с сегодняшними отметками, гонка — та же', async () => {
+  const server = fakeSupabase({ now: () => MON });
+  // друг с открытым разделом «Хобби» и отметкой сегодня
+  const fs = JSON.parse(withSections('2026-10-26')['minimum.v2']);
+  fs.sections[1].on = true;
+  fs.secMarks = { h1: ['2026-10-26'] };
+  const sasha = server.addProfile({ name: 'Саша', code: 'R8DX4', snapshot: shareOf(fs, '2026-10-26', { tz: 'America/Toronto', sections: ['sec-h'] }) });
+  const a = await start({ server, storage: withSections('2026-10-26') });
+  a.click('Друзья', '.tab');
+  a.type(a.doc.querySelector('input[name="friend-name"]'), 'Бао');
+  a.click('Включить друзей');
+  await wait(60);
+  const me = server.profiles.find(p => p.name === 'Бао');
+  assert.equal('sections' in me.snapshot, false, 'по умолчанию разделы закрыты');
+  server.befriend(me, sasha);
+  a.win.dispatchEvent(new a.win.Event('online'));
+  await wait(60);
+  // лист друга: его открытый раздел — сегодняшние отметки цветом пункта, только для чтения
+  a.find('Саша', '.list-friends .friend').click();
+  assert.match(a.sheetText(), /Хобби1 из 1Гитара/);
+  assert.ok(a.doc.querySelector('.sheet .sec-row.static.done'));
+  assert.match(a.sheetText(), /Разделы — сверх минимума: на серию и гонку не влияют/);
+  assert.doesNotMatch(a.sheetText(), /Главная задача/, 'закрытый раздел друга не виден');
+  a.click('Готово', '.sheet-act');
+  await wait();
+  // «Что видят друзья» → «Разделы»: выключенный не предлагается, открыть «Работу»
+  a.click('Что видят друзья', '.link');
+  assert.match(a.sheetText(), /РазделыРаботазакрыт — друзья не видят/);
+  assert.doesNotMatch(a.sheetText(), /Хобби/);
+  a.find('Работа', '.sheet .switch-row').click();
+  assert.deepEqual(a.app.cloud.prefs.sections, ['sec-w']);
+  assert.match(a.sheetText(), /Работадрузья видят пункты и отметки/);
+  a.click('Готово', '.sheet-act');
+  await wait();
+  a.click('Сегодня', '.tab');
+  const scoreBefore = sp(a.doc.querySelector('.race').textContent);
+  a.find('Главная задача', '.list-sec .row').click();
+  assert.equal(sp(a.doc.querySelector('.race').textContent), scoreBefore, 'гонка — только минимум и сон');
+  await wait(2700); // снимок уходит, когда отметки улягутся
+  assert.deepEqual(me.snapshot.sections.map(x => [x.name, x.items.map(i => [i.name, i.m.at(-1)])]), [['Работа', [['Главная задача', '1'], ['Почта', '0']]]]);
+  // «Я» — так тебя видят друзья
+  a.click('Друзья', '.tab');
+  a.find('Бао', '.list-friends .friend').click();
+  assert.match(a.sheetText(), /Работа1 из 2/);
+  a.click('Готово', '.sheet-act');
+  await wait();
+  // лист раздела: «Видно друзьям» — тот же переключатель; новый раздел закрыт
+  a.click('Настройки', '.tab');
+  [...a.doc.querySelectorAll('.sec-h')].find(hh => sp(hh.textContent).startsWith('Работа')).querySelector('.link').click();
+  const shared = () => [...a.doc.querySelectorAll('.sheet .switch-row')].find(r => sp(r.textContent).includes('Видно друзьям'));
+  assert.equal(shared().getAttribute('aria-checked'), 'true');
+  shared().click();
+  a.doc.getElementById('sheet-done').click();
+  await wait();
+  assert.deepEqual(a.app.cloud.prefs.sections, []);
+  a.click('Добавить раздел', '.plus-row');
+  assert.equal(shared().getAttribute('aria-checked'), 'false', 'новый раздел друзьям закрыт');
+  a.click('Отмена', '.sheet-act');
   a.done();
 });

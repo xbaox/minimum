@@ -12,6 +12,7 @@ export const SHARE_V = 1;
 export const NIGHTS_KEEP = 42; // 6 недель: цепь, неделя, график сна
 export const WINDOW_DAYS = 1096; // история — три года: снимок не растёт вечно (≈ 40 КБ), серия длиннее — редкость
 export const HIDDEN_NAME = 'Личный пункт';
+export const SEC_DAYS = 14; // разделы друзьям — отметки за две недели: сегодня, эта неделя и прошлая
 export const HIDDEN_COLOR = 'gray';
 const MAX_ITEMS = 60, MAX_WEEKLY = 20; // больше в чужом снимке — мусор, а не привычки
 
@@ -57,8 +58,8 @@ export function deviceZone() {
   }
 }
 
-// Снимок своего состояния. prefs: { tz, hidden: [id пунктов], sleep, onepct }.
-export function shareOf(S, today, { tz = '', hidden = [], sleep = true, onepct = true } = {}) {
+// Снимок своего состояния. prefs: { tz, hidden: [id пунктов], sleep, onepct, sections: [id открытых разделов] }.
+export function shareOf(S, today, { tz = '', hidden = [], sleep = true, onepct = true, sections = [] } = {}) {
   const ids = new Map();
   [...S.items, ...S.weekly].forEach((it, i) => ids.set(it.id, i.toString(36)));
   const hide = new Set(hidden.filter(id => ids.has(id)));
@@ -106,6 +107,17 @@ export function shareOf(S, today, { tz = '', hidden = [], sleep = true, onepct =
     const closedAt = Number.isNaN(at.getTime()) ? '' : logicalDateIn(tz, at);
     reviews[m] = { closedAt, improvement: onepct ? clean(r.improvement) : '', sleep: sleep ? { ...r.sleep } : {} };
   }
+  // Разделы — только открытые и включённые: пункты и отметки за SEC_DAYS дней строкой «0/1», последняя буква — сегодня.
+  const open = new Set(sections);
+  let next = ids.size;
+  const secFrom = D.addDays(today, -(SEC_DAYS - 1));
+  const secs = (S.sections || []).filter(sec => sec.on && open.has(sec.id)).map(sec => ({
+    id: (next++).toString(36), name: clean(sec.name), icon: sec.icon, color: sec.color, on: true, addedAt: sec.addedAt,
+    items: sec.items.map(it => ({
+      id: (next++).toString(36), icon: it.icon, name: clean(it.name), note: clean(it.note), color: it.color, addedAt: it.addedAt,
+      m: D.range(secFrom, today).map(d => (D.secDone(S, it.id, d) ? '1' : '0')).join(''),
+    })),
+  }));
   return {
     schema: 1,
     createdAt,
@@ -115,6 +127,7 @@ export function shareOf(S, today, { tz = '', hidden = [], sleep = true, onepct =
     plans,
     days,
     weekMarks,
+    ...(secs.length ? { sections: secs } : {}), // нет открытых — снимок прежний, лишней публикации нет
     sleep: sleep
       ? { goalBed: S.sleep.goalBed, goalWake: S.sleep.goalWake, targets: S.sleep.targets.map(t => ({ ...t })), nights }
       : { targets: [], nights: {} },
@@ -135,7 +148,7 @@ export function readShare(doc, now = new Date()) {
   const day = D.isDate(meta.day) && meta.day <= D.addDays(real, 2) ? meta.day : null;
   let today = real;
   if (day && today < day) today = day; // часы смотрящего отстают — не показываем «вчера» вместо «сегодня»
-  const F = D.normalize({ ...doc, days: unpackDays(doc.plans, doc.days) }, today);
+  const F = D.normalize({ ...doc, days: unpackDays(doc.plans, doc.days), secMarks: unpackSecMarks(doc.sections, day) }, today);
   if (!F) return null;
   // Чужой снимок не должен подвесить вкладку: окно истории и число пунктов — как у честного снимка.
   const from0 = D.addDays(today, -(WINDOW_DAYS - 1));
@@ -152,6 +165,7 @@ export function readShare(doc, now = new Date()) {
     if (known.has(id)) F.weekMarks[id] = F.weekMarks[id].filter(d => d >= F.createdAt && d <= today);
     else delete F.weekMarks[id];
   }
+  for (const id of Object.keys(F.secMarks)) F.secMarks[id] = F.secMarks[id].filter(d => d <= today);
   const hidden = new Set((Array.isArray(meta.hidden) ? meta.hidden : []).filter(id => typeof id === 'string' && known.has(id)));
   return { F, today, day, tz, hidden, sleep: meta.sleep !== false, onepct: meta.onepct !== false };
 }
@@ -165,6 +179,23 @@ function unpackDays(plans, days) {
     const plan = plans[v[0]];
     if (!Array.isArray(plan)) continue;
     out[d] = { plan, done: plan.filter((_, i) => v[1][i] === '1') };
+  }
+  return out;
+}
+
+// Отметки разделов из снимка: строка «0/1» по дням, последняя буква — день снимка. Без дня снимка — без отметок.
+function unpackSecMarks(sections, day) {
+  const out = {};
+  if (!Array.isArray(sections) || !day) return out;
+  for (const sec of sections) {
+    if (!sec || typeof sec !== 'object' || !Array.isArray(sec.items)) continue;
+    for (const it of sec.items) {
+      if (!it || typeof it.id !== 'string' || it.id in Object.prototype || typeof it.m !== 'string') continue;
+      const m = it.m.slice(-SEC_DAYS);
+      const dates = [];
+      for (let i = 0; i < m.length; i++) if (m[i] === '1') dates.push(D.addDays(day, i - (m.length - 1)));
+      if (dates.length) out[it.id] = dates;
+    }
   }
   return out;
 }

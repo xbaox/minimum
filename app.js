@@ -39,6 +39,7 @@ const WELCOME = (n, now, goal) =>
 const NEWS_ID = 'v58';
 const NEWS = [
   'Разделы: «Работа», «Хобби» и свои — отдельно от минимума, на серию и гонку не влияют. Включаются в Настройках',
+  'На «Прогрессе» — графики разделов; открыть раздел друзьям — в «Что видят друзья»',
   'Новый телефон начинает с первой настройки: минимум, сон, разделы и сразу код друга',
 ];
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
@@ -1120,6 +1121,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const sec = id && D.findSection(S, id);
     if (id && !sec) return;
     const draft = sec ? { icon: sec.icon, name: sec.name, color: sec.color } : { icon: 'star', name: '', color: 'blue' };
+    if (cloud.joined) draft.shared = !!sec && cloud.prefs.sections.includes(sec.id); // новый раздел друзьям закрыт
     openSheet({ kind: 'section', id, draft, orig: JSON.stringify(draft), icons: !id });
   }
 
@@ -1129,7 +1131,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       d[k] = v;
       M.haptic();
       render();
-      M.anim(root.querySelector('.preview .tile'), [{ transform: 'scale(0.82)' }, { transform: 'none' }], { duration: 460, easing: EASE.spring });
+      if (k === 'icon' || k === 'color') M.anim(root.querySelector('.preview .tile'), [{ transform: 'scale(0.82)' }, { transform: 'none' }], { duration: 460, easing: EASE.spring });
     };
     return [
       h('div', { key: 'preview', class: 'preview', style: tint(d.color) },
@@ -1150,6 +1152,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) e.target.blur(); },
           }))),
       lookPicker(sh, set),
+      'shared' in d && h('section', { key: 'shared', class: 'group group-gap-l', 'data-flip': '' }, h('button', {
+        class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.shared), onclick: () => set('shared', !d.shared),
+      }, txt('Видно друзьям', d.shared ? 'друзья видят пункты и отметки за две недели' : 'закрыт — друзья не видят'),
+      h('span', { class: 'switch', 'aria-hidden': 'true' }))),
       sec && h('section', { key: 'remove', class: 'group group-gap-l', 'data-flip': '' },
         h('button', { class: 'row row-t row-danger', onclick: () => askRemoveSection(sec) }, 'Удалить раздел')),
     ];
@@ -1157,8 +1163,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
 
   function saveSection(sh) {
     if (closing || !D.cleanSection(sh.draft)) return;
+    let id = sh.id;
     if (sh.id) D.updateSection(S, sh.id, sh.draft);
-    else D.addSection(S, sh.draft, today);
+    else id = D.addSection(S, sh.draft, today)?.id;
+    // Видимость — до сохранения: первый же снимок с этим разделом уже её учитывает.
+    if (id && 'shared' in sh.draft && cloud.joined) cloud.setSectionShared(id, sh.draft.shared);
     save();
     M.haptic();
     closeSheet();
@@ -1317,6 +1326,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       weekly.map(it => [secH(`h-w8-${it.id}`, `${it.name} · 8 недель`),
         h('section', { key: `w8-${it.id}`, class: 'group rv-card', 'data-flip': '' },
           w8(Array.from({ length: 8 }, (_, i) => D.addDays(mon, -7 * (7 - i))).map(wk => ({ monday: wk, count: D.weekCount(S, it.id, wk) })), it.perWeek, mon))]),
+      progressSections(),
       secH('h-revs', 'Недели'),
       h('section', { key: 'revs', class: 'group', 'data-flip': '' }, revs.length ? revs.map(m => {
         const r = S.reviews[m];
@@ -1334,6 +1344,34 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         ];
       }) : h('p', { class: 'empty' }, 'Закрытых недель пока нет')),
     ];
+  }
+
+  // Разделы на «Прогрессе» (включённые, с пунктами): 8 недель столбиками — сколько отметок за неделю, — и доля дней
+  // с отметкой по пунктам за 4 недели; тап по пункту — его детали. Цвет столбиков — цвет раздела.
+  function progressSections() {
+    const mon = D.weekStart(today);
+    return S.sections.filter(sec => sec.on && sec.items.length).map(sec => {
+      const weeks = D.secWeeks(S, sec, today), top = Math.max(1, ...weeks.map(w => w.count));
+      return [
+        secH(`h-ps-${sec.id}`, secTitle(sec), h('span', { class: 'sec-aside' }, `8${NB}недель`)),
+        h('section', { key: `ps-${sec.id}`, class: 'group rv-card', style: tint(sec.color), 'data-flip': '' },
+          h('div', {
+            class: 'sbars', role: 'img', 'aria-label': `${sec.name}, отметок по неделям: ${weeks.map(w => w.count).join(', ')}`,
+            'data-reveal': '', 'data-stagger': 'grow-y', 'data-stagger-sel': '.sbar-fill', 'data-step': '40',
+          }, weeks.map(w => h('div', { key: w.monday, class: 'sbar' + (w.monday === mon ? ' now' : '') + (w.possible ? '' : ' none'), 'aria-hidden': 'true' },
+            h('span', { class: 'sbar-n' }, w.possible ? String(w.count) : ''),
+            h('span', { class: 'sbar-track' }, h('span', { class: 'sbar-fill', style: `--p:${(w.count / top).toFixed(3)}` })),
+            h('span', { class: 'sbar-label' }, `${+w.monday.slice(8)}.${+w.monday.slice(5, 7)}`)))),
+          h('div', { class: 'sc-sep' }),
+          h('div', { class: 'sec-rates', 'data-reveal': '', 'data-stagger': 'grow-x', 'data-stagger-sel': '.rate-fill', 'data-step': '50' },
+            D.secRates(S, sec, today).map(r => h('button', { key: r.item.id, class: 'rate', style: tint(r.item.color), onclick: () => openSecItem(r.item.id, sec.id) },
+              tile(r.item.icon), h('span', { class: 'rate-name' }, r.item.name),
+              h('span', { class: 'rate-bar' }, h('span', { class: 'rate-fill', style: `--p:${r.rate ?? 0}` })),
+              h('span', { class: 'rate-val' }, r.rate == null ? '—' : `${Math.round(r.rate * 100)}%`))))),
+      ];
+    }).concat(S.sections.some(sec => sec.on && sec.items.length)
+      ? [h('p', { key: 'ps-foot', class: 'sec-foot', 'data-flip': '' }, `Столбики — отметки за неделю, проценты — дни с отметкой за 4${NB}недели. На серию разделы не влияют.`)]
+      : []);
   }
 
   // Цепь 6 недель. У друга (onTap: null) клетки не нажимаются.
@@ -1599,7 +1637,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       c.stuck && h('p', { key: 'f-stuck', class: 'sec-foot err', role: 'status', 'data-flip': '' },
         'Сервер не принял твой прогресс — друзья видят прежний. Проверь названия пунктов.'),
       h('p', { key: 'f-privacy', class: 'sec-foot', 'data-flip': '' },
-        'Друзья видят минимум с отметками, сон, недельные счётчики и серию. Разделы и разбор недели не уходят никогда. ',
+        'Друзья видят минимум с отметками, сон, недельные счётчики и серию, разделы — только открытые. Разбор недели не уходит никогда. ',
         h('button', { class: 'link', onclick: () => openSheet({ kind: 'privacy' }) }, 'Что видят друзья')),
     ];
   }
@@ -1726,7 +1764,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('button', { key: 'join-btn', class: 'btn-primary', id: 'join-btn', disabled: ui.busy || !cleanName(name), 'data-flip': '', onclick: doJoin },
         ui.busy ? 'Включаю…' : 'Включить друзей'),
       h('p', { key: 'join-foot', class: 'sec-foot', 'data-flip': '' },
-        'Прогресс виден только по взаимному согласию: с одной стороны вводят код, с другой — принимают запрос. Разделы и разбор недели не уходят никогда, личный пункт можно скрыть.'),
+        'Прогресс виден только по взаимному согласию: с одной стороны вводят код, с другой — принимают запрос. Разбор недели не уходит никогда, личный пункт можно скрыть, разделы закрыты, пока не откроешь.'),
     ];
   }
 
@@ -1853,6 +1891,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           staticRow(it, sum.done.includes(it.id), locked(it.id), v.sleep && !locked(it.id) && it.beforeBed ? `до${NB}${D.deadline(step, it.beforeBed)}` : '')))
         : h('p', { key: 'f-empty', class: 'group empty' }, 'Минимум пуст'),
       weekly.length > 0 && [secH('f-h-week', 'На неделе'), h('section', { key: 'f-week', class: 'group', 'data-flip': '' }, weekly.map(it => staticWeekRow(it, F, day, locked(it.id))))],
+      friendSections(F, day),
       secH('f-h-days', 'Эта неделя'),
       h('section', { key: 'f-days', class: 'group rv-card', 'data-flip': '' }, weekRings({ st: F, day, onTap: null }), dotsLegend(D.firstWeekly(F), v.sleep)),
       secH('f-h-chain', 'Серия · 6 недель'),
@@ -1860,9 +1899,26 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       v.sleep && [secH('f-h-sleep', `Сон · 14${NB}ночей`), sleepSection({ st: F, day, sel: sh.chartSel, onPick: d => { sh.chartSel = sh.chartSel === d ? null : d; } })],
       feed.length > 0 && [secH('f-h-feed', 'Изменения'), h('section', { key: 'f-feed', class: 'group', 'data-flip': '' }, feed.map((e, i) => feedRow(e, i, day)))],
       me
-        ? [h('p', { key: 'me-foot', class: 'sec-foot' }, 'Разделы и разбор недели сюда не попадают. Скрытый пункт друзья видят как «Личный пункт».'),
+        ? [h('p', { key: 'me-foot', class: 'sec-foot' }, 'Разбор недели сюда не попадает, разделы — только открытые. Скрытый пункт друзья видят как «Личный пункт».'),
           h('section', { key: 'me-privacy', class: 'group group-gap-l' }, h('button', { class: 'row row-t row-accent', onclick: () => openSheet({ kind: 'privacy' }) }, 'Что видят друзья'))]
         : removeFriendRow(f),
+    ];
+  }
+
+  // Открытые другом разделы: сегодняшние отметки цветом пункта, только для чтения. Сверх минимума — на гонку не влияют.
+  function friendSections(F, day) {
+    const list = F.sections.map(sec => ({ sec, ...D.secDay(F, sec, day) })).filter(x => x.n);
+    if (!list.length) return null;
+    return [
+      list.map(({ sec, items, k, n }) => [
+        secH(`f-h-sec-${sec.id}`, secTitle(sec), h('span', { class: 'sec-aside' }, `${k} из ${n}`)),
+        h('section', { key: `f-sec-${sec.id}`, class: 'group', 'data-flip': '' }, items.map(it => {
+          const on = D.secDone(F, it.id, day);
+          return h('div', { key: it.id, class: 'row static sec-row' + (on ? ' done' : ''), style: tint(it.color) },
+            tile(it.icon), txt(it.name, it.note), h('span', { class: 'check', role: 'img', 'aria-label': on ? 'сделано' : 'ещё не отмечено' }, gl(G.check, '', 1)));
+        })),
+      ]),
+      h('p', { key: 'f-sec-foot', class: 'sec-foot', 'data-flip': '' }, 'Разделы — сверх минимума: на серию и гонку не влияют.'),
     ];
   }
 
@@ -1955,17 +2011,29 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     }, txt(label, note), h('span', { class: 'switch', 'aria-hidden': 'true' }));
     const wact = S.weekly.filter(i => !i.archivedAt);
     const arch = [...S.items, ...S.weekly].filter(i => i.archivedAt); // и они видны другу в прошлых днях и ленте
+    const secs = S.sections.filter(x => x.on); // выключенный раздел друзьям не уходит, даже открытый
     return [
       h('p', { key: 'sub', class: 'sheet-sub' }, 'Выключенный пункт друзья видят как «Личный пункт»'),
       secH('p-h-min', 'Минимум'),
       h('section', { key: 'p-min', class: 'group' }, D.activeItems(S).map(itemSwitch)),
       wact.length > 0 && [secH('p-h-week', 'Каждую неделю'), h('section', { key: 'p-week', class: 'group' }, wact.map(itemSwitch))],
       arch.length > 0 && [secH('p-h-arch', 'Убранные'), h('section', { key: 'p-arch', class: 'group' }, arch.map(itemSwitch))],
+      secs.length > 0 && [secH('p-h-secs', 'Разделы'), h('section', { key: 'p-secs', class: 'group' }, secs.map(sec => {
+        const open = p.sections.includes(sec.id);
+        return h('button', {
+          key: sec.id, class: 'switch-row item-switch', role: 'switch', 'aria-checked': pressed(open), style: tint(sec.color),
+          onclick: () => {
+            cloud.setSectionShared(sec.id, !open);
+            M.haptic();
+            render();
+          },
+        }, tile(sec.icon), txt(sec.name, open ? 'друзья видят пункты и отметки' : 'закрыт — друзья не видят'), h('span', { class: 'switch', 'aria-hidden': 'true' }));
+      })), h('p', { key: 'p-secs-foot', class: 'sec-foot' }, 'Открытый раздел друзья видят в твоём листе: пункты и отметки за две недели. На гонку разделы не влияют.')],
       secH('p-h-more', 'Ещё'),
       h('section', { key: 'p-more', class: 'group' },
         shareSwitch('sleep', p.sleep, 'Сон', 'отбой, подъём, шаг отбоя и график ночей'),
         shareSwitch('onepct', p.onepct, '1% недели', 'улучшение, которое выбираешь на итогах')),
-      h('p', { key: 'p-foot', class: 'sec-foot' }, 'Разбор недели — «что получилось», «что нет», «чему научила неделя» — и разделы друзьям не уходят никогда. Ещё друзья видят, когда твой прогресс обновлялся, и твой часовой пояс — по нему считается твой день.'),
+      h('p', { key: 'p-foot', class: 'sec-foot' }, 'Разбор недели — «что получилось», «что нет», «чему научила неделя» — друзьям не уходит никогда. Ещё друзья видят, когда твой прогресс обновлялся, и твой часовой пояс — по нему считается твой день.'),
       h('section', { key: 'p-me', class: 'group group-gap-l' }, h('button', { class: 'row row-t row-accent', onclick: () => openFriend('me') }, 'Как меня видят друзья')),
     ];
   }
@@ -2121,9 +2189,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             onclick: () => toggleSection(sec),
           }, tile(sec.icon), txt(sec.name, sec.on ? secCount(sec) : `выключен · ${secCount(sec)}`), h('span', { class: 'switch', 'aria-hidden': 'true' }))),
         !ui.edit && list.length < D.MAX_SECTIONS && plusRow('add', 'Добавить раздел', () => openSection(null))),
-      h('p', { key: 'secs-foot', class: 'sec-foot', 'data-flip': '' }, list.length
-        ? 'Отдельно от минимума: на серию, кольца и гонку не влияют, друзьям не видны.'
-        : 'Работа, хобби, учёба — отдельно от минимума: на серию, кольца и гонку не влияют, друзьям не видны.'),
+      h('p', { key: 'secs-foot', class: 'sec-foot', 'data-flip': '' }, `${list.length ? 'Отдельно' : 'Работа, хобби, учёба — отдельно'} от минимума: на серию, кольца и гонку не влияют.${cloud.enabled ? ' Друзьям — только открытые в «Что видят друзья».' : ''}`),
       list.filter(sec => sec.on && (!ui.edit || sec.items.length)).map(sec => [
         secH(`h-s-${sec.id}`, secTitle(sec), !ui.edit && h('button', { class: 'link', onclick: () => openSection(sec.id) }, 'Настроить')),
         h('section', { key: `s-${sec.id}`, class: 'group', 'data-flip': '' },
@@ -2551,7 +2617,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         SECTION_PRESETS.map(p => row(`p-${p.name}`, p, S.sections.some(x => fromPreset(x, p)), p.note, () => presetToggle(p))),
         S.sections.filter(x => !SECTION_PRESETS.some(p => fromPreset(x, p))).map(sec => row(sec.id, sec, true, 'свой раздел', () => dropSection(sec.id))),
         S.sections.length < D.MAX_SECTIONS && plusRow('own', 'Свой раздел', () => openSection(null))),
-      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, 'Пункты разделов добавишь потом — на «Сегодня» или в Настройках. Друзья разделы не видят.'),
+      h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, 'Пункты разделов добавишь потом — на «Сегодня» или в Настройках. Друзьям разделы не видны, пока не откроешь их в «Что видят друзья».'),
     ];
   }
 
@@ -2614,7 +2680,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             })),
           h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Код друга'), codeInput('setup-code', setupJoin))),
         note || h('p', { key: 'f-foot', class: 'sec-foot', 'data-flip': '' },
-          'Код друга — если он уже есть; нет — пропусти, добавишь потом. Прогресс виден только по взаимному согласию. Разделы и разбор недели не уходят никогда.'),
+          'Код друга — если он уже есть; нет — пропусти, добавишь потом. Прогресс виден только по взаимному согласию. Разбор недели не уходит никогда, разделы — только открытые.'),
       ];
     }
     return [

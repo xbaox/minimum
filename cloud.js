@@ -64,6 +64,8 @@ function normDoc(raw) {
     code: id && CODE_RE.test(o.code) ? o.code : '',
     name: cleanName(o.name),
     hidden: Array.isArray(o.hidden) ? [...new Set(o.hidden.filter(x => typeof x === 'string' && x))].slice(0, 500) : [],
+    // Разделы друзьям — только открытые явно (v58): новый раздел закрыт.
+    sections: Array.isArray(o.sections) ? [...new Set(o.sections.filter(x => typeof x === 'string' && x))].slice(0, 50) : [],
     sleep: o.sleep !== false,
     onepct: o.onepct !== false,
     sent: id ? str(o.sent, 40) : '',
@@ -180,7 +182,7 @@ export function createCloud({ win, idb, getState, now = () => new Date(), onChan
 
   function snapshot() {
     const today = logicalDate(now());
-    const obj = shareOf(getState(), today, { tz: deviceZone(), hidden: doc.hidden, sleep: doc.sleep, onepct: doc.onepct });
+    const obj = shareOf(getState(), today, { tz: deviceZone(), hidden: doc.hidden, sleep: doc.sleep, onepct: doc.onepct, sections: doc.sections });
     return { obj, h: hash(JSON.stringify(obj)) };
   }
 
@@ -301,7 +303,7 @@ export function createCloud({ win, idb, getState, now = () => new Date(), onChan
       return { id: doc.id, code: doc.code, name: doc.name };
     },
     get prefs() {
-      return { hidden: doc.hidden.slice(), sleep: doc.sleep, onepct: doc.onepct };
+      return { hidden: doc.hidden.slice(), sleep: doc.sleep, onepct: doc.onepct, sections: doc.sections.slice() };
     },
     get status() {
       return status;
@@ -422,7 +424,7 @@ export function createCloud({ win, idb, getState, now = () => new Date(), onChan
       } catch (e) {
         if (!(e instanceof CloudError) || e.kind !== 'lost') throw e;
       }
-      doc = normDoc({ hidden: doc.hidden, sleep: doc.sleep, onepct: doc.onepct });
+      doc = normDoc({ hidden: doc.hidden, sleep: doc.sleep, onepct: doc.onepct, sections: doc.sections });
       cache = null;
       notice = '';
       stuck = '';
@@ -438,6 +440,15 @@ export function createCloud({ win, idb, getState, now = () => new Date(), onChan
       if (hide) set.add(id);
       else set.delete(id);
       doc.hidden = [...set];
+      saveDoc();
+      changed();
+    },
+    // Раздел друзьям: открыть или закрыть (по умолчанию закрыт).
+    setSectionShared(id, on) {
+      const set = new Set(doc.sections);
+      if (on) set.add(id);
+      else set.delete(id);
+      doc.sections = [...set];
       saveDoc();
       changed();
     },

@@ -155,7 +155,7 @@ test('«Что нового» — один раз для тех, кто уже �
   off.done();
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
-  assert.equal(a.doc.querySelectorAll('.news li').length, 2);
+  assert.equal(a.doc.querySelectorAll('.news li').length, 3);
   assert.match(a.text(), /Разделы: «Работа», «Хобби» и свои/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
