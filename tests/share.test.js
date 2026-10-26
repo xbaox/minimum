@@ -363,6 +363,16 @@ test('«Что сделано» друзьям (v60): у открытого ра
   assert.deepEqual(D.secDay(v.F, fs, v.today), { items: [], k: 0, n: 0, rec: 'ф'.repeat(200), active: true });
   const notes = changes(v).filter(e => e.kind === 'note');
   assert.deepEqual(notes.map(e => [e.date, e.section.name, e.text.length]), [[TODAY, 'Учёба', 200], ['2026-10-19', 'Учёба', 7]]);
+  // эмодзи на стыке 199/200: половинка в jsonb — отказ сервера, поэтому режем до половинки, а не посреди неё
+  s.secDays[study.id][TODAY] = 'а'.repeat(199) + '📚' + 'б'.repeat(50);
+  const t = shareOf(s, TODAY, { tz: 'America/Toronto', sections: [study.id] }).sections[0].t[TODAY];
+  assert.equal(t, 'а'.repeat(199));
+  assert.doesNotMatch(t, /[\uD800-\uDFFF]/);
+  // в ленте — не больше трёх свежих записей: ежедневные записи не вытесняют новые пункты
+  for (const d of D.range('2026-10-15', TODAY)) s.secDays[study.id][d] = 'каждый день ' + d;
+  const feed = changes(readShare(JSON.parse(JSON.stringify(shareOf(s, TODAY, { tz: 'America/Toronto', sections: [study.id] }))), at(TODAY, 20)));
+  assert.equal(feed.filter(e => e.kind === 'note').length, 3);
+  assert.deepEqual(feed.filter(e => e.kind === 'note').map(e => e.date), [TODAY, '2026-10-20', '2026-10-19']);
   // раздел без пунктов — тоже сверх минимума: 19-го уже была тренировка, сегодня — запись
   assert.deepEqual(weekScore(v, '2026-10-19').extra, 3);
 });

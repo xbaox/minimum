@@ -579,6 +579,38 @@ test('«Что сделано» (v60): кружок — отметка дня р
   a.done();
 });
 
+test('лист «Что сделано»: снять отметку с прежней записью — через подтверждение; день ушёл в позавчера — текст не теряется молча', async () => {
+  const S = JSON.parse(withSections('2026-10-26')['minimum.v2']);
+  S.secDays = { 'sec-w': { '2026-10-26': 'созвон в 15', '2026-10-25': 'отчёт' } };
+  const a = await start({ storage: { 'minimum.v2': JSON.stringify(S) }, when: new Date(2026, 9, 27, 3, 50) }); // 03:50 — ещё 26-е
+  const row = () => a.all('.list-sec').find(g => g.getAttribute('aria-label') === 'Раздел «Работа»').querySelector('.sec-day');
+  row().querySelector('.sd-open').click();
+  a.sheet().querySelector('.switch-row').click(); // выключил «Сделано» у записи с текстом
+  a.doc.getElementById('sheet-done').click();
+  assert.match(sp(a.doc.querySelector('.alert').textContent), /Снять отметку\?Запись этого дня сотрётся\./);
+  a.alertBtn('Отмена');
+  await wait();
+  assert.equal(a.app.state.secDays['sec-w']['2026-10-26'], 'созвон в 15', 'передумал — запись на месте');
+  assert.ok(a.sheet(), 'лист остаётся');
+  a.click('Отмена', '.sheet-act');
+  await wait();
+  // вчерашняя запись из листа дня, а пока писали — прошла граница 04:00
+  a.click('Прогресс', '.tab');
+  a.all('.chain button.cell').find(c => sp(c.getAttribute('aria-label')).includes('25 октября')).click();
+  a.all('.sheet .sd-open').find(b => sp(b.textContent).includes('отчёт')).click();
+  assert.match(a.sheetText(), /Вчера, 25 октября/);
+  a.type(a.sheet().querySelector('textarea[name="done-text"]'), 'отчёт и план на неделю');
+  a.t.now = new Date(2026, 9, 27, 4, 5);
+  a.doc.getElementById('sheet-done').click();
+  await wait();
+  assert.equal(a.app.state.secDays['sec-w']['2026-10-25'], 'отчёт', 'позавчера уже не изменить');
+  assert.ok(a.sheet(), 'лист с текстом остаётся — можно скопировать');
+  assert.match(a.sheetText(), /Этот день уже не изменить: отмечать можно сегодня и вчера\./);
+  assert.match(a.sheetText(), /Воскресенье, 25 октября/, 'дата без повтора');
+  assert.equal(a.sheet().querySelector('textarea[name="done-text"]').value, 'отчёт и план на неделю');
+  a.done();
+});
+
 test('лист дня: недельный счётчик — забытый вчера можно отметить; раньше — только отмеченные', async () => {
   const a = await start({ storage: withSections('2026-10-26') });
   const cell = d => a.all('.chain button.cell').find(c => sp(c.getAttribute('aria-label')).includes(d));

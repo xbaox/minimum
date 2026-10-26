@@ -15,8 +15,15 @@ export const HIDDEN_NAME = 'Личный пункт';
 export const SEC_DAYS = 21; // разделы друзьям — отметки за три недели: эта, прошлая (итоги гонки) и позапрошлая (сравнение)
 export const SEC_NOTE_DAYS = 7; // записи «Что сделано» — за неделю
 export const SEC_NOTE_SHARE = 200; // и не длиннее двухсот знаков
+const NOTES_IN_FEED = 3; // записей в ленте «Изменения» — не больше трёх свежих: остальное не вытесняют
 export const HIDDEN_COLOR = 'gray';
 const MAX_ITEMS = 60, MAX_WEEKLY = 20; // больше в чужом снимке — мусор, а не привычки
+
+// Обрезка без половинки эмодзи на конце: половинка в jsonb — отказ сервера и «застрявший» снимок.
+const cutText = (s, n) => {
+  s = String(s ?? '').slice(0, n);
+  return /[\uD800-\uDBFF]$/.test(s) ? s.slice(0, -1) : s;
+};
 
 // Текст в снимок: без управляющих символов и половинок эмодзи — Postgres такой jsonb не примет.
 // Без lookbehind в регулярке: старый Safari не разобрал бы модуль целиком.
@@ -116,7 +123,7 @@ export function shareOf(S, today, { tz = '', hidden = [], sleep = true, onepct =
   const secFrom = D.addDays(today, -(SEC_DAYS - 1)), noteFrom = D.addDays(today, -(SEC_NOTE_DAYS - 1));
   const secs = (S.sections || []).filter(sec => sec.on && open.has(sec.id)).map(sec => {
     const t = {};
-    for (const [d, text] of D.secNotes(S, sec, noteFrom, today)) t[d] = clean(text).slice(0, SEC_NOTE_SHARE);
+    for (const [d, text] of D.secNotes(S, sec, noteFrom, today)) t[d] = clean(cutText(text, SEC_NOTE_SHARE)); // сначала режем, потом чистим
     return {
       id: (next++).toString(36), name: clean(sec.name), icon: sec.icon, color: sec.color, on: true, addedAt: sec.addedAt,
       items: sec.items.map(it => ({
@@ -305,7 +312,10 @@ export function changes({ F, today, hidden = new Set(), sleep = true, onepct = t
       if (D.isMilestone(run)) push(d, 'streak', { n: run });
     } else if (st === 'miss' && ++misses >= 2) run = 0;
   }
-  for (const sec of F.sections) for (const [d, text] of D.secNotes(F, sec, F.createdAt, today)) push(d, 'note', { section: sec, text });
+  // Записи «Что сделано» — только три свежие: ежедневные записи не вытесняют из ленты новые пункты, шаги и серии.
+  F.sections.flatMap(sec => D.secNotes(F, sec, F.createdAt, today).map(([d, text]) => ({ d, sec, text })))
+    .sort((a, b) => (a.d < b.d ? 1 : a.d > b.d ? -1 : 0)).slice(0, NOTES_IN_FEED)
+    .forEach(n => push(n.d, 'note', { section: n.sec, text: n.text }));
   for (const w of F.weekly) {
     const weeks = new Map();
     for (const d of F.weekMarks[w.id] || []) {

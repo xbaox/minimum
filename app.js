@@ -617,9 +617,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function secDaySheet(sh) {
     const sec = D.findSection(S, sh.sec), d = sh.draft;
     if (!sec) return h('p', { key: 'gone', class: 'group empty first' }, 'Этого раздела больше нет');
-    const shared = cloud.prefs.sections.includes(sec.id);
+    // Кто увидит: друзья выключены — никто; раздел выключен или закрыт — тоже никто (в снимок он не уходит).
+    const seen = cloud.joined && sec.on && cloud.prefs.sections.includes(sec.id);
+    const when = sh.date === today ? 'Сегодня' : sh.date === D.addDays(today, -1) ? 'Вчера' : cap(WEEKDAYS[D.weekday(sh.date)]);
     return [
-      h('p', { key: 'sub', class: 'sheet-sub' }, `${cap(dayWord(sh.date, today))}, ${dm(sh.date)}`),
+      h('p', { key: 'sub', class: 'sheet-sub' }, `${when}, ${dm(sh.date)}`),
       h('div', { key: 'preview', class: 'preview', style: tint(sec.color) },
         h('span', { class: 'tile' }, icon(sec.icon)), h('p', { class: 'pv-name' }, sec.name), h('p', { class: 'pv-note' }, 'отдельно от минимума')),
       h('section', { key: 'sd', class: 'group group-gap-l', 'data-flip': '' },
@@ -641,19 +643,29 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             },
             onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.target.blur(); } },
           }))),
-      h('p', { key: 'sd-foot', class: 'sec-foot', 'data-flip': '' }, !cloud.enabled ? 'Запись видна только тебе.'
-        : shared ? 'Раздел открыт: друзья увидят отметку и запись.' : 'Раздел закрыт для друзей — запись видна только тебе.'),
+      sh.err ? h('p', { key: 'sd-err', class: 'sec-foot err', role: 'alert', 'data-flip': '' }, sh.err)
+        : h('p', { key: 'sd-foot', class: 'sec-foot', 'data-flip': '' }, seen ? 'Раздел открыт: друзья увидят отметку и запись.'
+          : !cloud.joined ? 'Запись видна только тебе.' : !sec.on ? 'Раздел выключен — друзья его не видят.' : 'Раздел закрыт для друзей — запись видна только тебе.'),
     ];
   }
 
+  // Готово: день успел стать «позавчера» (граница 04:00) — лист остаётся с текстом и причиной, ничего не теряется молча.
+  // Снять отметку с прежней записью — через то же подтверждение, что у кружка на «Сегодня».
   function saveSecDay(sh) {
-    if (closing || stale()) return;
-    const ok = D.setSecRec(S, sh.sec, sh.date, today, sh.draft.on ? sh.draft.text : null);
-    if (ok) {
+    if (closing) return;
+    stale();
+    const was = D.secRec(S, sh.sec, sh.date), next = sh.draft.on ? sh.draft.text : null;
+    const go = () => {
+      if (!D.setSecRec(S, sh.sec, sh.date, today, next)) {
+        sh.err = D.findSection(S, sh.sec) ? 'Этот день уже не изменить: отмечать можно сегодня и вчера.' : 'Этого раздела больше нет.';
+        return render();
+      }
       save();
       M.haptic();
-    }
-    closeSheet();
+      closeSheet();
+    };
+    if (was && next == null) showAlert({ title: 'Снять отметку?', msg: 'Запись этого дня сотрётся.', yes: 'Снять', danger: true, action: go });
+    else go();
   }
 
   // Строка пункта раздела: тап — отметка, удержание — детали (в листе дня — только отметка).
@@ -2885,7 +2897,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         S.sections.filter(x => !SECTION_PRESETS.some(p => fromPreset(x, p))).map(sec => row(sec.id, sec, true, 'свой раздел', () => dropSection(sec.id))),
         S.sections.length < D.MAX_SECTIONS && plusRow('own', 'Свой раздел', () => openSection(null))),
       h('p', { key: 'foot', class: 'sec-foot', 'data-flip': '' }, S.sections.length
-        ? 'Пункты добавишь потом — на «Сегодня» или в Настройках; можно и без них: «Что сделано» — отметка и запись дня.'
+        ? 'Пункты раздела добавишь потом в Настройках; можно и без них: «Что сделано» — отметка и запись дня.'
         : 'Можно и без разделов — добавишь потом в Настройках.'),
       // Что видят друзья (v60) — сразу здесь: новый раздел открыт, закрыть — переключателем.
       cloud.enabled && S.sections.length > 0 && [
