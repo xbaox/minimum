@@ -25,7 +25,8 @@ const RULES = S => [
   'Не пропускай дважды.',
   'Среда сильнее силы воли: телефон — на кухне, учёба — за обеденным столом, кровать — для сна.',
   'Одно улучшение в неделю — 1%.',
-  'План дня — в Напоминаниях, не здесь.',
+  // План на завтра (v61) — у тех, у кого он в минимуме; остальным — прежнее правило.
+  D.planItem(S) ? 'План на завтра — с вечера: до шести дел, самое важное первым. Утром — с первого и по порядку, несделанное — в следующий план.' : 'План дня — в Напоминаниях, не здесь.',
   `Сон — главное: отбой шагами к${NB}${S.sleep.goalBed}, подъём ${clock(S.sleep.goalWake)} — ${dur(D.sleepFor(S.sleep.goalBed, S.sleep.goalWake))} сна.`,
   'Работа, учёба и хобби — в разделах, отдельно от минимума: отметь, что сделано, и запиши пару слов. Серию они не трогают.',
 ];
@@ -36,11 +37,10 @@ const TABS = [['today', 'Сегодня', G.tabToday], ['progress', 'Прогр�
 const WELCOME = (n, now, goal) =>
   `${n ? `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках.` : 'Минимум пока пуст — пункты добавишь ниже: из подсказок или свои.'} Сон — шагами от ${dur(now)} к${NB}${dur(goal)}: шаг выбираешь на итогах недели или в${NB}Настройках.`;
 // «Что нового» — один раз для тех, кто уже пользовался; новичок видит первую настройку.
-const NEWS_ID = 'v60';
+const NEWS_ID = 'v61';
 const NEWS = [
-  '«Что сделано» в разделах: кружок — отметка дня, тап по строке — запись пары слов. Пункты не обязательны',
-  'Гонка: очко за закрытый день, ночь в цель и дело сверх минимума — раздел или счётчик, до трёх в день. Под карточкой — что ещё можно сегодня',
-  'Новый раздел друзьям открыт — закрыть можно в первой настройке или в «Что видят друзья». Недельный счётчик за вчера отмечается в листе дня',
+  '«План на завтра» — прямо здесь: с вечера до шести дел по важности, утром — галочки по порядку. Карточка «План» — если такой пункт есть в минимуме (он есть в подсказках); составил план — пункт отметится сам',
+  'Не каждый день? Удержи пункт минимума — «Не каждый день?» переведёт его в «N раз в неделю» или в раздел, отметки перейдут с ним',
 ];
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
 const SECTION_PRESETS = [
@@ -468,6 +468,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (sh.kind === 'review') return !!sh.choice || sh.draft.notesDone || ['good', 'bad', 'learned', 'improvement'].some(k => sh.draft[k].trim());
     if (sh.kind === 'item' || sh.kind === 'name' || sh.kind === 'section' || sh.kind === 'secday') return JSON.stringify(sh.draft) !== sh.orig;
     if (sh.kind === 'suggest') return sh.picks.length > 0;
+    if (sh.kind === 'plan') return planSig(sh.draft) !== sh.orig;
     return false;
   }
   function guardDirty() {
@@ -551,8 +552,171 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       weekly.length > 0 && [secH('h-week', 'На неделе'), h('section', { key: 'list-week', class: 'group list-week', 'data-flip': '' }, weekly.map(weekRow))],
       improvement && h('section', { key: 'onepct', class: 'group onepct', 'data-flip': '' }, h('div', { class: 'row' }, tile('sparkles', 'yellow'),
         h('span', { class: 'txt' }, h('span', { class: 'note' }, '1% недели'), h('span', { class: 'name' }, improvement)))),
+      planCard(),
       sectionBlocks(),
     ];
+  }
+
+  // ---------- план дня (v61): по Айви Ли — с вечера до шести дел по важности, утром — с первого и по порядку,
+  // несделанное — в следующий план. Сверх минимума: серию, кольца и гонку не трогает, друзьям не уходит.
+  // Карточка — если в минимуме есть «План на завтра» (или план уже составлен), цветом и значком этого пункта.
+
+  const planLook = () => {
+    const it = D.planItem(S);
+    return it ? { icon: it.icon, color: it.color } : { icon: 'notebook', color: 'yellow' };
+  };
+  const planShown = () => !!D.planItem(S) || D.tasksOf(S, today).length > 0 || D.tasksOf(S, D.addDays(today, 1)).length > 0;
+  const deals = n => `${n}${NB}${plural(n, ['дело', 'дела', 'дел'])}`;
+
+  function planCard() {
+    if (!planShown()) return null;
+    const list = D.tasksOf(S, today), look = planLook(), cur = D.taskNow(list);
+    const k = list.filter(t => t.done).length;
+    return [
+      secH('h-plan', list.length ? h('span', {}, 'План на сегодня · ', h('span', { class: 'roll', 'data-roll': '' }, `${k} из ${list.length}`)) : 'План',
+        list.length > 0 && h('button', { class: 'link', onclick: () => openPlan(today) }, 'Изменить')),
+      h('section', { key: 'plan', class: 'group list-plan', style: tint(look.color), 'data-flip': '', 'aria-label': 'План' },
+        list.map((t, i) => taskRow(t, i, today, i === cur, true)),
+        !list.length && !evening() && planRow(today, 'sunrise'), // вечером план на сегодня уже ни к чему
+        planRow(D.addDays(today, 1), look.icon)),
+    ];
+  }
+
+  // Дело: номер — плитка цвета плана, тап — сделано, удержание — изменить план; «сейчас» — первое несделанное.
+  // В листе дня (hold = false) — только отметка; раньше вчера — только показ.
+  function taskRow(t, i, date, now, hold, editable = true) {
+    const kids = [h('span', { class: 'tile tile-n', 'aria-hidden': 'true' }, String(i + 1)), txt(t.text, now ? 'сейчас' : null),
+      h('span', { class: 'check', role: editable ? null : 'img', 'aria-label': editable ? null : t.done ? 'сделано' : 'не сделано' }, gl(G.check, '', 1))];
+    if (!editable) return h('div', { key: `t${i}`, class: 'row static task' + (t.done ? ' done' : ' missed') }, kids);
+    const act = () => taskToggle(date, i);
+    return h('button', {
+      key: `t${i}`, class: 'row task' + (t.done ? ' done' : '') + (now ? ' now' : ''), 'aria-pressed': pressed(t.done), 'data-flip': '', 'data-task': String(i),
+      'aria-label': `${i + 1}. ${t.text}${now ? ', сейчас' : ''}`,
+      ...(hold ? M.holdable(act, () => openPlan(date)) : { onclick: act }),
+    }, kids);
+  }
+
+  // Строка составления: на завтра — всегда, на сегодня — пока плана нет.
+  function planRow(date, glyph) {
+    const list = D.tasksOf(S, date), isToday = date === today;
+    const note = list.length ? `${deals(list.length)} · первое — ${list[0].text}` : isToday ? 'плана нет — составить' : 'до шести дел — по важности';
+    return h('button', { key: isToday ? 'plan-today' : 'plan-tomorrow', class: 'row row-s plan-row', 'data-flip': '', onclick: () => openPlan(date) },
+      tile(glyph), txt(isToday ? 'План на сегодня' : 'План на завтра', note), chev());
+  }
+
+  // Последнее дело плана сделано — маленький салют цветом плана (не праздник дня: тот — только у минимума).
+  function taskToggle(date, i) {
+    if (stale() || closing) return;
+    const was = D.tasksOf(S, date).every(t => t.done);
+    if (!D.toggleTask(S, date, i, today)) return;
+    M.haptic();
+    commit();
+    if (!was && D.tasksOf(S, date).every(t => t.done)) {
+      const look = planLook();
+      M.burst(root.querySelector(`${ui.sheet ? '.sheet ' : 'main '}[data-task="${i}"] .check`), [`var(--c-${look.color})`, 'var(--sun-1)', 'var(--sun-2)'], { n: 14, spread: 0.55 });
+    }
+  }
+
+  // Лист плана: до шести строк по важности, «↑» — выше; пустая строка в конце — «Ещё дело».
+  let lineSeq = 0;
+  const line = (text = '', done = false) => ({ k: `l${++lineSeq}`, text, done });
+  const planSig = d => JSON.stringify(d.lines.filter(l => l.text.trim()).map(l => [l.text.trim(), l.done]));
+
+  function openPlan(date) {
+    if (stale()) return;
+    const lines = D.tasksOf(S, date).map(t => line(t.text, t.done));
+    if (lines.length < D.TASKS_MAX) lines.push(line());
+    const draft = { lines };
+    openSheet({ kind: 'plan', date, draft, orig: planSig(draft) });
+  }
+
+  function planSheet(sh) {
+    const lines = sh.draft.lines, isToday = sh.date === today;
+    const filled = lines.filter(l => l.text.trim()).length;
+    const carry = D.carryOver(S, sh.date, lines), room = D.TASKS_MAX - filled;
+    const link = D.planItem(S);
+    const marks = !isToday && link && !D.doneOf(S, today).includes(link.id);
+    const foot = isToday
+      ? 'Самое важное — первым: с него и начни. Тап по делу на «Сегодня» — сделано.'
+      : `Самое важное — первым. Завтра — с первого и по порядку: за второе — когда первое сделано. Несделанное перенесёшь в следующий план.${marks ? ` По «Готово» пункт «${link.name}» в минимуме отметится сам.` : ''}`;
+    return [
+      h('p', { key: 'sub', class: 'sheet-sub' }, `${cap(WEEKDAYS[D.weekday(sh.date)])}, ${dm(sh.date)}`),
+      carry.length > 0 && room > 0 && h('section', { key: 'carry', class: 'group first', style: tint(planLook().color), 'data-flip': '' },
+        h('button', { class: 'row row-s carry-row', onclick: () => carryIn(sh, carry) },
+          h('span', { class: 'tile tile-round' }, gl(G.plus)),
+          txt(`Перенести несделанное за ${isToday ? 'вчера' : 'сегодня'}`, carry.slice(0, room).join(' · ')),
+          h('span', { class: 'value' }, `+${Math.min(room, carry.length)}`))),
+      h('section', { key: 'lines', class: 'group plan-lines' + (carry.length > 0 && room > 0 ? ' group-gap' : ' first'), style: tint(planLook().color), 'data-flip': '' },
+        lines.map((l, i) => lineRow(sh, l, i))),
+      sh.err ? h('p', { key: 'pl-err', class: 'sec-foot err', role: 'alert', 'data-flip': '' }, sh.err)
+        : h('p', { key: 'pl-foot', class: 'sec-foot', 'data-flip': '' }, foot),
+    ];
+  }
+
+  function lineRow(sh, l, i) {
+    const lines = sh.draft.lines;
+    return h('div', { key: l.k, class: 'row plan-line' + (l.done ? ' done' : '') + (l.text.trim() ? '' : ' empty'), 'data-flip': '' },
+      h('span', { class: 'tile tile-n', 'aria-hidden': 'true' }, l.done ? gl(G.tick) : String(i + 1)),
+      h('textarea', {
+        class: 'form-input form-area area pl-area', name: `task-${i + 1}`, rows: 1, value: l.text, maxlength: D.TASK_MAX,
+        placeholder: i === 0 ? 'Самое важное' : 'Ещё дело', enterkeyhint: 'next', autocomplete: 'off', 'aria-label': `Дело ${i + 1}${l.done ? ', сделано' : ''}`,
+        oninput: e => {
+          const was = !!l.text.trim();
+          l.text = e.target.value;
+          autosize(e.target);
+          // Заполнили последнюю строку — снизу новая пустая; строка стала (не)пустой — «↑» и перенос пересчитать.
+          const grow = l === lines[lines.length - 1] && l.text.trim() && lines.length < D.TASKS_MAX;
+          if (grow) lines.push(line());
+          if (grow || was !== !!l.text.trim()) render();
+        },
+        onkeydown: e => {
+          if (e.key !== 'Enter' || e.isComposing) return;
+          e.preventDefault();
+          const next = root.querySelectorAll('.sheet .pl-area')[i + 1];
+          if (l.text.trim() && next) next.focus();
+          else e.target.blur();
+        },
+      }),
+      i > 0 && l.text.trim() && h('button', { class: 'icon-btn', 'aria-label': `«${l.text.trim()}»: выше`, onclick: () => moveLine(sh, i) }, gl(G.up)));
+  }
+
+  function moveLine(sh, i) {
+    const lines = sh.draft.lines;
+    [lines[i - 1], lines[i]] = [lines[i], lines[i - 1]];
+    M.haptic();
+    render();
+  }
+
+  // Несделанное накануне — в конец списка, сколько влезет; пустые строки схлопываются.
+  function carryIn(sh, carry) {
+    const lines = sh.draft.lines.filter(l => l.text.trim());
+    for (const text of carry) if (lines.length < D.TASKS_MAX) lines.push(line(text));
+    if (lines.length < D.TASKS_MAX) lines.push(line());
+    sh.draft.lines = lines;
+    M.haptic();
+    render();
+  }
+
+  // Готово: план на завтра составлен — «План на завтра» в минимуме отмечен (одно действие вместо двух).
+  // День стал другим, пока писали (граница 04:00), — лист остаётся с текстом и причиной.
+  function savePlan(sh) {
+    if (closing) return;
+    stale();
+    const list = sh.draft.lines.filter(l => l.text.trim()).map(l => ({ text: l.text, done: l.done }));
+    if (!D.setTasks(S, sh.date, list, today)) {
+      sh.err = 'Этот день уже прошёл — план на него не изменить.';
+      return render();
+    }
+    let party = false;
+    const link = D.planItem(S);
+    if (sh.date === D.addDays(today, 1) && list.length && link && !D.doneOf(S, today).includes(link.id)) {
+      const was = D.status(S, today, today) === 'closed';
+      D.toggleDone(S, today, link.id, today);
+      party = !was && D.status(S, today, today) === 'closed';
+    }
+    save();
+    M.haptic();
+    closeSheet(party ? celebrate : null);
   }
 
   // ---------- разделы на «Сегодня» (v58): ниже минимума, своим цветом отметки; на героя и серию не влияют.
@@ -889,10 +1053,12 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         tile(k === n ? 'checklist' : 'clock', k === n ? 'green' : 'gray'),
         txt(`Вчера: ${k} из ${n}`, k === n ? 'день закрыт' : `доотметить можно до${NB}${D.DAY_START_HOUR}:00`), chev(ui.yOpen)),
       ui.yOpen && plan.map(id => D.findItem(S, id)).filter(Boolean).map(it => itemRow(it, done.includes(it.id), y, '')),
-      // Доотметить вчера целиком: счётчики и разделы — в листе дня.
-      ui.yOpen && (S.weekly.some(w => !w.archivedAt) || S.sections.some(sec => sec.on)) &&
-        h('button', { key: 'y-day', class: 'row row-t row-accent', 'data-flip': '', onclick: () => openDay(y) }, 'Весь вчерашний день — счётчики и разделы'));
+      // Доотметить вчера целиком: счётчики, разделы и план — в листе дня.
+      ui.yOpen && yParts(y).length > 0 &&
+        h('button', { key: 'y-day', class: 'row row-t row-accent', 'data-flip': '', onclick: () => openDay(y) }, `Весь вчерашний день — ${andList(yParts(y))}`));
   }
+  const yParts = y => [S.weekly.some(w => !w.archivedAt) && 'счётчики', S.sections.some(sec => sec.on) && 'разделы', D.tasksOf(S, y).length > 0 && 'план'].filter(Boolean);
+  const andList = a => (a.length > 1 ? `${a.slice(0, -1).join(', ')} и ${a[a.length - 1]}` : a[0]);
 
   function toggleYesterday() {
     if (!ui.yOpen) {
@@ -953,6 +1119,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       titleText = D.findSection(S, sh.sec)?.name || 'Раздел';
       right = h('button', { class: 'sheet-act right', id: 'sheet-done', onclick: () => saveSecDay(sh) }, 'Готово');
       body = secDaySheet(sh);
+    } else if (sh.kind === 'plan') {
+      titleText = sh.date === D.addDays(today, 1) ? 'План на завтра' : sh.date === today ? 'План на сегодня' : 'План';
+      right = h('button', { class: 'sheet-act right', id: 'sheet-done', onclick: () => savePlan(sh) }, 'Готово');
+      body = planSheet(sh);
     } else if (sh.kind === 'suggest') {
       titleText = 'Подсказки';
       body = suggestSheet(sh); // первым: выбор чистится от того, что уже в минимуме
@@ -1127,7 +1297,20 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           tile(it.icon), txt(it.name, it.note), h('span', { class: 'check', role: 'img', 'aria-label': done.includes(it.id) ? 'сделано' : 'не сделано' }, gl(G.check, '', 1))))
         : h('p', { class: 'empty' }, d === today ? 'Минимум пока пуст' : 'В этот день минимума ещё не было')),
       dayWeekly(d, editable),
+      dayTasks(d, editable),
       daySections(d, editable),
+    ];
+  }
+
+  // План дня в листе дня (v61): вчера и сегодня — можно отметить, раньше — только показ.
+  function dayTasks(d, editable) {
+    const list = D.tasksOf(S, d);
+    if (!list.length) return null;
+    const k = list.filter(t => t.done).length;
+    return [
+      secH('h-day-plan', editable ? 'План · можно отметить' : 'План', h('span', { class: 'sec-aside' }, `${k} из ${list.length}`)),
+      h('section', { key: 'day-plan', class: 'group list-plan', style: tint(planLook().color), 'data-flip': '' },
+        list.map((t, i) => taskRow(t, i, d, false, false, editable))),
     ];
   }
 
@@ -1251,9 +1434,70 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.shared), onclick: () => set('shared', !d.shared),
       }, txt('Видно друзьям', d.shared ? 'друзья видят название и отметки' : `друзья видят «${HIDDEN_NAME}» — отметки считаются`),
       h('span', { class: 'switch', 'aria-hidden': 'true' }))),
+      sh.id && !sec && !sh.weekly && freqBlock(sh),
       sh.id && h('section', { key: 'remove', class: 'group group-gap-l', 'data-flip': '' }, h('button', { class: 'row row-t row-danger', onclick: () => removeItem(sh) },
         sec ? 'Удалить из раздела' : sh.weekly ? 'Убрать из недельных' : 'Убрать из минимума')),
     ];
+  }
+
+  // «Не каждый день?» (v61): дней недели у минимума нет — пол одинаков каждый день. Такой пункт переходит
+  // в недельный счётчик («N раз в неделю») или в раздел — вместе с отметками; прошлые дни минимума не меняются.
+  function freqBlock(sh) {
+    const secs = S.sections.filter(sec => sec.on && sec.items.length < D.MAX_SEC_ITEMS);
+    return [
+      h('section', { key: 'freq', class: 'group group-gap-l', 'data-flip': '' },
+        h('button', { class: 'row row-s', style: tint('gray'), 'aria-expanded': pressed(sh.freq), onclick: () => { sh.freq = !sh.freq; render(); } },
+          tile('calendar'), txt('Не каждый день?', secs.length ? 'раз в неделю или в раздел' : 'сделать «раз в неделю»'), chev(sh.freq)),
+        sh.freq && h('div', { key: 'f-week', class: 'sub-block', 'data-flip': '' },
+          h('span', { class: 'field-label' }, 'Сколько раз в неделю'),
+          h('div', { class: 'chips' }, [1, 2, 3, 4, 5, 6].map(n => h('button', { key: n, class: 'chip', 'aria-label': `${n} ${plural(n, ['раз', 'раза', 'раз'])} в неделю`, onclick: () => askToWeekly(sh, n) }, String(n))))),
+        sh.freq && secs.length > 0 && h('div', { key: 'f-sec', class: 'sub-block', 'data-flip': '' },
+          h('span', { class: 'field-label' }, 'Или в раздел'),
+          h('div', { class: 'chips' }, secs.map(sec => h('button', { key: sec.id, class: 'chip chip-hint', onclick: () => askToSection(sh, sec) }, sec.name))))),
+      sh.freq && h('p', { key: 'freq-foot', class: 'sec-foot', 'data-flip': '' },
+        `Минимум одинаков каждый день — на этом держится привычка. Счётчик считает разы за неделю, раздел — когда получается, без пропусков. Отметки перейдут, прошлые дни минимума останутся.${secs.length ? '' : ' Разделы — в Настройках.'}`),
+    ];
+  }
+
+  function askToWeekly(sh, n) {
+    const it = D.findItem(S, sh.id);
+    if (!it || it.archivedAt) return;
+    showAlert({
+      title: `«${it.name}» — ${n}${NB}${plural(n, ['раз', 'раза', 'раз'])} в неделю?`,
+      msg: 'Пункт уйдёт из минимума с сегодняшнего дня и станет недельным счётчиком — отметки перейдут с ним. Прошлые дни не изменятся.',
+      yes: 'Перевести',
+      action: () => convertItem(sh, () => D.toWeekly(S, sh.id, n, today), x => `«${x.name}» — ${x.perWeek}${NB}${plural(x.perWeek, ['раз', 'раза', 'раз'])} в неделю`),
+    });
+  }
+
+  function askToSection(sh, sec) {
+    const it = D.findItem(S, sh.id);
+    if (!it || it.archivedAt) return;
+    // Скрытый от друзей пункт в открытом разделе стал бы виден — сказать заранее.
+    const hidden = cloud.joined && ('shared' in sh.draft ? !sh.draft.shared : cloud.prefs.hidden.includes(sh.id));
+    const open = cloud.joined && cloud.prefs.sections.includes(sec.id);
+    showAlert({
+      title: `Перенести «${it.name}» в «${sec.name}»?`,
+      msg: 'Пункт уйдёт из минимума с сегодняшнего дня, отметки перейдут с ним. В разделе пропусков нет — отмечаешь, когда получается.' +
+        (hidden && open ? ' Раздел открыт друзьям — пункт станет им виден.' : ''),
+      yes: 'Перенести',
+      action: () => convertItem(sh, () => D.toSection(S, sh.id, sec.id, today), x => `«${x.name}» — в разделе «${sec.name}»`),
+    });
+  }
+
+  // Правки из листа (название, подпись, цвет) — вместе с переводом; видимость счётчика — как у пункта.
+  function convertItem(sh, move, said) {
+    if (stale() || closing) return;
+    if (D.cleanFields(sh.draft, false)) D.updateItem(S, sh.id, sh.draft);
+    const wasHidden = 'shared' in sh.draft ? !sh.draft.shared : cloud.prefs.hidden.includes(sh.id);
+    const x = move();
+    if (!x) return;
+    // Скрытый пункт скрыт и в прошлых днях, и счётчиком (в разделе видимость — у раздела).
+    if ('shared' in sh.draft && cloud.joined) cloud.setHidden(sh.id, !sh.draft.shared);
+    if (cloud.enabled && wasHidden && S.weekly.includes(x)) cloud.setHidden(x.id, true);
+    save();
+    M.haptic();
+    closeSheet(() => toast(said(x)));
   }
 
   // Цвет и значок — общие для пункта и раздела. set(k, v) — меняет черновик и пружинит превью.
@@ -2593,7 +2837,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     };
     if (fresh) return apply();
     showAlert({
-      title: 'Заменить все данные?', msg: 'Текущие отметки, сон, разделы и итоги будут стёрты и заменены данными из файла.', yes: 'Заменить', danger: true,
+      title: 'Заменить все данные?', msg: 'Текущие отметки, сон, планы, разделы и итоги будут стёрты и заменены данными из файла.', yes: 'Заменить', danger: true,
       action: apply,
     });
   }
@@ -2616,7 +2860,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   // «Начать заново»: всё своё стирается, открывается первая настройка. Друзья и код остаются.
   function askReset() {
     showAlert({
-      title: 'Начать заново?', msg: 'Минимум вернётся к шаблону; недельные счётчики, отметки, сон, разделы и итоги недель сотрутся — откроется первая настройка. Если нужна копия — сначала экспорт.',
+      title: 'Начать заново?', msg: 'Минимум вернётся к шаблону; недельные счётчики, отметки, сон, планы, разделы и итоги недель сотрутся — откроется первая настройка. Если нужна копия — сначала экспорт.',
       yes: 'Стереть', danger: true,
       action: () => {
         S = D.seed(today, undefined, S.since); // «в системе с» переживает сброс

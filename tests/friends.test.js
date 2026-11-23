@@ -401,6 +401,30 @@ test('новый пункт с выключенным «Видно друзья�
   a.done();
 });
 
+test('«Не каждый день?» (v61): скрытый от друзей пункт и счётчиком остаётся «Личным пунктом», и в прошлых днях', async () => {
+  const server = fakeSupabase();
+  const a = await start(server);
+  await a.join('A');
+  await a.tab('Настройки');
+  a.click('Спорт');
+  await wait();
+  a.find('Видно друзьям', '.sheet .switch-row').click();
+  a.click('Не каждый день?', '.sheet button');
+  [...a.doc.querySelectorAll('.sheet .chip')].find(c => c.textContent === '2').click();
+  a.alertBtn('Перевести');
+  await wait();
+  const w = a.app.state.weekly.find(x => x.name === 'Спорт');
+  assert.equal(w.perWeek, 2);
+  assert.ok(a.app.cloud.prefs.hidden.includes(w.id), 'счётчик скрыт');
+  await a.visibility('hidden');
+  await wait(80);
+  const text = JSON.stringify(server.profiles[0].snapshot);
+  assert.ok(!text.includes('Спорт'), 'ни счётчиком, ни в прошлых днях');
+  assert.ok(text.includes('Личный пункт'));
+  assert.ok(!/tasks|Отчёт/.test(text));
+  a.done();
+});
+
 test('«Что видят друзья» показывает и убранные пункты — они видны другу в прошлых днях', async () => {
   const server = fakeSupabase();
   const a = await start(server);

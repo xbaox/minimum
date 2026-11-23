@@ -836,3 +836,115 @@ test('нормализация: id с именами Object.prototype отбро
   assert.equal(D.secDone(n, 'w1', '2026-09-02'), true);
   assert.doesNotThrow(() => D.dayRings(n, '2026-09-09', '2026-09-10'));
 });
+
+// ---------- план дня (v61) и «Не каждый день?»
+
+test('план дня (v61): на сегодня и на завтра, до шести дел, пустые строки выброшены, пустой план не хранится', () => {
+  const s = D.seed('2026-10-01', ids());
+  s.ui.setup = false;
+  const today = '2026-10-05';
+  assert.deepEqual(s.tasks, {});
+  assert.equal(D.setTasks(s, '2026-10-04', [{ text: 'вчера' }], today), false, 'вчерашний план не составить');
+  assert.equal(D.setTasks(s, '2026-10-07', [{ text: 'послезавтра' }], today), false);
+  const list = ['  Позвонить\n в банк ', '', 'Отчёт', 'Корм', 'Спорт', 'Письмо', 'Счёт', 'Седьмое'].map(text => ({ text }));
+  assert.equal(D.setTasks(s, '2026-10-06', list, today), true);
+  assert.deepEqual(D.tasksOf(s, '2026-10-06').map(t => t.text), ['Позвонить в банк', 'Отчёт', 'Корм', 'Спорт', 'Письмо', 'Счёт']);
+  assert.equal(D.tasksOf(s, '2026-10-06').every(t => t.done === false), true);
+  // длинный текст режется без половинки эмодзи
+  D.setTasks(s, today, [{ text: 'а'.repeat(D.TASK_MAX - 1) + '😀', done: true }], today);
+  assert.equal(D.tasksOf(s, today)[0].text, 'а'.repeat(D.TASK_MAX - 1));
+  assert.equal(D.tasksOf(s, today)[0].done, true);
+  D.setTasks(s, today, [{ text: '  ' }], today);
+  assert.equal(today in s.tasks, false, 'пустой план удалён');
+});
+
+test('план дня: отметка — сегодня и вчера; «сейчас» — первое несделанное; перенос несделанного накануне', () => {
+  const s = D.seed('2026-10-01', ids());
+  const today = '2026-10-05';
+  s.tasks = {
+    '2026-10-03': [{ text: 'Старое', done: false }],
+    '2026-10-04': [{ text: 'Банк', done: true }, { text: 'Отчёт', done: false }, { text: 'Ёлка', done: false }],
+    [today]: [{ text: 'Корм', done: false }, { text: 'Спорт', done: false }],
+  };
+  assert.equal(D.toggleTask(s, today, 0, today), true);
+  assert.equal(D.taskNow(D.tasksOf(s, today)), 1);
+  assert.equal(D.toggleTask(s, '2026-10-04', 1, today), true, 'вчера можно доотметить');
+  assert.equal(D.toggleTask(s, '2026-10-03', 0, today), false, 'позавчера — нет');
+  assert.equal(D.toggleTask(s, today, 5, today), false);
+  assert.equal(D.taskNow([{ text: 'а', done: true }]), -1);
+  // перенос: несделанное вчера, чего ещё нет в списке (регистр и «ё» не важны)
+  assert.deepEqual(D.carryOver(s, today, [{ text: 'елка' }]), []);
+  assert.deepEqual(D.carryOver(s, today, []), ['Ёлка']);
+  assert.deepEqual(D.carryOver(s, '2026-10-06', [{ text: 'спорт' }, { text: '' }]), []);
+  assert.deepEqual(D.carryOver(s, '2026-10-02', []), []);
+});
+
+test('план дня привязан к пункту «План на завтра»: шаблонный, свой с этими словами; убранный — нет', () => {
+  const s = D.seed('2026-10-01', ids());
+  assert.equal(D.planItem(s)?.name, 'План на завтра');
+  D.planItem(s).name = 'Составить ПЛАН на завтра';
+  assert.equal(D.planItem(s)?.name, 'Составить ПЛАН на завтра');
+  D.archiveItem(s, D.planItem(s).id, '2026-10-02');
+  assert.equal(D.planItem(s), null);
+  assert.equal(D.planItem(mk('2026-10-01')), null, 'у БАО плана в минимуме нет');
+});
+
+test('план дня — сверх минимума: статус, серия, гонка и снимок друзьям его не видят; нормализация чистит мусор', async () => {
+  const { shareOf, weekScore } = await import('../share.js');
+  const s = mk('2026-10-01');
+  const today = '2026-10-05';
+  for (const d of D.range('2026-10-01', '2026-10-04')) closeDay(s, d);
+  const before = [D.status(s, today, today), D.history(s, today).streak, D.extraDay(s, today), JSON.stringify(weekScore({ F: s, today }, D.weekStart(today)))];
+  s.tasks = { [today]: [{ text: 'Секретный звонок', done: true }], '2026-10-04': [{ text: 'Ещё', done: false }] };
+  assert.deepEqual([D.status(s, today, today), D.history(s, today).streak, D.extraDay(s, today), JSON.stringify(weekScore({ F: s, today }, D.weekStart(today)))], before);
+  assert.doesNotMatch(JSON.stringify(shareOf(s, today)), /Секретный|tasks/);
+  const raw = JSON.parse(JSON.stringify(s));
+  raw.tasks = {
+    'не дата': [{ text: 'x' }], '2026-10-05': [{ text: 'Звонок\nмаме', done: 'да' }, { text: 5 }, null, 'строка', ...Array.from({ length: 8 }, (_, i) => ({ text: 'Дело ' + i }))],
+    '2026-10-06': [], '2026-10-07': 'мусор', '__proto__': [{ text: 'ловушка' }],
+  };
+  const n = D.normalize(raw, today);
+  assert.deepEqual(Object.keys(n.tasks), ['2026-10-05']);
+  assert.equal(n.tasks['2026-10-05'].length, D.TASKS_MAX);
+  assert.deepEqual(n.tasks['2026-10-05'][0], { text: 'Звонок маме', done: false });
+  assert.deepEqual(D.normalize({ ...raw, tasks: undefined }, today).tasks, {}, 'старый файл — без планов');
+});
+
+test('«Не каждый день?»: пункт → недельный счётчик с отметками; минимум прошлых дней не меняется', () => {
+  const s = mk('2026-10-01');
+  const today = '2026-10-08';
+  const sport = s.items[1];
+  for (const d of D.range('2026-10-01', '2026-10-07')) s.days[d] = { plan: D.activeIds(s), done: ['2026-10-02', '2026-10-06', '2026-10-07'].includes(d) ? [sport.id] : [] };
+  D.syncToday(s, today);
+  D.toggleDone(s, today, sport.id, today);
+  const past = JSON.stringify(s.days['2026-10-06']);
+  const w = D.toWeekly(s, sport.id, 3, today, () => 'w-new');
+  assert.equal(w.id, 'w-new');
+  assert.deepEqual([w.name, w.note, w.color, w.icon, w.perWeek, w.addedAt, w.archivedAt], [sport.name, sport.note, sport.color, sport.icon, 3, '2026-10-01', null]);
+  assert.deepEqual(s.weekMarks['w-new'], ['2026-10-02', '2026-10-06', '2026-10-07', today]);
+  assert.equal(D.weekCount(s, 'w-new', today), 3, 'на этой неделе (пн 5-го) — 6, 7 и 8 октября');
+  assert.equal(sport.archivedAt, today);
+  assert.equal(D.planOf(s, today, today).includes(sport.id), false, 'из сегодняшнего минимума ушёл');
+  assert.equal(D.planOf(s, '2026-10-07', today).includes(sport.id), true, 'вчера остался');
+  assert.equal(JSON.stringify(s.days['2026-10-06']), past);
+  assert.equal(D.toWeekly(s, sport.id, 3, today), null, 'убранный не переводится второй раз');
+  assert.equal(D.toWeekly(s, 'нет-такого', 3, today), null);
+  assert.equal(D.toWeekly(s, s.items[0].id, 99, today, () => 'w2').perWeek, 7);
+});
+
+test('«Не каждый день?»: пункт → раздел с отметками не раньше раздела; полный раздел не принимает', () => {
+  const s = mk('2026-10-01');
+  const today = '2026-10-08';
+  const it = s.items[2];
+  for (const d of D.range('2026-10-01', '2026-10-07')) s.days[d] = { plan: D.activeIds(s), done: [it.id] };
+  const sec = D.addSection(s, { name: 'Учёба', icon: 'cap', color: 'purple' }, '2026-10-04', () => 'sec-u');
+  const x = D.toSection(s, it.id, 'sec-u', today, () => 'x-new');
+  assert.deepEqual([x.name, x.note, x.color, x.icon, x.addedAt], [it.name, it.note, it.color, it.icon, '2026-10-04']);
+  assert.deepEqual(sec.items.map(i => i.id), ['x-new']);
+  assert.deepEqual(s.secMarks['x-new'], D.range('2026-10-04', '2026-10-07'));
+  assert.equal(it.archivedAt, today);
+  for (let i = 1; i < D.MAX_SEC_ITEMS; i++) D.addSecItem(s, 'sec-u', { name: 'п' + i }, today);
+  assert.equal(D.toSection(s, s.items[0].id, 'sec-u', today), null, 'в разделе уже 20 пунктов');
+  assert.equal(s.items[0].archivedAt, null);
+  assert.equal(D.toSection(s, s.items[0].id, 'нет-раздела', today), null);
+});

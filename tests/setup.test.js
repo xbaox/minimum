@@ -26,7 +26,7 @@ afterEach(() => {
 function withSections(today, back = 10) {
   let n = 0;
   const S = baoSeed(addDays(today, -back), () => 'i' + ++n);
-  S.ui = { welcomeSeen: true, news: 'v60', lastExport: today };
+  S.ui = { welcomeSeen: true, news: 'v61', lastExport: today };
   const ids = activeIds(S);
   for (const d of range(S.createdAt, addDays(today, -1))) S.days[d] = { plan: ids.slice(), done: [] };
   const w = addSection(S, { name: 'Работа', icon: 'briefcase', color: 'blue' }, S.createdAt, () => 'sec-w');
@@ -235,7 +235,7 @@ test('первая настройка: привет → минимум → со�
   assert.equal(a.doc.querySelector('main.setup'), null);
   assert.ok(a.doc.querySelector('.tabbar'));
   const S = a.app.state;
-  assert.deepEqual([S.createdAt, S.since, S.ui.setup, S.ui.welcomeSeen, S.ui.news], ['2026-10-26', '2026-10-26', false, true, 'v60']);
+  assert.deepEqual([S.createdAt, S.since, S.ui.setup, S.ui.welcomeSeen, S.ui.news], ['2026-10-26', '2026-10-26', false, true, 'v61']);
   assert.deepEqual(S.sleep.targets, [{ from: '2026-10-26', bed: '23:15' }]); // 7 ч 15 мин до подъёма 6:30
   assert.deepEqual([...a.doc.querySelectorAll('.list-min > .row .name')].map(e => e.textContent), ['Стакан воды', 'Телефон на кухню', 'Чтение']);
   assert.doesNotMatch(a.text(), /Новый минимум|Что нового/);

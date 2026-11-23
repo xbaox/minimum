@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { boot } from '../app.js';
-import { normalize, seed, addDays, range, activeIds, logicalDate } from '../domain.js';
+import { normalize, seed, addDays, range, activeIds, logicalDate, addSection } from '../domain.js';
 import { fakeSupabase } from './fake-supabase.js';
 import { baoSeed } from './fixtures.js';
 
@@ -141,7 +141,7 @@ test('первый старт со старыми ключами: стёрто, 
   assert.doesNotMatch(a.text(), /На неделе/);
   assert.equal(a.doc.querySelectorAll('.tile svg path').length >= 5, true); // значки, а не эмодзи
   assert.doesNotMatch(a.text(), /Новый минимум|Что нового/); // настройка уже всё объяснила
-  assert.equal(a.app.state.ui.news, 'v60');
+  assert.equal(a.app.state.ui.news, 'v61');
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Новый минимум|Что нового/);
   assert.equal(b.doc.querySelector('main.setup'), null);
@@ -155,8 +155,9 @@ test('«Что нового» — один раз для тех, кто уже �
   off.done();
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
-  assert.equal(a.doc.querySelectorAll('.news li').length, 3);
-  assert.match(a.text(), /«Что сделано» в разделах/);
+  assert.equal(a.doc.querySelectorAll('.news li').length, 2);
+  assert.match(a.text(), /«План на завтра» — прямо здесь/);
+  assert.match(a.text(), /Не каждый день\?/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
   const b = await reboot(a);
@@ -436,8 +437,8 @@ test('вчера можно доотметить, позавчера — нет'
   yRows()[0].click();
   assert.match(a.text(), /Вчера: 1 из 8/);
   assert.deepEqual(a.app.state.days['2026-09-30'].done.length, 1);
-  // вчера целиком — счётчики и разделы в листе дня
-  a.click('Весь вчерашний день — счётчики и разделы');
+  // вчера целиком — счётчики в листе дня (разделов и плана нет — о них ни слова)
+  a.click('Весь вчерашний день — счётчики');
   assert.match(sp(a.sheet().textContent), /Среда, 30 сентября/);
   assert.match(sp(a.sheet().textContent), /На неделе · можно отметить/);
   a.click('Готово', '.sheet-act');
@@ -902,7 +903,7 @@ test('Прогресс рисуется: серия, цепь 6 недель, н
 test('пустой минимум — не тупик: «Из подсказок» и «Свой пункт» на «Сегодня», пустые «Прогресс» и лист дня', async () => {
   const S = seed('2026-09-30');
   Object.assign(S, { items: [] });
-  Object.assign(S.ui, { setup: false, welcomeSeen: true, news: 'v60' });
+  Object.assign(S.ui, { setup: false, welcomeSeen: true, news: 'v61' });
   const a = await start(WED, { storage: { 'minimum.v2': JSON.stringify(S) } });
   const clean = where => assert.doesNotMatch(a.doc.getElementById('app').textContent, /null|undefined|NaN/, where);
   assert.equal(a.rows().length, 0);
@@ -1128,5 +1129,140 @@ test('ночь не сворачивается, пока крутят бараб
   assert.equal(a.app.state.sleep.nights['2026-09-30'].bed, '01:10');
   await wait(1800);
   assert.equal(a.doc.querySelector('.sleep-card'), null);
+  a.done();
+});
+
+// ---------- план дня (v61) и «Не каждый день?»
+
+test('план на завтра (v61): карточка — только с пунктом «План на завтра»; лист — строки по важности, «↑», «Готово» отмечает пункт', async () => {
+  const bao = await start(WED, { storage: stateWith('2026-09-30', 3) });
+  assert.equal(bao.doc.querySelector('.list-plan'), null, 'у БАО такого пункта нет — карточки нет');
+  bao.done();
+  const EVE = new Date(2026, 8, 30, 20, 0);
+  const a = await start(EVE);
+  const card = () => sp(a.doc.querySelector('.list-plan').textContent);
+  assert.match(card(), /План на завтрадо шести дел — по важности/);
+  assert.doesNotMatch(card(), /План на сегодня/, 'вечером план на сегодня не предлагаем');
+  a.click('План на завтра', '.plan-row');
+  assert.match(sp(a.sheet().textContent), /Четверг, 1 октября/);
+  assert.match(sp(a.sheet().textContent), /По «Готово» пункт «План на завтра» в минимуме отметится сам/);
+  const areas = () => [...a.doc.querySelectorAll('.sheet .pl-area')];
+  assert.equal(areas().length, 1);
+  a.type(areas()[0], 'Отчёт');
+  assert.equal(areas().length, 2, 'заполнили строку — снизу новая');
+  a.type(areas()[1], 'Банк');
+  a.type(areas()[2], 'Корм');
+  a.doc.querySelectorAll('.sheet .plan-line')[2].querySelector('.icon-btn').click(); // «Корм» — выше
+  assert.deepEqual(areas().map(t => t.value), ['Отчёт', 'Корм', 'Банк', '']);
+  for (const [i, t] of ['Четыре', 'Пять', 'Шесть'].entries()) a.type(areas()[3 + i], t);
+  assert.equal(areas().length, 6, 'не больше шести');
+  a.type(areas()[5], ''); a.type(areas()[4], '');
+  a.click('Готово', '.sheet-act');
+  await wait(10);
+  const S = a.app.state;
+  assert.deepEqual(S.tasks['2026-10-01'].map(t => t.text), ['Отчёт', 'Корм', 'Банк', 'Четыре']);
+  const link = S.items.find(i => i.name === 'План на завтра');
+  assert.ok(S.days['2026-09-30'].done.includes(link.id), 'пункт минимума отмечен сам');
+  assert.match(card(), /План на завтра4 дела · первое — Отчёт/);
+  // утро: дела с галочками, «сейчас» — первое несделанное; удержание — лист плана на сегодня
+  a.t.now = new Date(2026, 9, 1, 9, 0);
+  a.app.render();
+  assert.match(a.text(), /План на сегодня · 0 из 4Изменить/);
+  const tasks = () => [...a.doc.querySelectorAll('.list-plan .task')];
+  assert.equal(tasks().length, 4);
+  assert.match(tasks()[0].textContent, /сейчас/);
+  tasks()[0].click();
+  assert.equal(a.app.state.tasks['2026-10-01'][0].done, true);
+  assert.match(tasks()[1].textContent, /сейчас/);
+  assert.doesNotMatch(tasks()[0].textContent, /сейчас/);
+  assert.match(a.text(), /План на сегодня · 1 из 4/);
+  assert.doesNotMatch(card(), /План на сегодня/, 'план на сегодня есть — строки «составить» нет');
+  await a.hold(tasks()[2]);
+  assert.equal(a.app.state.tasks['2026-10-01'][2].done, false, 'удержание — без отметки');
+  assert.match(sp(a.sheet().querySelector('.sheet-title').textContent), /План на сегодня/);
+  assert.equal(a.doc.querySelectorAll('.sheet .plan-line.done').length, 1);
+  a.click('Отмена', '.sheet-act');
+  await wait(10);
+  // вечером несделанное — в план на завтра одним касанием; тап мимо с набранным — переспрашивает
+  a.t.now = new Date(2026, 9, 1, 21, 0);
+  a.app.render();
+  a.click('План на завтра', '.plan-row');
+  a.click('Перенести несделанное за сегодня', '.carry-row');
+  assert.deepEqual(areas().map(t => t.value), ['Корм', 'Банк', 'Четыре', '']);
+  assert.equal(a.doc.querySelector('.carry-row'), null, 'перенесено — строки нет');
+  a.doc.querySelector('.sheet-back').click();
+  assert.match(a.alertBox().textContent, /Закрыть без сохранения/);
+  a.alertBtn('Отмена');
+  a.click('Готово', '.sheet-act');
+  await wait(10);
+  assert.deepEqual(a.app.state.tasks['2026-10-02'].map(t => t.text), ['Корм', 'Банк', 'Четыре']);
+  // лист дня: вчерашний план можно доотметить, вчерашний день целиком — «…и план»
+  a.t.now = new Date(2026, 9, 2, 9, 0);
+  a.app.render();
+  a.click('Прогресс', '.tab');
+  a.cell('1 октября').click();
+  assert.match(sp(a.sheet().textContent), /План · можно отметить1 из 4/);
+  a.sheet().querySelectorAll('.list-plan .task')[1].click();
+  assert.equal(a.app.state.tasks['2026-10-01'][1].done, true);
+  a.done();
+});
+
+test('план дня — сверх минимума: серия и герой те же; «Начать заново» стирает и планы', async () => {
+  const a = await start(new Date(2026, 8, 30, 12, 0));
+  const hero = () => sp(a.doc.querySelector('.hero .count').textContent);
+  const before = hero();
+  a.click('План на сегодня', '.plan-row');
+  a.type(a.doc.querySelector('.sheet .pl-area'), 'Дело');
+  a.click('Готово', '.sheet-act');
+  await wait(10);
+  a.doc.querySelector('.list-plan .task').click();
+  assert.equal(hero(), before, 'дела плана не двигают минимум');
+  assert.equal(a.app.state.days['2026-09-30']?.done.length || 0, 0, 'план на сегодня не отмечает «План на завтра»');
+  a.click('Настройки', '.tab');
+  a.click('Начать заново');
+  assert.match(a.alertBox().textContent, /планы/);
+  a.alertBtn('Стереть');
+  await wait(10);
+  assert.deepEqual(a.app.state.tasks, {});
+  a.done();
+});
+
+test('«Не каждый день?» (v61): пункт минимума → «3 раза в неделю» или в раздел; отметки переходят, прошлое не меняется', async () => {
+  const a = await start(WED, { storage: stateWith('2026-09-30', 10, {
+    closed: ['2026-09-28', '2026-09-29'],
+    edit: S => addSection(S, { name: 'Работа', icon: 'briefcase', color: 'blue' }, '2026-09-25', () => 'sec-w'),
+  }) });
+  await a.hold(a.find('Спорт', '.list-min .row'));
+  assert.equal(a.doc.querySelector('.sheet .chip'), null, 'свёрнуто');
+  a.click('Не каждый день?', '.sheet button');
+  [...a.doc.querySelectorAll('.sheet .chip')].find(c => c.textContent === '3').click();
+  assert.match(sp(a.alertBox().textContent), /«Спорт» — 3 раза в неделю\?/);
+  a.alertBtn('Перевести');
+  await wait(10);
+  let S = a.app.state;
+  const w = S.weekly.find(x => x.name === 'Спорт');
+  assert.equal(w.perWeek, 3);
+  assert.deepEqual(S.weekMarks[w.id], ['2026-09-28', '2026-09-29']);
+  assert.equal(S.items.find(i => i.name === 'Спорт').archivedAt, '2026-09-30');
+  assert.equal(a.rows().length, 7);
+  assert.match(a.text(), /Спорт5 отжиманий · 5 подтягиваний · вис2 из 3/);
+  assert.equal(S.days['2026-09-29'].plan.length, 8, 'вчерашний минимум — как был');
+  assert.match(sp(a.doc.querySelector('.bars').textContent), /«Спорт» — 3 раза в неделю/);
+  // в раздел: отметки не раньше раздела
+  await a.hold(a.find('Развитие', '.list-min .row'));
+  a.click('Не каждый день?', '.sheet button');
+  a.click('Работа', '.sheet .chip');
+  assert.match(sp(a.alertBox().textContent), /Перенести «Развитие» в «Работа»\?/);
+  a.alertBtn('Перенести');
+  await wait(10);
+  S = a.app.state;
+  const x = S.sections[0].items.find(i => i.name === 'Развитие');
+  assert.deepEqual(S.secMarks[x.id], ['2026-09-28', '2026-09-29']);
+  assert.equal(x.addedAt, '2026-09-25');
+  assert.equal(a.rows().length, 6);
+  assert.match(a.text(), /Работа0 из 1Развитие/);
+  // у счётчика и пункта раздела «Не каждый день?» нет
+  await a.hold(a.find('Тренировка', '.list-week .row'));
+  assert.doesNotMatch(sp(a.sheet().textContent), /Не каждый день/);
   a.done();
 });

@@ -1190,6 +1190,21 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .sbar-label { font-size: var(--fs-axis); color: var(--text-2); }
 .sec-rates { display: flex; flex-direction: column; margin: calc(var(--u6) * -1) 0; }
 
+/* ---------- план дня (v61): номер дела — плитка цвета плана, отметка — его цветом (закат — только у минимума);
+   «сейчас» — первое несделанное: кружок его цвета. В листе — строки-поля с номером и «↑». */
+
+.tile-n { font-size: var(--fs-sub); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.tile-n .gl { width: var(--gl-check); height: var(--gl-check); stroke-width: 2.8; }
+.list-plan .check::before { background: var(--item); }
+.task.now .check { border-color: var(--item); }
+.task.now .note { color: var(--text); font-weight: 600; }
+.plan-line { min-height: var(--row-s); align-items: flex-start; padding: var(--u2) var(--u4) var(--u2) var(--u16); }
+.plan-line .tile { margin-top: calc(var(--u12) + var(--u1)); }
+.plan-line .icon-btn { flex: none; margin-top: var(--u6); }
+.plan-line.done .pl-area { color: var(--text-2); }
+.plan-line.empty .tile { opacity: 0.45; }
+.carry-row .tile-round { background: var(--item); }
+
 /* ---------- первая настройка (v58): шаги без таб-бара, точки сверху, кнопка снизу */
 
 .screen.setup { min-height: 100dvh; display: flex; flex-direction: column; padding-bottom: 0; }

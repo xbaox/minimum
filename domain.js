@@ -122,6 +122,7 @@ export function seed(today, id = makeId, since = today) {
     sections: [],
     secMarks: {},
     secDays: {},
+    tasks: {},
     ui: { welcomeSeen: false, news: '', lastExport: '', setup: true },
   };
 }
@@ -388,6 +389,79 @@ export function secRates(s, sec, today) {
     const done = days.filter(d => secDone(s, item.id, d)).length;
     return { item, days: days.length, done, rate: days.length ? done / days.length : null };
   });
+}
+
+// ---------- план дня (v61): метод Айви Ли — с вечера до шести дел по важности, утром — с первого и по порядку;
+// несделанное переносится в следующий план. Сверх минимума: на статус, серию, кольца, итоги и гонку не влияет,
+// друзьям не уходит. tasks[дата] = [{ text, done }] — порядок и есть важность. Составлять — на сегодня и на завтра,
+// отмечать — в те же дни, что минимум: сегодня и вчера.
+
+export const TASKS_MAX = 6;
+export const TASK_MAX = 120;
+export const cleanTask = t => cut(String(t ?? '').replace(/\s+/g, ' ').trim(), TASK_MAX);
+export const tasksOf = (s, date) => s.tasks[date] || [];
+const taskKey = t => cleanTask(t).toLocaleLowerCase('ru').replace(/ё/g, 'е');
+
+// Пункт минимума, к которому привязан план: «План на завтра» из шаблона или свой с этими словами в названии.
+// Есть такой — на «Сегодня» есть и карточка плана; составил план на завтра — пункт отмечается сам.
+export const planItem = s => activeItems(s).find(i => taskKey(i.name).includes('план на завтра')) || null;
+
+// План на сегодня или на завтра. Пустые строки выбрасываются, лишние после шестой — тоже; пустой план — удаляется.
+export function setTasks(s, date, list, today) {
+  if (date !== today && date !== addDays(today, 1)) return false;
+  const out = [];
+  for (const x of Array.isArray(list) ? list : []) {
+    const text = cleanTask(x?.text);
+    if (text && out.length < TASKS_MAX) out.push({ text, done: x.done === true });
+  }
+  if (out.length) s.tasks[date] = out;
+  else delete s.tasks[date];
+  return true;
+}
+
+export function toggleTask(s, date, i, today) {
+  const t = s.tasks[date]?.[i];
+  if (!t || !canEdit(s, date, today)) return false;
+  t.done = !t.done;
+  return true;
+}
+
+// Несделанное из плана накануне — то, чего ещё нет в списке (по Айви Ли — в новый список, в конец дня).
+export function carryOver(s, date, list = []) {
+  const have = new Set(list.map(x => taskKey(x?.text)).filter(Boolean));
+  return tasksOf(s, addDays(date, -1)).filter(t => !t.done && !have.has(taskKey(t.text))).map(t => t.text);
+}
+
+// Дело, с которого начать: первое несделанное (по Айви Ли — пока оно не сделано, за второе не браться).
+export const taskNow = list => list.findIndex(t => !t.done);
+
+// ---------- «Не каждый день?» (v61): дней недели у минимума нет — пол одинаков каждый день. Пункт, который
+// не на каждый день, переходит в недельный счётчик («N раз в неделю») или в раздел (когда получается, без пропусков).
+// Отметки переходят с ним; сам пункт уходит из минимума сегодняшним днём — прошлые дни минимума остаются как были.
+
+const doneDates = (s, id, from, today) => Object.keys(s.days).filter(d => d >= from && d <= today && s.days[d].done.includes(id)).sort();
+const liveItem = (s, id) => s.items.find(i => i.id === id && !i.archivedAt) || null;
+
+export function toWeekly(s, id, perWeek, today, newId = makeId) {
+  const it = liveItem(s, id);
+  if (!it) return null;
+  const w = { id: newId(), icon: it.icon, name: it.name, note: it.note, color: it.color, perWeek: cleanFields({ ...it, perWeek }, true).perWeek, addedAt: it.addedAt, archivedAt: null };
+  const marks = doneDates(s, id, w.addedAt, today);
+  s.weekly.push(w);
+  if (marks.length) s.weekMarks[w.id] = marks;
+  it.archivedAt = today;
+  return w;
+}
+
+export function toSection(s, id, secId, today, newId = makeId) {
+  const it = liveItem(s, id), sec = findSection(s, secId);
+  if (!it || !sec || sec.items.length >= MAX_SEC_ITEMS) return null;
+  const x = { id: newId(), icon: it.icon, name: it.name, note: it.note, color: it.color, addedAt: maxD(it.addedAt, sec.addedAt) };
+  const marks = doneDates(s, id, x.addedAt, today);
+  sec.items.push(x);
+  if (marks.length) s.secMarks[x.id] = marks;
+  it.archivedAt = today;
+  return x;
 }
 
 // ---------- первая настройка (v58)
@@ -914,6 +988,14 @@ export function normalize(raw, today) {
     for (const [d, t] of Object.entries(o)) if (isDate(d) && typeof t === 'string') days[d] = cleanNote(t);
     if (Object.keys(days).length) secDays[id] = days;
   }
+  // План дня: до шести дел, текст — одна строка не длиннее TASK_MAX; пустой план не хранится.
+  const tasks = {};
+  for (const [d, a] of Object.entries(isObj(raw.tasks) ? raw.tasks : {})) {
+    if (!isDate(d) || !Array.isArray(a)) continue;
+    const list = a.filter(isObj).map(x => ({ text: cleanTask(typeof x.text === 'string' ? x.text : ''), done: x.done === true }))
+      .filter(x => x.text).slice(0, TASKS_MAX);
+    if (list.length) tasks[d] = list;
+  }
   return {
     schema: 1,
     createdAt,
@@ -932,6 +1014,7 @@ export function normalize(raw, today) {
     sections,
     secMarks,
     secDays,
+    tasks,
     ui: {
       welcomeSeen: raw.ui?.welcomeSeen === true,
       news: str(raw.ui?.news, 16),
