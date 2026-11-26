@@ -155,7 +155,8 @@ test('«Что нового» — один раз для тех, кто уже �
   off.done();
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
-  assert.equal(a.doc.querySelectorAll('.news li').length, 2);
+  assert.equal(a.doc.querySelectorAll('.news li').length, 3);
+  assert.match(a.text(), /«Кто я»: у привычки — своё «я»/);
   assert.match(a.text(), /«План на завтра» — прямо здесь/);
   assert.match(a.text(), /Не каждый день\?/);
   a.click('Понятно');
@@ -669,7 +670,7 @@ test('итоги: выбранный шаг сна или «Notes разобра
 test('Настройки: добавить (11-й — переспрос), переименовать, ↑↓, убрать и вернуть', async () => {
   const a = await start(WED, { storage: fresh() });
   a.click('Настройки', '.tab');
-  const names = () => [...a.all('.screen > .group')[0].querySelectorAll('.row .name')].map(n => n.textContent).filter(n => n !== 'Добавить пункт' && n !== 'Из подсказок');
+  const names = () => [...a.all('.screen > .group')[1].querySelectorAll('.row .name')].map(n => n.textContent).filter(n => n !== 'Добавить пункт' && n !== 'Из подсказок'); // первая группа — «Кто я»
   const doneBtn = () => a.doc.getElementById('sheet-done');
   const add = name => {
     a.type(a.sheet().querySelector('input[name=what]'), name);
@@ -695,7 +696,7 @@ test('Настройки: добавить (11-й — переспрос), пе�
   add('Одиннадцатый');
   assert.equal(names().length, 11);
   // переименовать
-  const rowsBefore = [...a.all('.screen > .group')[0].querySelectorAll('.row')];
+  const rowsBefore = [...a.all('.screen > .group')[1].querySelectorAll('.row')];
   a.find('Шторы + умыться', '.row').click();
   a.type(a.sheet().querySelector('input[name=what]'), 'Шторы');
   assert.equal(a.sheet().querySelector('.pv-name').textContent, 'Шторы'); // превью без перерисовки
@@ -709,10 +710,10 @@ test('Настройки: добавить (11-й — переспрос), пе�
   assert.equal(names()[0], 'Шторы');
   assert.equal(a.doc.querySelector('[aria-label="Шторы: выше"]').disabled, true);
   a.click('Готово', '.head-action');
-  const rowsAfter = [...a.all('.screen > .group')[0].querySelectorAll('.row')];
+  const rowsAfter = [...a.all('.screen > .group')[1].querySelectorAll('.row')];
   assert.notEqual(rowsAfter[1], rowsBefore[1]); // режим правки меняет тег строки — замена, а не появление
   a.app.render();
-  assert.equal([...a.all('.screen > .group')[0].querySelectorAll('.row')][1], rowsAfter[1], 'перерисовка строки не пересоздаёт');
+  assert.equal([...a.all('.screen > .group')[1].querySelectorAll('.row')][1], rowsAfter[1], 'перерисовка строки не пересоздаёт');
   // убрать через подтверждение и вернуть
   a.find('Спорт', '.row').click();
   a.click('Убрать из минимума', '.sheet button');
@@ -803,7 +804,8 @@ test('Правила открываются листом', async () => {
   const a = await start(WED);
   a.click('Настройки', '.tab');
   a.click('Правила', '.row');
-  assert.equal(a.sheet().querySelectorAll('.rules-list .row').length, 7);
+  assert.equal(a.sheet().querySelectorAll('.rules-list .row').length, 8);
+  assert.match(a.sheet().textContent, /Каждая отметка — голос за того, кем становишься/);
   assert.match(a.sheet().textContent, /Работа, учёба и хобби — в разделах/);
   assert.match(a.sheet().textContent, /Не пропускай дважды/);
   a.click('Готово', '.sheet-act');
@@ -1040,7 +1042,8 @@ test('с движением: только transform, opacity и stroke-dashoffse
   await tick();
   assert.equal(a.alertBox(), null);
   const keys = new Set(log.flatMap(x => x.frames.flatMap(f => Object.keys(f))));
-  for (const k of keys) assert.ok(['transform', 'opacity', 'strokeDashoffset', 'offset'].includes(k), 'анимируется ' + k);
+  // offset и easing — не свойства, а место и кривая участка (у плашки голоса и звёзд, v61).
+  for (const k of keys) assert.ok(['transform', 'opacity', 'strokeDashoffset', 'offset', 'easing'].includes(k), 'анимируется ' + k);
   a.done();
 });
 
@@ -1265,4 +1268,107 @@ test('«Не каждый день?» (v61): пункт минимума → «3
   await a.hold(a.find('Тренировка', '.list-week .row'));
   assert.doesNotMatch(sp(a.sheet().textContent), /Не каждый день/);
   a.done();
+});
+
+// ---------- «Кто я» (v61)
+
+test('«Кто я»: отметка привычки с «я» — голос («1-й голос за: …»), закрытый день — голос за «я» дня в герое', async () => {
+  const a = await start(WED); // новый телефон: шаблон со своими «я»
+  a.find('Зарядка', '.list-min .row').click();
+  assert.match(sp(a.doc.querySelector('.bar-toast').textContent), /^1-й голос за: спортивный человек$/, 'без движения — полосой');
+  a.find('Зарядка', '.list-min .row').click(); // сняли — голоса нет
+  for (const r of a.rows()) r.click();
+  const who = a.doc.querySelector('.hero.closed .hero-who');
+  assert.ok(who, 'день закрыт — «я» дня в герое');
+  assert.equal(sp(who.textContent), '1-й голос за' + 'дисциплинированный человек');
+  a.done();
+  // с движением — плашка над строкой, диктору — живой областью
+  const b = await start(WED, { motion: true });
+  b.find('Чтение', '.list-min .row').click();
+  const pill = b.motionLog.map(x => x.el).find(el => el.classList?.contains('vote'));
+  assert.ok(pill, 'плашка голоса');
+  assert.equal(pill.querySelector('.vote-over').textContent, '1-й голос за');
+  assert.equal(pill.querySelector('.vote-who').textContent, 'читающий человек');
+  assert.equal(b.doc.querySelector('.sr[role="status"]').textContent, '1-й голос за: читающий человек');
+  assert.equal(b.doc.querySelector('.bar-toast'), null, 'полосы нет — есть плашка');
+  b.done();
+});
+
+test('«Кто я»: лист — «я» дня и привычек, подборка, своё и «Без «я»»; в листе пункта — с черновиком', async () => {
+  const a = await start(WED);
+  a.click('Настройки', '.tab');
+  assert.match(sp(a.find('Кто я', '.who-set').textContent), /день — дисциплинированный человек · привычки — 5 из 5/);
+  a.click('Кто я', '.who-set');
+  assert.equal(sp(a.sheet().querySelector('.sheet-title').textContent), 'Кто я');
+  const row = name => a.find(name, '.sheet .who-set');
+  row('Зарядка').click();
+  assert.match(sp(a.sheet().querySelector('.who-pick').textContent), /Подходитспортивный человексильный человек/);
+  a.find('сильный человек', '.sheet .who-chip').click();
+  const zar = () => a.app.state.items.find(i => i.name === 'Зарядка');
+  assert.equal(zar().who, 'сильный человек', 'сразу в силе');
+  assert.equal(a.sheet().querySelector('.who-pick'), null, 'выбрали — свернулось');
+  assert.match(sp(row('Зарядка').textContent), /голос за: сильный человек/);
+  // своё — полем «Я — …»
+  row('Чтение').click();
+  const input = a.sheet().querySelector('input[name="who"]');
+  a.type(input, '  Я — Книжный Червь ');
+  input.dispatchEvent(new a.win.FocusEvent('blur'));
+  assert.equal(a.app.state.items.find(i => i.name === 'Чтение').who, 'книжный Червь');
+  // вся подборка и «Без «я»»
+  row('Закрытый день').click();
+  a.click('Вся подборка', '.sheet .who-all');
+  assert.ok(a.sheet().querySelectorAll('.who-chip').length >= 40);
+  a.click('Без «я»', '.sheet .who-none');
+  assert.equal(a.app.state.dayWho, '');
+  a.click('Готово', '.sheet-act');
+  await wait(10);
+  // лист пункта: «я» — в черновике, уходит по «Готово»
+  a.click('Сегодня', '.tab');
+  await a.hold(a.find('Стакан воды', '.list-min .row'));
+  assert.match(sp(a.sheet().querySelector('.pv-who').textContent), /голос за: человек, который бережёт здоровье/);
+  a.click('человек, который бережёт здоровье', '.sheet .who-set');
+  a.find('человек, который правильно питается', '.sheet .who-chip').click();
+  assert.equal(a.app.state.items[0].who, 'человек, который бережёт здоровье', 'до «Готово» — черновик');
+  a.click('Готово', '.sheet-act');
+  await wait(10);
+  assert.equal(a.app.state.items[0].who, 'человек, который правильно питается');
+  // пустой день — в герое без «я»
+  for (const r of a.rows()) r.click();
+  assert.equal(a.doc.querySelector('.hero-who'), null);
+  a.done();
+});
+
+test('«Кто я»: «Кем становлюсь» на «Прогрессе», голоса недели в итогах, голос раздела; без «я» — приглашение', async () => {
+  const a = await start(new Date(2026, 9, 4, 20, 0), { storage: stateWith('2026-10-04', 8, {
+    closed: range('2026-09-28', '2026-10-03'),
+    edit: (S, ids) => {
+      S.items[0].who = 'ранняя пташка';
+      S.dayWho = 'человек слова';
+      addSection(S, { name: 'Учёба', icon: 'cap', color: 'purple', who: 'человек, который учится каждый день' }, '2026-09-28', () => 'sec-u');
+    },
+  }) });
+  a.click('Прогресс', '.tab');
+  const card = sp(a.doc.querySelector('.who-card').textContent);
+  assert.match(card, /Я — ранняя пташкаШторы \+ умыться/);
+  assert.match(card, /Я — человек словазакрытый день/);
+  assert.match(card, /Я — человек, который учится каждый деньУчёба0голосов/, 'у раздела голосов ещё нет — но «я» на месте');
+  // «Что сделано» в разделе — первый голос за его «я»
+  a.click('Сегодня', '.tab');
+  a.doc.querySelector('[data-sd="sec-u"] .sd-check').click();
+  assert.match(sp(a.doc.querySelector('.bar-toast').textContent), /^1-й голос за: человек, который учится каждый день$/);
+  // итоги недели (воскресенье): голоса недели
+  a.click('Итоги недели', '.banner .row');
+  assert.match(sp(a.sheet().textContent), /Голоса неделиЯ — ранняя пташка6 голосов/);
+  assert.match(sp(a.sheet().textContent), /Я — человек слова6 голосов/);
+  a.done();
+  // ни одного «я»: приглашение на «Прогрессе» и в «Что нового»
+  const b = await start(WED, { storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v60', lastExport: '' } }) });
+  b.click('Выбрать «я»', '.news-acts button');
+  assert.equal(sp(b.sheet().querySelector('.sheet-title').textContent), 'Кто я');
+  assert.equal(b.app.state.ui.news, 'v61', 'новость прочитана');
+  b.click('Готово', '.sheet-act');
+  await wait(10);
+  b.click('Прогресс', '.tab');
+  assert.match(sp(b.find('Выбрать «я»', '.who-card .who-set').textContent), /каждая отметка станет голосом/);
+  b.done();
 });

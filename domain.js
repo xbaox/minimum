@@ -1,6 +1,6 @@
 // Минимум v2 — чистая логика: даты, план дня, серия, сон, итоги недели. Без DOM.
 
-import { ICON_IDS, DEFAULT_ICON } from './icons.js';
+import { ICON_IDS, ICON_GROUPS, DEFAULT_ICON } from './icons.js';
 
 export const DAY_START_HOUR = 4;
 export const MAX_DAILY = 10;
@@ -84,25 +84,27 @@ export const findItem = (s, id) => s.items.find(i => i.id === id) || s.weekly.fi
 const NB = '\u00a0';
 // Шаблон нового телефона — базовый минимум, который выполним в плохой день; подпись — «когда / после чего».
 // Свои пункты и недельные счётчики человек добавляет сам. «Телефон на кухню» держит дедлайн перед отбоем.
-const TEMPLATE_ITEMS = [ // по ходу дня; подписи без «встал/лёг» — пол человека неизвестен
-  ['glass', 'Стакан воды', 'сразу после подъёма', 'teal', null],
-  ['dumbbell', 'Зарядка', `5${NB}минут · после воды`, 'red', null],
-  ['notebook', 'План на завтра', `3${NB}главных дела · после ужина`, 'yellow', null],
-  ['phone', 'Телефон на кухню', 'будильник заведён — и на кухню', 'indigo', 30],
-  ['book', 'Чтение', `10${NB}страниц · в кровати вместо телефона`, 'purple', null],
+const TEMPLATE_ITEMS = [ // по ходу дня; подписи без «встал/лёг» — пол человека неизвестен; последнее — «я» пункта (v61)
+  ['glass', 'Стакан воды', 'сразу после подъёма', 'teal', null, 'человек, который бережёт здоровье'],
+  ['dumbbell', 'Зарядка', `5${NB}минут · после воды`, 'red', null, 'спортивный человек'],
+  ['notebook', 'План на завтра', `3${NB}главных дела · после ужина`, 'yellow', null, 'организованный человек'],
+  ['phone', 'Телефон на кухню', 'будильник заведён — и на кухню', 'indigo', 30, 'человек, который высыпается'],
+  ['book', 'Чтение', `10${NB}страниц · в кровати вместо телефона`, 'purple', null, 'читающий человек'],
 ];
 const TEMPLATE_WEEKLY = [];
 // Первая настройка предлагает ещё шесть пунктов — того же рода: малые, с «когда / после чего».
 const EXTRA_ITEMS = [
-  ['heart', 'Растяжка', `5${NB}минут · перед душем`, 'green', null],
-  ['globe', 'Английский', `10${NB}минут · после завтрака`, 'blue', null],
-  ['leaf', 'Прогулка', `15${NB}минут · на воздухе`, 'mint', null],
-  ['pencil', 'Дневник', `3${NB}строки · перед сном`, 'brown', null],
-  ['shirt', 'Одежда на завтра', 'с вечера', 'pink', null],
-  ['pill', 'Витамины', 'с завтраком', 'orange', null],
+  ['heart', 'Растяжка', `5${NB}минут · перед душем`, 'green', null, 'человек, который заботится о себе'],
+  ['globe', 'Английский', `10${NB}минут · после завтрака`, 'blue', null, 'человек, который говорит по-английски'],
+  ['leaf', 'Прогулка', `15${NB}минут · на воздухе`, 'mint', null, 'человек, который много двигается'],
+  ['pencil', 'Дневник', `3${NB}строки · перед сном`, 'brown', null, 'осознанный человек'],
+  ['shirt', 'Одежда на завтра', 'с вечера', 'pink', null, 'собранный человек'],
+  ['pill', 'Витамины', 'с завтраком', 'orange', null, 'человек, который бережёт здоровье'],
 ];
 // Подсказки первой настройки: сначала шаблон (он уже выбран), потом ещё шесть на выбор.
-export const SUGGESTIONS = [...TEMPLATE_ITEMS, ...EXTRA_ITEMS].map(([icon, name, note, color, beforeBed]) => ({ icon, name, note, color, beforeBed }));
+export const SUGGESTIONS = [...TEMPLATE_ITEMS, ...EXTRA_ITEMS].map(([icon, name, note, color, beforeBed, who]) => ({ icon, name, note, color, beforeBed, who }));
+// «Я» закрытого дня у нового телефона (v61): закрыл весь минимум — голос за него.
+export const DAY_WHO = 'дисциплинированный человек';
 
 // since — «в системе с»: у нового телефона — сегодня; сброс к шаблону передаёт прежнюю дату.
 // ui.setup — новый телефон начинает с первой настройки (v58).
@@ -111,8 +113,8 @@ export function seed(today, id = makeId, since = today) {
     schema: 1,
     createdAt: today,
     since: isDate(since) ? since : today,
-    items: TEMPLATE_ITEMS.map(([icon, name, note, color, beforeBed]) =>
-      ({ id: id(), icon, name, note, color, beforeBed, addedAt: today, archivedAt: null })),
+    items: TEMPLATE_ITEMS.map(([icon, name, note, color, beforeBed, who]) =>
+      ({ id: id(), icon, name, note, color, beforeBed, who, addedAt: today, archivedAt: null })),
     weekly: TEMPLATE_WEEKLY.map(([icon, name, note, color, perWeek]) =>
       ({ id: id(), icon, name, note, color, perWeek, addedAt: today, archivedAt: null })),
     days: {},
@@ -123,6 +125,7 @@ export function seed(today, id = makeId, since = today) {
     secMarks: {},
     secDays: {},
     tasks: {},
+    dayWho: DAY_WHO,
     ui: { welcomeSeen: false, news: '', lastExport: '', setup: true },
   };
 }
@@ -144,6 +147,7 @@ export function cleanFields(f, weekly) {
     name,
     note: cut(line(f.note), 120),
     color: COLORS.includes(f.color) ? f.color : DEFAULT_COLOR,
+    who: cleanWho(f.who),
   };
   if (weekly) out.perWeek = Math.min(7, Math.max(1, Math.round(+f.perWeek) || 3));
   else {
@@ -165,6 +169,7 @@ export function updateItem(s, id, f) {
   const item = findItem(s, id);
   const c = item && cleanFields(f, s.weekly.includes(item));
   if (!c) return false;
+  if (f.who === undefined) c.who = item.who; // правка без «я» его не стирает
   Object.assign(item, c);
   return true;
 }
@@ -212,8 +217,8 @@ export function findSecItem(s, id) {
 
 // Поля раздела → чистые значения; null, если название пустое.
 export function cleanSection(f) {
-  const c = cleanFields({ name: f?.name, icon: f?.icon, color: f?.color }, false);
-  return c && { name: cut(c.name, SECTION_NAME_MAX), icon: c.icon, color: c.color };
+  const c = cleanFields({ name: f?.name, icon: f?.icon, color: f?.color, who: f?.who }, false);
+  return c && { name: cut(c.name, SECTION_NAME_MAX), icon: c.icon, color: c.color, who: c.who };
 }
 
 // Пункт раздела — как пункт минимума, только без привязки к отбою.
@@ -221,6 +226,7 @@ function secFields(f) {
   const c = cleanFields(f, false);
   if (!c) return null;
   delete c.beforeBed;
+  delete c.who; // «я» — у раздела целиком
   return c;
 }
 
@@ -236,6 +242,7 @@ export function updateSection(s, id, f) {
   const sec = findSection(s, id);
   const c = sec && cleanSection(f);
   if (!c) return false;
+  if (f.who === undefined) c.who = sec.who;
   Object.assign(sec, c);
   return true;
 }
@@ -445,7 +452,7 @@ const liveItem = (s, id) => s.items.find(i => i.id === id && !i.archivedAt) || n
 export function toWeekly(s, id, perWeek, today, newId = makeId) {
   const it = liveItem(s, id);
   if (!it) return null;
-  const w = { id: newId(), icon: it.icon, name: it.name, note: it.note, color: it.color, perWeek: cleanFields({ ...it, perWeek }, true).perWeek, addedAt: it.addedAt, archivedAt: null };
+  const w = { id: newId(), icon: it.icon, name: it.name, note: it.note, color: it.color, who: it.who, perWeek: cleanFields({ ...it, perWeek }, true).perWeek, addedAt: it.addedAt, archivedAt: null };
   const marks = doneDates(s, id, w.addedAt, today);
   s.weekly.push(w);
   if (marks.length) s.weekMarks[w.id] = marks;
@@ -462,6 +469,135 @@ export function toSection(s, id, secId, today, newId = makeId) {
   if (marks.length) s.secMarks[x.id] = marks;
   it.archivedAt = today;
   return x;
+}
+
+// ---------- «Кто я» (v61): по Клиру каждое действие — голос за того, кем становишься. У пункта минимума, счётчика и
+// раздела — своё «я» (who), у закрытого дня — главное (dayWho). Голос — отметка пункта или счётчика, день раздела с делом
+// и закрытый день. Голоса считаются из отметок и нигде не хранятся; друзьям «я» не уходит.
+
+export const WHO_MAX = 48;
+
+// «Я — …»: хранится только то, что после тире. «Я спортсмен» и «Я — Спортсмен» → «спортсмен».
+export function cleanWho(t) {
+  if (typeof t !== 'string') return ''; // битое поле — без «я»
+  let w = t.replace(/\s+/g, ' ').trim().replace(/^я(\s*[—–-]\s*|\s+)/i, '').replace(/^[—–-]\s*/, '');
+  w = cut(w, WHO_MAX).trim();
+  const lo = c => c.toLocaleLowerCase('ru');
+  if (w.length === 1 || (w.length > 1 && w[1] === lo(w[1]))) w = lo(w[0]) + w.slice(1); // «IT-специалист» — как есть
+  return w;
+}
+export const whoKey = w => String(w || '').toLocaleLowerCase('ru').replace(/ё/g, 'е');
+
+// Подборка — без рода: «человек, который…», «… человек» (приложением пользуются друзья, пол неизвестен).
+export const WHO_GROUPS = [
+  ['Тело', ['спортивный человек', 'сильный человек', 'человек, который тренируется', 'человек, который не пропускает тренировки', 'человек, который много двигается', 'человек, который не курит']],
+  ['Здоровье и сон', ['человек, который бережёт здоровье', 'человек, который заботится о себе', 'человек, который правильно питается', 'человек, который высыпается', 'человек, который ложится вовремя', 'ранняя пташка']],
+  ['Ум', ['читающий человек', 'человек, который учится каждый день', 'любознательный человек', 'человек, который говорит по-английски', 'думающий человек', 'творческий человек']],
+  ['Характер', ['дисциплинированный человек', 'человек слова', 'человек дела', 'целеустремлённый человек', 'надёжный человек', 'человек, который доводит до конца']],
+  ['Порядок', ['организованный человек', 'собранный человек', 'человек, который планирует день', 'человек, который начинает с главного', 'человек, который управляет своим временем', 'человек, у которого всё на своих местах']],
+  ['Спокойствие', ['спокойный человек', 'осознанный человек', 'внимательный человек', 'благодарный человек', 'человек, который не залипает в телефоне', 'человек, который умеет отдыхать']],
+  ['Люди и дело', ['внимательный друг', 'добрый человек', 'человек, на которого можно положиться', 'профессионал', 'трудолюбивый человек', 'человек, который откладывает деньги']],
+];
+
+// Что подходит к привычке: сначала по словам названия, потом по группе значка, потом по подписи (в ней чаще
+// «когда», а не «что»: «после подъёма» — ещё не про сон).
+const WHO_WORDS = [
+  [/зарядк|трениров|турник|подтяг|отжим|спорт|бег|пресс|присед|плаван|растяж|йог|гантел/, ['спортивный человек', 'сильный человек', 'человек, который тренируется']],
+  [/план|список|задач/, ['организованный человек', 'человек, который планирует день', 'человек, который начинает с главного']],
+  [/чтени|книг|читат|страниц/, ['читающий человек', 'любознательный человек']],
+  [/англ|english|язык/, ['человек, который говорит по-английски', 'человек, который учится каждый день']],
+  [/учёб|учеб|урок|домашк|курс|экзам/, ['человек, который учится каждый день', 'целеустремлённый человек']],
+  [/телефон|экран|соцсет|тикток|ютуб|youtube/, ['человек, который не залипает в телефоне', 'человек, который высыпается']],
+  [/сон|спать|отбой|кроват|подъём|подъем|будильник/, ['человек, который высыпается', 'ранняя пташка', 'человек, который ложится вовремя']],
+  [/вода|воды|витамин|овощ|фрукт|завтрак|еда|сахар/, ['человек, который бережёт здоровье', 'человек, который правильно питается']],
+  [/медитац|дыхан|дневник|благодар/, ['осознанный человек', 'спокойный человек', 'благодарный человек']],
+  [/работ|проект|клиент/, ['профессионал', 'трудолюбивый человек', 'человек дела']],
+  [/деньг|бюджет|копил|отклад/, ['человек, который откладывает деньги', 'организованный человек']],
+  [/курен|сигарет|не кур/, ['человек, который не курит']],
+  [/прогулк|шаг|ходьб|велосип/, ['человек, который много двигается', 'спортивный человек']],
+  [/уборк|порядок|посуд|одежд/, ['собранный человек', 'человек, у которого всё на своих местах']],
+  [/мам|пап|друз|звон|семь|родн/, ['внимательный друг', 'человек, на которого можно положиться']],
+];
+const WHO_BY_GROUP = {
+  'Утро и сон': ['человек, который высыпается', 'ранняя пташка', 'человек, который ложится вовремя'],
+  'Тело и спорт': ['спортивный человек', 'сильный человек', 'человек, который тренируется'],
+  'Уход и здоровье': ['человек, который заботится о себе', 'человек, который бережёт здоровье'],
+  'Еда и вода': ['человек, который бережёт здоровье', 'человек, который правильно питается'],
+  'Учёба и развитие': ['человек, который учится каждый день', 'читающий человек', 'любознательный человек'],
+  'Звук и экран': ['человек, который не залипает в телефоне', 'внимательный человек'],
+  'Люди и дом': ['внимательный друг', 'добрый человек', 'человек, на которого можно положиться'],
+  'Дела и деньги': ['организованный человек', 'профессионал', 'трудолюбивый человек'],
+  'Разное': ['дисциплинированный человек', 'целеустремлённый человек', 'человек дела'],
+};
+export const DAY_WHO_SUGGEST = [DAY_WHO, 'человек слова', 'человек, который доводит до конца', 'надёжный человек'];
+
+export function whoSuggest(f, n = 4) {
+  const words = t => WHO_WORDS.filter(([re]) => re.test(String(t || '').toLocaleLowerCase('ru'))).flatMap(([, list]) => list);
+  const g = ICON_GROUPS.find(([, ids]) => ids.includes(f?.icon));
+  return uniq([...words(f?.name), ...(g ? WHO_BY_GROUP[g[0]] || [] : []), ...words(f?.note), ...DAY_WHO_SUGGEST]).slice(0, n);
+}
+
+// Все голоса: ключ «я» → { who, key, color, icon, names (действующие привычки), day (это «я» дня), days: дата → голосов }.
+// Цвет и значок — у первой привычки с этим «я»; у одного «я» дня — закат.
+export function whoVotes(s, today) {
+  const map = new Map();
+  const at = (who, src) => {
+    const key = whoKey(who);
+    let v = map.get(key);
+    if (!v) map.set(key, (v = { who, key, color: null, icon: null, names: [], day: false, days: new Map() }));
+    if (!src) v.day = true;
+    else {
+      if (!v.color) [v.color, v.icon] = [src.color, src.icon];
+      if (!src.archivedAt && src.on !== false && !v.names.includes(src.name)) v.names.push(src.name);
+    }
+    return v;
+  };
+  const vote = (v, d) => v.days.set(d, (v.days.get(d) || 0) + 1);
+  for (const it of s.items) {
+    if (!it.who) continue;
+    const v = at(it.who, it);
+    for (const [d, r] of Object.entries(s.days)) if (d <= today && r.done.includes(it.id)) vote(v, d);
+  }
+  for (const w of s.weekly) {
+    if (!w.who) continue;
+    const v = at(w.who, w);
+    for (const d of s.weekMarks[w.id] || []) if (d <= today) vote(v, d);
+  }
+  for (const sec of s.sections) {
+    if (!sec.who) continue;
+    const v = at(sec.who, sec);
+    for (const d of range(sec.addedAt, today)) if (secActive(s, sec, d)) vote(v, d);
+  }
+  if (s.dayWho) {
+    const v = at(s.dayWho, null);
+    for (const d of range(s.createdAt, today)) if (status(s, d, today) === 'closed') vote(v, d);
+  }
+  return map;
+}
+
+const sumVotes = (v, from = '') => { let n = 0; for (const [d, k] of v.days) if (d >= from) n += k; return n; };
+
+// Сколько голосов у «я» всего — с только что отданным («47-й голос за…»).
+export const whoCount = (s, who, today) => { const v = whoVotes(s, today).get(whoKey(who)); return v ? sumVotes(v) : 0; };
+
+// «Кем становлюсь» на «Прогрессе»: голоса за 4 недели, всего и клетки этой недели (пн–вс). Только «я» действующих
+// привычек и дня: «я» убранной привычки с прошлыми голосами — в её истории, не здесь.
+export function whoStats(s, today) {
+  const from = addDays(today, -27), mon = weekStart(today);
+  return [...whoVotes(s, today).values()].filter(v => v.names.length || v.day).map(v => ({
+    ...v, month: sumVotes(v, from), total: sumVotes(v),
+    week: range(mon, addDays(mon, 6)).map(d => (d > today ? 'future' : v.days.has(d) ? 'on' : 'off')),
+  })).sort((a, b) => b.month - a.month || b.total - a.total);
+}
+
+// Голоса недели W (итоги): «я» с голосами с пн по вс, больше — выше.
+export function whoWeek(s, monday, today) {
+  const to = minD(addDays(monday, 6), today);
+  return [...whoVotes(s, today).values()].map(v => {
+    let n = 0;
+    for (const [d, k] of v.days) if (d >= monday && d <= to) n += k;
+    return { who: v.who, color: v.color, icon: v.icon, day: v.day, n };
+  }).filter(v => v.n > 0).sort((a, b) => b.n - a.n);
 }
 
 // ---------- первая настройка (v58)
@@ -1015,6 +1151,7 @@ export function normalize(raw, today) {
     secMarks,
     secDays,
     tasks,
+    dayWho: cleanWho(raw.dayWho),
     ui: {
       welcomeSeen: raw.ui?.welcomeSeen === true,
       news: str(raw.ui?.news, 16),

@@ -22,6 +22,7 @@ const HINTS = [
 ];
 const RULES = S => [
   'Минимум — пол, а не план. Одинаков каждый день.',
+  'Каждая отметка — голос за того, кем становишься: «я» привычки — в её листе и в Настройках → «Кто я».',
   'Не пропускай дважды.',
   'Среда сильнее силы воли: телефон — на кухне, учёба — за обеденным столом, кровать — для сна.',
   'Одно улучшение в неделю — 1%.',
@@ -39,14 +40,15 @@ const WELCOME = (n, now, goal) =>
 // «Что нового» — один раз для тех, кто уже пользовался; новичок видит первую настройку.
 const NEWS_ID = 'v61';
 const NEWS = [
+  '«Кто я»: у привычки — своё «я» («спортивный человек», «человек слова» или своё), и каждая отметка становится голосом за него. Закрыл день — голос за главное «я» дня',
   '«План на завтра» — прямо здесь: с вечера до шести дел по важности, утром — галочки по порядку. Карточка «План» — если такой пункт есть в минимуме (он есть в подсказках); составил план — пункт отметится сам',
   'Не каждый день? Удержи пункт минимума — «Не каждый день?» переведёт его в «N раз в неделю» или в раздел, отметки перейдут с ним',
 ];
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
 const SECTION_PRESETS = [
-  { icon: 'briefcase', name: 'Работа', color: 'blue', note: 'дела по работе' },
-  { icon: 'heart', name: 'Хобби', color: 'orange', note: 'то, что любишь делать' },
-  { icon: 'cap', name: 'Учёба', color: 'purple', note: 'уроки и домашка' },
+  { icon: 'briefcase', name: 'Работа', color: 'blue', note: 'дела по работе', who: 'профессионал' },
+  { icon: 'heart', name: 'Хобби', color: 'orange', note: 'то, что любишь делать', who: 'творческий человек' },
+  { icon: 'cap', name: 'Учёба', color: 'purple', note: 'уроки и домашка', who: 'человек, который учится каждый день' },
 ];
 const SLEEP_STEP = 15, SLEEP_MAX = 10 * 60;
 const CODE_LEN = 5;
@@ -96,6 +98,7 @@ const days = n => `${n}${NB}${plural(n, ['день', 'дня', 'дней'])}`;
 const clock = t => t.replace(/^0(?=\d:)/, ''); // 07:30 → 7:30
 const tint = c => `--item:var(--c-${c});--bar:var(--b-${c})`;
 // Название пункта внутри фразы: «Телефон на кухню» → «телефон на кухню», но «ЕГЭ» и «iPhone» не трогаем.
+const STAR = ICONS.star[1]; // голос «я» (v61)
 const lcFirst = s => (/^\p{Lu}\p{Ll}/u.test(s) ? s[0].toLocaleLowerCase('ru') + s.slice(1) : s);
 const cap = s => s.charAt(0).toLocaleUpperCase('ru') + s.slice(1);
 const ago = (from, to) => {
@@ -111,7 +114,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   const { h, svg } = M;
   const ui = {
     tab: 'today', sheet: null, alert: null, yOpen: false, sleepOpen: false, edit: false, revOpen: new Set(), chartSel: null,
-    dataMsg: '', updMsg: '', toast: '', saveFailed: false, restored: false, update: false, version: '', scrolled: false, scroll: {}, alertClosing: false,
+    dataMsg: '', updMsg: '', toast: '', say: '', saveFailed: false, restored: false, update: false, version: '', scrolled: false, scroll: {}, alertClosing: false,
     joinName: null, joinErr: '', busy: false,
     setup: null, // первая настройка: { step, dir, name, code, busy, err, result }
   };
@@ -274,7 +277,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('div', { key: 'bars', class: 'bars' },
         ui.saveFailed && h('div', { key: 'warn', class: 'bar bar-warn', role: 'alert', 'data-enter': 'bar' }, 'Не удалось сохранить — сделай экспорт в Настройках'),
         ui.update && h('button', { key: 'update', class: 'bar bar-update', 'data-enter': 'bar', onclick: applyUpdate }, 'Доступна новая версия · ', h('b', {}, 'Обновить')),
-        ui.toast && h('div', { key: 'toast', class: 'bar bar-toast', role: 'status', 'data-enter': 'bar' }, ui.toast)),
+        ui.toast && h('div', { key: 'toast', class: 'bar bar-toast', role: 'status', 'data-enter': 'bar' }, ui.toast),
+        h('p', { key: 'say', class: 'sr', role: 'status' }, ui.say)),
       !setup && h('nav', { key: 'tabbar', class: 'tabbar', style: `--tabs:${tabs().length}`, 'aria-label': 'Вкладки', 'aria-hidden': modal ? 'true' : null, inert: modal }, tabs().map(([id, label, d]) => {
         const dot = id === 'friends' && asks > 0; // входящий запрос в друзья — точка на вкладке
         return h('button', { key: id, class: 'tab', 'aria-current': ui.tab === id ? 'page' : null, 'aria-label': dot ? `${label}, есть запросы` : null, onclick: () => openTab(id) },
@@ -534,8 +538,10 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       S.ui.welcomeSeen && S.ui.news !== NEWS_ID && h('section', { key: 'news', class: 'group card-pad welcome', 'data-flip': '' },
         h('div', { class: 'welcome-head' }, tile('star', 'purple'), h('p', { class: 'name strong' }, 'Что нового')),
         h('ul', { class: 'news' }, NEWS.map(t => h('li', {}, t))),
-        h('button', { class: 'btn-text', onclick: e => leave(e.currentTarget.closest('.group'), () => { S.ui.news = NEWS_ID; commit(); }) }, 'Понятно')),
-      heroView(sum, { foot: sleepLine(step, card) }),
+        h('div', { class: 'news-acts' },
+          !whoAny() && h('button', { class: 'btn-text', onclick: () => { S.ui.news = NEWS_ID; save(); openWho(); } }, 'Выбрать «я»'),
+          h('button', { class: 'btn-text', onclick: e => leave(e.currentTarget.closest('.group'), () => { S.ui.news = NEWS_ID; commit(); }) }, 'Понятно'))),
+      heroView(sum, { foot: sleepLine(step, card), who: S.dayWho }),
       D.status(S, y, today) === 'miss' && !closed && h('p', { key: 'miss', class: 'notice-line', 'data-flip': '' }, 'Вчера пропуск — сегодня не пропускай дважды'),
       card && sleepCard(),
       stack.length > 0 && h('div', { key: 'stack', class: 'stack', 'data-flip': '' }, stack),
@@ -750,21 +756,23 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         tile('pencil'), txt(rec || 'Сделано'), h('span', { class: 'check', role: 'img', 'aria-label': 'сделано' }, gl(G.check, '', 1)));
     }
     const when = date === today ? 'сегодня' : 'вчера';
-    return h('div', { key: 'day', class: 'row sec-row sec-day' + (on ? ' done' : '') + (rec ? ' has-rec' : ''), style: tint(sec.color), 'data-flip': '' },
+    return h('div', { key: 'day', class: 'row sec-row sec-day' + (on ? ' done' : '') + (rec ? ' has-rec' : ''), style: tint(sec.color), 'data-flip': '', 'data-sd': sec.id },
       h('button', { class: 'sd-open', 'aria-label': `${sec.name}, ${when}: ${rec || (on ? 'сделано, без записи' : 'записать, что сделано')}`, onclick: () => openSecDay(sec.id, date) },
         tile('pencil'), txt(name, note)),
-      h('button', { class: 'sd-check', 'aria-pressed': pressed(on), 'aria-label': `${sec.name}, ${when}: ${on ? 'снять отметку' : 'отметить'}`, onclick: () => secDayToggle(sec, date) },
+      h('button', { class: 'sd-check', 'aria-pressed': pressed(on), 'aria-label': `${sec.name}, ${when}: ${on ? 'снять отметку' : 'отметить'}`, onclick: e => secDayToggle(sec, date, e.currentTarget) },
         h('span', { class: 'check' }, gl(G.check, '', 1))));
   }
 
   // Кружок: отметить день раздела без записи или снять отметку; с записью — через подтверждение (текст сотрётся).
-  function secDayToggle(sec, date) {
+  function secDayToggle(sec, date, el) {
     if (stale() || closing) return;
     const rec = D.secRec(S, sec.id, date);
     const go = () => {
+      const was = D.secActive(S, sec, date);
       if (!D.setSecRec(S, sec.id, date, today, rec == null ? '' : null)) return;
       M.haptic();
       commit();
+      if (sec.who && !was && D.secActive(S, sec, date)) showVote(voteOf(sec.who), el, sec.color);
     };
     if (rec) showAlert({ title: 'Снять отметку?', msg: 'Запись этого дня сотрётся.', yes: 'Снять', danger: true, action: go });
     else go();
@@ -819,6 +827,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     if (closing) return;
     stale();
     const was = D.secRec(S, sh.sec, sh.date), next = sh.draft.on ? sh.draft.text : null;
+    const sec = D.findSection(S, sh.sec), active = sec && D.secActive(S, sec, sh.date);
     const go = () => {
       if (!D.setSecRec(S, sh.sec, sh.date, today, next)) {
         sh.err = D.findSection(S, sh.sec) ? 'Этот день уже не изменить: отмечать можно сегодня и вчера.' : 'Этого раздела больше нет.';
@@ -826,7 +835,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       }
       save();
       M.haptic();
-      closeSheet();
+      // Первое дело раздела за день — голос за его «я», от строки «Что сделано» (она уже на экране, лист уезжает).
+      const v = sec?.who && !active && D.secActive(S, sec, sh.date) ? voteOf(sec.who) : null;
+      closeSheet(v ? () => win.setTimeout(() => showVote(v, root.querySelector(`main [data-sd="${sec.id}"]`), sec.color), 60) : null);
     };
     if (was && next == null) showAlert({ title: 'Снять отметку?', msg: 'Запись этого дня сотрётся.', yes: 'Снять', danger: true, action: go });
     else go();
@@ -835,23 +846,26 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   // Строка пункта раздела: тап — отметка, удержание — детали (в листе дня — только отметка).
   function secRow(it, sec, date, hold) {
     const on = D.secDone(S, it.id, date);
-    const act = () => secToggle(date, it.id);
+    const act = e => secToggle(date, it.id, e?.currentTarget);
     return h('button', {
       key: it.id, class: 'row sec-row' + (on ? ' done' : ''), style: tint(it.color), 'aria-pressed': pressed(on), 'data-flip': '',
       ...(hold ? M.holdable(act, () => openSecItem(it.id, sec.id)) : { onclick: act }),
     }, tile(it.icon), txt(it.name, it.note), h('span', { class: 'check' }, gl(G.check, '', 1)));
   }
 
-  function secToggle(date, id) {
+  function secToggle(date, id, el) {
     if (stale() || closing) return;
+    const sec = D.findSecItem(S, id)?.section;
+    const was = sec && D.secActive(S, sec, date);
     if (!D.toggleSecMark(S, id, date, today)) return;
     M.haptic();
     commit();
+    if (sec?.who && !was && D.secActive(S, sec, date)) showVote(voteOf(sec.who), el, sec.color);
   }
 
   // Герой дня: кольца, «k из n», легенда, полоса минимума и строка снизу (сон). Тот же герой — у друга:
   // sum — summaryOf его состояния, sleep: false — друг скрыл сон, кольца сна нет.
-  function heroView(sum, { sleep = true, foot = null } = {}) {
+  function heroView(sum, { sleep = true, foot = null, who = '' } = {}) {
     const { plan, done, k, n, closed, streak, sh, w, wc } = sum;
     const label = [`Минимум ${k} из ${n}`, sleep && (sh.n ? `сон ${sh.k} из ${sh.n} в цель` : 'сон — нет данных'),
       w && `${w.name} ${wc} из ${w.perWeek}`].filter(Boolean).join(', ');
@@ -873,6 +887,9 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
               h('span', { class: 'lg-val roll', 'data-roll': '' }, `${wc}/${w.perWeek}`))))),
       n > 0 && h('div', { key: 'segs', class: 'segs', 'aria-hidden': 'true' }, plan.map((id, i) =>
         h('span', { key: id, class: 'seg' + (done.includes(id) ? ' on' : ''), style: `--i:${i};--n:${plan.length}` }, h('i', { class: 'seg-fill' })))),
+      // Закрытый день — голос за главное «я» (v61): «63-й голос за · дисциплинированный человек».
+      closed && who && h('p', { key: 'who', class: 'hero-who', 'data-enter': 'pop' }, h('span', { class: 'hw-star' }, gl(STAR)),
+        h('span', { class: 'hw-txt' }, h('span', { class: 'hw-over' }, `${D.whoCount(S, who, today)}-й голос за`), h('b', {}, who))),
       foot && [h('div', { key: 'line', class: 'hero-line' }), foot]);
   }
 
@@ -912,20 +929,144 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function itemRow(it, isDone, date, extra) {
     return h('button', {
       key: it.id, class: 'row' + (isDone ? ' done' : ''), style: tint(it.color), 'aria-pressed': pressed(isDone), 'data-flip': '',
-      ...M.holdable(() => toggle(date, it.id), () => openItem(it.id, S.weekly.includes(it))),
+      ...M.holdable(e => toggle(date, it.id, e?.currentTarget), () => openItem(it.id, S.weekly.includes(it))),
     }, tile(it.icon), txt(it.name, [it.note, extra].filter(Boolean).join(' · ')), h('span', { class: 'check' }, gl(G.check, '', 1)));
   }
 
-  function toggle(date, id) {
+  function toggle(date, id, el) {
     if (stale() || closing) return;
     const was = D.status(S, today, today) === 'closed';
     if (!D.toggleDone(S, date, id, today)) return;
+    const it = D.findItem(S, id);
+    const v = it?.who && D.doneOf(S, date).includes(id) ? voteOf(it.who) : null;
     M.haptic();
     commit();
+    showVote(v, el, it?.color);
     if (date === today && !was && D.status(S, today, today) === 'closed') celebrate();
   }
 
-  // Праздник закрытия дня: толчок колец, конфетти цветами пунктов, огонёк серии. Сам переход героя
+  // ---------- «Кто я» (v61): по Клиру каждое действие — голос за того, кем становишься. Отметка привычки с «я» —
+  // плашка над строкой «47-й голос за · спортивный человек» (число — все голоса за это «я», с только что отданным).
+  // Без движения — то же полосой внизу; диктору — живой областью.
+  const whoAny = () => !!S.dayWho || [...D.activeItems(S), ...S.weekly.filter(w => !w.archivedAt), ...S.sections].some(x => x.who);
+  // Выбор «я»: «Подходит» — по названию и значку, вся подборка — группами, своё — полем «Я — …».
+  // Повторное касание выбранного — без «я». st — состояние раскрытия (подборка, своё) этого выбора.
+  function whoPicker(st, cur, sugg, pick) {
+    const k = D.whoKey(cur);
+    const chip = w => h('button', { key: w, class: 'chip who-chip', 'aria-pressed': pressed(D.whoKey(w) === k), onclick: () => pick(D.whoKey(w) === k ? '' : w) }, w);
+    const preset = D.WHO_GROUPS.some(([, l]) => l.some(w => D.whoKey(w) === k));
+    const total = D.WHO_GROUPS.reduce((n, [, l]) => n + l.length, 0);
+    return h('div', { key: 'who-pick', class: 'sub-block who-pick', 'data-flip': '' },
+      h('span', { class: 'field-label' }, 'Подходит'),
+      h('div', { class: 'chips' }, sugg.map(chip)),
+      st.all
+        ? D.WHO_GROUPS.map(([g, list]) => [h('span', { key: `g-${g}`, class: 'field-label' }, g), h('div', { key: `c-${g}`, class: 'chips' }, list.map(chip))])
+        : h('button', { key: 'all', class: 'link who-all', onclick: () => { st.all = true; render(); } }, `Вся подборка · ${total}`),
+      h('label', { key: 'own', class: 'who-own' }, h('span', { class: 'who-pre' }, 'Я —'),
+        h('input', {
+          class: 'form-input', name: 'who', value: st.own ?? (cur && !preset ? cur : ''), maxlength: D.WHO_MAX, placeholder: 'своими словами',
+          autocomplete: 'off', enterkeyhint: 'done',
+          oninput: e => { st.own = e.target.value; },
+          onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.target.blur(); } },
+          onblur: e => { const w = D.cleanWho(e.target.value); if (w && D.whoKey(w) !== k) pick(w); },
+        })),
+      cur && h('button', { key: 'none', class: 'link who-none', onclick: () => pick('') }, 'Без «я»'));
+  }
+
+  // «Кто я» в листе пункта, счётчика и раздела: строка «Голос за · …», касание — выбор ниже.
+  function whoBlock(sh, d, what) {
+    const st = (sh.who ||= {});
+    const pick = w => {
+      d.who = D.cleanWho(w);
+      st.own = undefined;
+      st.open = false;
+      M.haptic();
+      render();
+    };
+    return [
+      secH('h-who', 'Кто я'),
+      h('section', { key: 'who', class: 'group', 'data-flip': '' },
+        h('button', { class: 'row row-s who-set', 'aria-expanded': pressed(st.open), onclick: () => { st.open = !st.open; render(); } },
+          h('span', { class: 'tile tile-sun' }, gl(STAR)),
+          txt(d.who || 'Выбрать «я»', d.who ? `голос за него — каждая отметка ${what}` : `каждая отметка ${what} станет голосом за того, кем становишься`), chev(st.open)),
+        st.open && whoPicker(st, d.who || '', D.whoSuggest(d), pick)),
+    ];
+  }
+
+  function openWho() {
+    if (stale()) return;
+    openSheet({ kind: 'who', open: null, st: {} });
+  }
+
+  // Лист «Кто я»: главное «я» дня и «я» каждой привычки. Выбор сразу в силе — прошлые отметки тоже голоса.
+  function whoSheet(sh) {
+    const row = (key, glyph, color, name, who, sugg, set) => {
+      const open = sh.open === key;
+      const pick = w => {
+        set(D.cleanWho(w));
+        sh.open = null;
+        sh.st = {};
+        M.haptic();
+        commit();
+      };
+      return [
+        h('button', { key, class: 'row row-s who-set', style: color ? tint(color) : null, 'aria-expanded': pressed(open), 'data-flip': '',
+          onclick: () => { sh.open = open ? null : key; sh.st = {}; render(); } },
+        glyph, txt(name, who ? `голос за: ${who}` : 'выбрать «я»'), chev(open)),
+        open && whoPicker(sh.st, who, sugg, pick),
+      ];
+    };
+    const items = D.activeItems(S), weekly = S.weekly.filter(w => !w.archivedAt), secs = S.sections.filter(x => x.on);
+    return [
+      h('p', { key: 'lead', class: 'sheet-sub who-lead' }, 'Каждое действие — голос за того, кем становишься. Выбери «я» — и каждая отметка станет голосом за него.'),
+      secH('h-who-day', 'Весь день'),
+      h('section', { key: 'who-day', class: 'group', 'data-flip': '' },
+        row('day', h('span', { class: 'tile tile-sun' }, gl(STAR)), null, 'Закрытый день', S.dayWho, D.DAY_WHO_SUGGEST, w => { S.dayWho = w; })),
+      items.length > 0 && [secH('h-who-min', 'Минимум'), h('section', { key: 'who-min', class: 'group', 'data-flip': '' },
+        items.map(it => row(it.id, tile(it.icon), it.color, it.name, it.who, D.whoSuggest(it), w => { it.who = w; })))],
+      weekly.length > 0 && [secH('h-who-week', 'Каждую неделю'), h('section', { key: 'who-week', class: 'group', 'data-flip': '' },
+        weekly.map(it => row(it.id, tile(it.icon), it.color, it.name, it.who, D.whoSuggest(it), w => { it.who = w; })))],
+      secs.length > 0 && [secH('h-who-sec', 'Разделы'), h('section', { key: 'who-sec', class: 'group', 'data-flip': '' },
+        secs.map(x => row(x.id, tile(x.icon), x.color, x.name, x.who, D.whoSuggest(x), w => { x.who = w; })))],
+      h('p', { key: 'who-foot', class: 'sec-foot', 'data-flip': '' },
+        'Одно «я» может быть у нескольких привычек — голоса складываются. Прошлые отметки тоже голоса: «я» можно выбрать в любой день. Друзьям «я» не видно.'),
+    ];
+  }
+
+  // «Кем становлюсь» на «Прогрессе»: «я» по голосам за 4 недели, клетки — эта неделя.
+  function whoProgress() {
+    const list = D.whoStats(S, today);
+    const glyph = v => (v.color ? tile(v.icon) : h('span', { class: 'tile tile-sun' }, gl(STAR)));
+    return [
+      secH('h-who', 'Кем становлюсь', h('button', { class: 'link', onclick: openWho }, list.length ? 'Изменить' : 'Выбрать')),
+      h('section', { key: 'who', class: 'group who-card', 'data-flip': '', 'data-reveal': '' }, list.length
+        ? list.map(v => h('div', { key: v.key, class: 'row who-row', style: v.color ? tint(v.color) : null },
+          glyph(v),
+          h('span', { class: 'txt' }, h('span', { class: 'name' }, `Я — ${v.who}`),
+            h('span', { class: 'note' }, [v.day && 'закрытый день', ...v.names].filter(Boolean).join(' · ')),
+            h('span', { class: 'who-week', role: 'img', 'aria-label': `на этой неделе — ${v.week.filter(c => c === 'on').length} из ${v.week.filter(c => c !== 'future').length} дней` },
+              v.week.map((c, i) => h('i', { key: i, class: c })))),
+          h('span', { class: 'who-num' }, h('b', { 'data-count': String(v.month) }, String(v.month)), h('span', {}, plural(v.month, ['голос', 'голоса', 'голосов'])))))
+        : h('button', { key: 'empty', class: 'row row-s who-set', onclick: openWho }, h('span', { class: 'tile tile-sun' }, gl(STAR)),
+          txt('Выбрать «я»', 'каждая отметка станет голосом за того, кем хочешь стать: «спортивный человек», «человек слова»'), chev())),
+      list.length > 0 && h('p', { key: 'who-foot', class: 'sec-foot', 'data-flip': '' }, 'Число — голоса за 4 недели, клетки — эта неделя. Каждая отметка — голос за того, кем становишься.'),
+    ];
+  }
+
+  function voteOf(who) {
+    const n = D.whoCount(S, who, today);
+    return n ? { over: `${n}-й голос за`, who } : null;
+  }
+  function showVote(v, el, color) {
+    if (!v) return;
+    const origin = el?.isConnected ? el.querySelector('.check, .wk') || el : null;
+    if (M.vote(origin, { over: v.over, text: v.who, color: `var(--c-${color || 'purple'})`, glyph: STAR })) ui.say = `${v.over}: ${v.who}`;
+    else toast(`${v.over}: ${v.who}`);
+    render();
+  }
+
+  // Праздник закрытия дня: толчок колец, конфетти цветами пунктов со звёздами, огонёк серии; «я» дня всплывает
+  // в герое (data-enter). Сам переход героя
   // в закатный и волна света по полосе — CSS (класс closed). Всего ≈ 1,3 с, один раз, без звука.
   function celebrate() {
     if (!M.motion()) return;
@@ -937,13 +1078,15 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const dayRings = ui.sheet?.kind === 'day' && root.querySelector('.sheet .day-rings');
     if (dayRings) {
       pulse(dayRings, 120);
-      return M.burst(dayRings, colors, { n: big ? 30 : 20, spread: 0.8, delay: 140 });
+      return M.burst(dayRings, colors, { n: big ? 30 : 20, spread: 0.8, delay: 140, stars: 'var(--sun-2)' });
     }
     const heroEl = root.querySelector('main .hero:not(.hero-streak)');
     const ringsEl = heroEl?.querySelector('.rings');
     if (!ringsEl) return;
     pulse(ringsEl, 300);
-    M.burst(ringsEl, colors, { n: big ? 40 : 26, spread: big ? 1.35 : 1, delay: 320 });
+    M.burst(ringsEl, colors, { n: big ? 44 : 28, spread: big ? 1.35 : 1, delay: 320, stars: 'var(--on-sun)' }); // звёзды в салюте (v61)
+    // Над каждым закрытым пунктом полосы — своя звезда, волной (v61): сколько привычек, столько звёзд.
+    M.rise(heroEl.querySelectorAll('.seg'), 'var(--on-sun)', { delay: 340, dist: big ? 58 : 44 });
     M.anim(root.querySelector('.topbar .streak'), [{ transform: 'none' }, { transform: 'scale(1.28)' }, { transform: 'none' }],
       { duration: 520, delay: 560, easing: EASE.spring });
   }
@@ -953,7 +1096,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     const mine = (S.weekMarks[it.id] || []).includes(today);
     return h('button', {
       key: it.id, class: 'row', style: tint(it.color), 'aria-pressed': pressed(mine), 'data-flip': '', 'data-wk': it.id,
-      ...M.holdable(() => weekToggle(it), () => openItem(it.id, true)),
+      ...M.holdable(e => weekToggle(it, e?.currentTarget), () => openItem(it.id, true)),
     }, tile(it.icon), txt(it.name, it.note),
     h('span', { class: 'wk' },
       h('span', { class: 'wk-label roll' + (mine ? ' today' : ''), 'data-roll': '' }, mine ? `✓ ${c} из ${it.perWeek}` : `${c} из ${it.perWeek}`),
@@ -961,12 +1104,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         h('span', { class: 'pill' + (i < c ? ' on' : '') })))));
   }
 
-  function weekToggle(it) {
+  function weekToggle(it, el) {
     if (stale() || closing) return;
     const was = D.weekCount(S, it.id, today);
     D.toggleWeekMark(S, it.id, today);
     M.haptic();
     commit();
+    if (it.who && (S.weekMarks[it.id] || []).includes(today)) showVote(voteOf(it.who), el, it.color);
     if (was < it.perWeek && D.weekCount(S, it.id, today) >= it.perWeek) {
       M.burst(root.querySelector(`[data-wk="${it.id}"] .pills`), ['var(--train-1)', 'var(--train-2)', 'var(--c-mint)'], { n: 14, spread: 0.55 });
     }
@@ -1101,6 +1245,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       right = h('button', { class: 'sheet-act right', id: 'sheet-done', disabled: sh.busy || !CODE_RE.test(cleanCode(sh.code)), onclick: () => sendRequest(sh) },
         sh.busy ? 'Отправляю…' : 'Отправить');
       body = addSheet(sh);
+    } else if (sh.kind === 'who') {
+      titleText = 'Кто я';
+      left = h('span');
+      right = h('button', { class: 'sheet-act right', onclick: () => closeSheet() }, 'Готово');
+      body = whoSheet(sh);
     } else if (sh.kind === 'privacy') {
       titleText = 'Что видят друзья';
       left = h('span');
@@ -1184,6 +1333,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           stat(String(D.history(S, today).streak), 'серия'),
           w && stat(`${wc} из ${w.perWeek}`, lcFirst(w.name)))),
       reviewSections(W),
+      reviewWho(W),
       sum.missingNights.length > 0 && [
         secH('h-nights', 'Ночи по памяти'),
         h('div', { key: 'nights', class: 'stack stack-tight', 'data-flip': '' }, sum.missingNights.map(d => h('section', { key: d, class: 'group sleep-card', 'data-flip': '' },
@@ -1232,6 +1382,15 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   }
 
   // Разделы за неделю в итогах: сколько дней было дело и записи «Что сделано» по порядку — подспорье для разбора.
+  // Голоса недели (v61): за какие «я» и сколько — перед вопросами недели.
+  function reviewWho(W) {
+    const list = D.whoWeek(S, W, today);
+    if (!list.length) return null;
+    return [secH('h-rv-who', 'Голоса недели'), h('section', { key: 'rv-who', class: 'group', 'data-flip': '' }, list.map(v =>
+      h('div', { key: v.who, class: 'row row-s', style: v.color ? tint(v.color) : null }, v.color ? tile(v.icon) : h('span', { class: 'tile tile-sun' }, gl(STAR)),
+        txt(`Я — ${v.who}`), h('span', { class: 'value' }, `${v.n}${NB}${plural(v.n, ['голос', 'голоса', 'голосов'])}`))))];
+  }
+
   function reviewSections(W) {
     const sun = D.addDays(W, 6), last = sun < today ? sun : today;
     const list = S.sections.map(sec => {
@@ -1291,7 +1450,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           w && h('p', { class: 'lg' }, h('span', { class: 'lg-dot train' }), h('span', {}, `${w.name}: ${r.week ? 'была' : 'не было'}`)))),
       secH('h-day-items', editable ? 'Пункты · можно отметить' : 'Пункты'),
       h('section', { key: 'day-items', class: 'group list-day', 'data-flip': '' }, items.length ? items.map(it => editable
-        ? h('button', { key: it.id, class: 'row' + (done.includes(it.id) ? ' done' : ''), style: tint(it.color), 'aria-pressed': pressed(done.includes(it.id)), onclick: () => toggle(d, it.id) },
+        ? h('button', { key: it.id, class: 'row' + (done.includes(it.id) ? ' done' : ''), style: tint(it.color), 'aria-pressed': pressed(done.includes(it.id)), onclick: e => toggle(d, it.id, e.currentTarget) },
           tile(it.icon), txt(it.name, it.note), h('span', { class: 'check' }, gl(G.check, '', 1)))
         : h('div', { key: it.id, class: 'row' + (done.includes(it.id) ? ' done' : ' missed'), style: tint(it.color) },
           tile(it.icon), txt(it.name, it.note), h('span', { class: 'check', role: 'img', 'aria-label': done.includes(it.id) ? 'сделано' : 'не сделано' }, gl(G.check, '', 1))))
@@ -1325,17 +1484,18 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         const on = (S.weekMarks[it.id] || []).includes(d);
         const kids = [tile(it.icon), txt(it.name, `${D.weekCount(S, it.id, d)} из ${it.perWeek} за${NB}неделю`), h('span', { class: 'check', role: editable ? null : 'img', 'aria-label': editable ? null : 'отмечено' }, gl(G.check, '', 1))];
         return editable
-          ? h('button', { key: it.id, class: 'row wk-row' + (on ? ' done' : ''), style: tint(it.color), 'aria-pressed': pressed(on), onclick: () => weekToggleOn(it, d) }, kids)
+          ? h('button', { key: it.id, class: 'row wk-row' + (on ? ' done' : ''), style: tint(it.color), 'aria-pressed': pressed(on), onclick: e => weekToggleOn(it, d, e.currentTarget) }, kids)
           : h('div', { key: it.id, class: 'row static wk-row done', style: tint(it.color) }, kids);
       })),
     ];
   }
 
-  function weekToggleOn(it, d) {
+  function weekToggleOn(it, d, el) {
     if (stale() || closing) return;
     if (!D.toggleWeekMark(S, it.id, d, today)) return;
     M.haptic();
     commit();
+    if (it.who && (S.weekMarks[it.id] || []).includes(d)) showVote(voteOf(it.who), el, it.color);
   }
 
   // Разделы в листе дня. Вчера и сегодня — включённые разделы, можно отметить пункты и «Что сделано»;
@@ -1356,8 +1516,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function openItem(id, weekly) {
     const it = id && D.findItem(S, id);
     const draft = it
-      ? { icon: it.icon, name: it.name, note: it.note, color: it.color, beforeBed: it.beforeBed ?? null, perWeek: it.perWeek ?? 3 }
-      : { icon: 'star', name: '', note: '', color: D.DEFAULT_COLOR, beforeBed: null, perWeek: 3 };
+      ? { icon: it.icon, name: it.name, note: it.note, color: it.color, beforeBed: it.beforeBed ?? null, perWeek: it.perWeek ?? 3, who: it.who || '' }
+      : { icon: 'star', name: '', note: '', color: D.DEFAULT_COLOR, beforeBed: null, perWeek: 3, who: '' };
     if (cloud.joined) draft.shared = !(it && cloud.prefs.hidden.includes(it.id));
     openSheet({ kind: 'item', id, weekly: !!weekly, draft, orig: JSON.stringify(draft), icons: !id });
   }
@@ -1398,7 +1558,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('div', { key: 'preview', class: 'preview', style: tint(d.color) },
         h('span', { class: 'tile' }, icon(d.icon)),
         h('p', { class: 'pv-name' }, d.name.trim() || placeholder),
-        h('p', { class: 'pv-note' }, d.note.trim() || 'когда / после чего')),
+        h('p', { class: 'pv-note' }, d.note.trim() || 'когда / после чего'),
+        !sec && d.who && h('p', { key: 'pv-who', class: 'pv-who' }, gl(STAR), `голос за: ${d.who}`)),
       st && (sec ? secStatsView(st, sh) : itemStatsView(st, sh)),
       h('section', { key: 'form', class: 'group group-gap-l', 'data-flip': '' },
         h('label', { class: 'form-row' }, h('span', { class: 'form-label' }, 'Название'),
@@ -1414,6 +1575,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             autocapitalize: 'none',
             onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.target.blur(); } }, // подпись — одна строка, длинная переносится
           }))),
+      !sec && whoBlock(sh, d, sh.weekly ? 'счётчика' : 'пункта'),
       lookPicker(sh, set),
       sec ? null : sh.weekly
         ? [secH('h-per', 'Раз в неделю'), h('section', { key: 'per', class: 'group sub-block sub-first', 'data-flip': '' }, h('div', { class: 'chips' }, [1, 2, 3, 4, 5, 6, 7].map(n =>
@@ -1526,7 +1688,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function openSection(id) {
     const sec = id && D.findSection(S, id);
     if (id && !sec) return;
-    const draft = sec ? { icon: sec.icon, name: sec.name, color: sec.color } : { icon: 'star', name: '', color: 'blue' };
+    const draft = sec ? { icon: sec.icon, name: sec.name, color: sec.color, who: sec.who || '' } : { icon: 'star', name: '', color: 'blue', who: '' };
     // Видимость — и до включения друзей (v60): новый раздел друзьям открыт, закрыть — переключателем.
     if (cloud.enabled) draft.shared = sec ? cloud.prefs.sections.includes(sec.id) : true;
     openSheet({ kind: 'section', id, draft, orig: JSON.stringify(draft), icons: !id });
@@ -1543,7 +1705,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     // Новый раздел после настройки — готовые из неё же, одним касанием (в настройке они и так списком).
     const presets = sec || S.ui.setup ? [] : SECTION_PRESETS.filter(p => !S.sections.some(x => x.name === p.name));
     const usePreset = p => {
-      Object.assign(d, { name: p.name, icon: p.icon, color: p.color });
+      Object.assign(d, { name: p.name, icon: p.icon, color: p.color }, d.who ? {} : { who: p.who || '' });
       const input = root.querySelector('.sheet input[name="what"]');
       if (input) input.value = p.name; // поле в фокусе перерисовка не трогает — ставим сами
       set('icon', p.icon);
@@ -1552,7 +1714,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       h('div', { key: 'preview', class: 'preview', style: tint(d.color) },
         h('span', { class: 'tile' }, icon(d.icon)),
         h('p', { class: 'pv-name' }, d.name.trim() || 'Новый раздел'),
-        h('p', { class: 'pv-note' }, sec ? secCount(sec) : 'отдельно от минимума')),
+        h('p', { class: 'pv-note' }, sec ? secCount(sec) : 'отдельно от минимума'),
+        d.who && h('p', { key: 'pv-who', class: 'pv-who' }, gl(STAR), `голос за: ${d.who}`)),
       presets.length > 0 && [secH('h-presets', 'Готовые'), h('section', { key: 'presets', class: 'group sub-block sub-first', 'data-flip': '' },
         h('div', { class: 'chips' }, presets.map(p => h('button', {
           key: p.name, class: 'chip chip-hint', 'aria-pressed': pressed(fromPreset(d, p) && d.color === p.color), onclick: () => usePreset(p),
@@ -1570,6 +1733,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
             },
             onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) e.target.blur(); },
           }))),
+      whoBlock(sh, d, 'в разделе'),
       lookPicker(sh, set),
       'shared' in d && h('section', { key: 'shared', class: 'group group-gap-l', 'data-flip': '' }, h('button', {
         class: 'switch-row', role: 'switch', 'aria-checked': pressed(d.shared), onclick: () => set('shared', !d.shared),
@@ -1736,6 +1900,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         h('p', { class: 'rule' }, 'Один пропуск прощается, два подряд — серия с нуля. Тапни день — увидишь детали.')),
       secH('h-week', 'Эта неделя'),
       h('section', { key: 'week', class: 'group rv-card', 'data-flip': '' }, weekRings(), dotsLegend(w), weekStats(mon, w)),
+      whoProgress(),
       secH('h-sleep', `Сон · 14${NB}ночей`),
       sleepSection({ sel: ui.chartSel, onPick: d => { ui.chartSel = ui.chartSel === d ? null : d; } }),
       secH('h-rates', 'Пункты · 4 недели'),
@@ -2871,6 +3036,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     });
   }
 
+  // «Кто я» в Настройках: у скольких привычек есть «я» и главное «я» дня.
+  function whoNote() {
+    const all = [...D.activeItems(S), ...S.weekly.filter(w => !w.archivedAt), ...S.sections.filter(x => x.on)];
+    const k = all.filter(x => x.who).length;
+    return [S.dayWho ? `день — ${S.dayWho}` : 'день — без «я»', all.length ? `привычки — ${k} из ${all.length}` : null].filter(Boolean).join(' · ');
+  }
+
   function settingsScreen() {
     const act = D.activeItems(S), wact = S.weekly.filter(i => !i.archivedAt);
     const arch = [...S.items, ...S.weekly].filter(i => i.archivedAt);
@@ -2882,6 +3054,8 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         class: 'head-action' + (ui.edit ? ' on' : ''), onclick: () => { ui.edit = !ui.edit; render(); },
       }, ui.edit ? 'Готово' : 'Изменить')),
       title('Настройки'),
+      h('section', { key: 'who', class: 'group', 'data-flip': '' }, h('button', { class: 'row row-s who-set', onclick: openWho },
+        h('span', { class: 'tile tile-sun' }, gl(STAR)), txt('Кто я', whoNote()), chev())),
       secH('h-items', `Минимум · ${act.length}`),
       h('section', { key: 'items', class: 'group', 'data-flip': '' }, listRows(S.items, false), !ui.edit && [addRow(false), suggestRow()]),
       h('p', { key: 'items-foot', class: 'sec-foot', 'data-flip': '' }, 'Минимум должен выполняться в худший день. На 11\u2011м пункте приложение переспросит.'),
@@ -2994,6 +3168,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function helloStep() {
     const feats = [
       [h('span', { class: 'tile tile-check' }, gl(G.check)), 'Отметка — одно касание', 'всё отмечено — день закрыт'],
+      [h('span', { class: 'tile tile-sun' }, gl(STAR)), 'Каждая отметка — голос', 'за того, кем становишься: «спортивный человек», «человек слова»'],
       [h('span', { class: 'tile tile-sun' }, gl(G.flame)), 'Не пропускай дважды', 'один пропуск прощается, два подряд — серия с нуля'],
       [tile('moon', 'indigo'), 'Сон — шагами к цели', `отбой раньше на 15–30${NB}минут в неделю — по твоему выбору`],
       [tile('sparkles', 'yellow'), '1% в неделю', 'на итогах недели — одно маленькое улучшение'],

@@ -309,20 +309,24 @@ export function createDOM(win) {
     seed = (seed * 16807) % 2147483647;
     return seed / 2147483647;
   };
-  function burst(origin, colors, { n = 22, spread = 1, delay = 0 } = {}) {
+  function layer() {
+    if (fx && fx.isConnected) return;
+    fx = doc.createElement('div');
+    fx.className = 'fx';
+    fx.setAttribute('aria-hidden', 'true');
+    doc.body.append(fx);
+  }
+  // stars — цвет звёзд: тогда каждая четвёртая частица — звезда (праздник закрытого дня, v61).
+  function burst(origin, colors, { n = 22, spread = 1, delay = 0, stars = '' } = {}) {
     if (!motion() || !origin || !origin.isConnected) return;
-    if (!fx) {
-      fx = doc.createElement('div');
-      fx.className = 'fx';
-      fx.setAttribute('aria-hidden', 'true');
-      doc.body.append(fx);
-    }
+    layer();
     const r = origin.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     for (let i = 0; i < n; i++) {
       const p = doc.createElement('i');
-      p.className = i % 3 ? 'spark' : 'spark spark-bar';
-      p.style.background = colors[i % colors.length];
+      const star = stars && i % 4 === 1;
+      p.className = star ? 'spark spark-star' : i % 3 ? 'spark' : 'spark spark-bar';
+      p.style.background = star ? stars : colors[i % colors.length];
       p.style.left = `${cx}px`;
       p.style.top = `${cy}px`;
       fx.append(p);
@@ -339,6 +343,99 @@ export function createDOM(win) {
       if (a) done(a).then(() => p.remove());
       else p.remove();
     }
+  }
+
+  // Звёзды над элементами (v61): над каждым сегментом полосы минимума — своя звезда, волной слева направо.
+  // Сколько привычек закрыто — столько звёзд; волна сжимается так, чтобы всё уложилось в within (праздник ≤ 1,3 с).
+  function rise(origins, color, { delay = 0, dist = 44, duration = 700, within = 1300 } = {}) {
+    if (!motion()) return;
+    const list = [...origins].filter(o => o?.isConnected);
+    if (!list.length) return;
+    layer();
+    const step = list.length > 1 ? Math.min(60, Math.max(0, within - delay - duration) / (list.length - 1)) : 0;
+    list.forEach((o, i) => {
+      const r = o.getBoundingClientRect();
+      const p = doc.createElement('i');
+      p.className = 'spark spark-star spark-rise';
+      p.style.background = color;
+      p.style.left = `${r.left + r.width / 2}px`;
+      p.style.top = `${r.top + r.height / 2}px`;
+      fx.append(p);
+      const up = dist + rnd() * 16, sway = (rnd() - 0.5) * 18, rot = (rnd() - 0.5) * 120;
+      const a = anim(p, [
+        { transform: 'translate(0, 0) scale(0.2)', opacity: 0, easing: EASE.spring },
+        { transform: `translate(${sway * 0.3}px, ${-up * 0.45}px) scale(1.15)`, opacity: 1, offset: 0.35, easing: EASE.out },
+        { transform: `translate(${sway}px, ${-up}px) rotate(${rot}deg) scale(0.6)`, opacity: 0 },
+      ], { duration, delay: delay + i * step, easing: 'linear', fill: 'both' });
+      if (a) done(a).then(() => p.remove());
+      else p.remove();
+    });
+  }
+
+  // Голос «я» (v61): плашка поднимается над отметкой и тает (≈ 2,2 с) — в том же слое, что конфетти.
+  // Текст — только текстовыми узлами. Без движения — false: тогда приложение говорит то же обычной полосой.
+  function vote(origin, { over, text, color, glyph }) {
+    if (!motion() || !origin || !origin.isConnected) return false;
+    layer();
+    for (const old of [...fx.querySelectorAll('.vote')].slice(0, -2)) old.remove(); // не больше трёх разом
+    const r = origin.getBoundingClientRect();
+    const el = doc.createElement('div');
+    el.className = 'vote';
+    el.style.setProperty('--vc', color);
+    const dot = doc.createElement('span');
+    dot.className = 'vote-dot';
+    if (glyph) {
+      const g = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      g.setAttribute('viewBox', '0 0 24 24');
+      const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', glyph);
+      g.append(path);
+      dot.append(g);
+    }
+    const t = doc.createElement('span');
+    t.className = 'vote-txt';
+    const a = doc.createElement('span');
+    a.className = 'vote-over';
+    a.textContent = over;
+    const b = doc.createElement('span');
+    b.className = 'vote-who';
+    b.textContent = text;
+    t.append(a, b);
+    el.append(dot, t);
+    fx.append(el);
+    // Над строкой, правым краем — к отметке; у края экрана — внутрь.
+    const vw = win.innerWidth || doc.documentElement.clientWidth || 0;
+    const w = el.offsetWidth, hh = el.offsetHeight;
+    el.style.left = `${Math.max(12, Math.min(vw - 12 - w, r.right - w + 6))}px`;
+    el.style.top = `${Math.max(8, r.top - hh - 4)}px`;
+    // Кривая — у каждого участка своя: вылет с пружиной, покой, уход вверх с таянием.
+    const an = anim(el, [
+      { transform: 'translateY(14px) scale(0.82)', opacity: 0, easing: EASE.spring },
+      { transform: 'translateY(0) scale(1)', opacity: 1, offset: 0.2, easing: 'linear' },
+      { transform: 'translateY(-4px) scale(1)', opacity: 1, offset: 0.78, easing: EASE.in },
+      { transform: 'translateY(-22px) scale(0.96)', opacity: 0 },
+    ], { duration: 2200, easing: 'linear', fill: 'both' });
+    if (!an) {
+      el.remove();
+      return false;
+    }
+    // Прокрутили (экран или лист) — плашка отстала бы от строки: тает сразу.
+    let gone = false;
+    const away = () => {
+      if (gone || !el.isConnected) return;
+      gone = true;
+      const o = win.getComputedStyle(el).opacity;
+      an.cancel();
+      const out = anim(el, [{ opacity: o }, { opacity: 0 }], { duration: 160, easing: 'linear', fill: 'both' });
+      if (out) done(out).then(() => el.remove());
+      else el.remove();
+    };
+    doc.addEventListener('scroll', away, { capture: true, once: true, passive: true });
+    done(an).then(() => {
+      doc.removeEventListener('scroll', away, { capture: true });
+      if (!gone) el.remove();
+    });
+    return true;
   }
 
   // ---------- тактильный отклик
@@ -548,5 +645,5 @@ export function createDOM(win) {
     }
   }
 
-  return { h, svg, patch, motion, anim, done, measure, flip, draw, stagger, reveal, countUp, burst, haptic, holdable, dragSheet };
+  return { h, svg, patch, motion, anim, done, measure, flip, draw, stagger, reveal, countUp, burst, rise, vote, haptic, holdable, dragSheet };
 }

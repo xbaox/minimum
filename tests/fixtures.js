@@ -20,6 +20,7 @@ const WEEKLY = [['pulse', 'Тренировка', `подтягивания · �
 export function baoSeed(today, id = makeId, since = today) {
   const S = seed(today, () => 'tmp', since);
   S.ui.setup = false;
+  S.dayWho = ''; // телефон до v61: «я» ещё не выбирали
   S.items = ITEMS.map(([icon, name, note, color, beforeBed]) => ({ id: id(), icon, name, note, color, beforeBed, addedAt: today, archivedAt: null }));
   S.weekly = WEEKLY.map(([icon, name, note, color, perWeek]) => ({ id: id(), icon, name, note, color, perWeek, addedAt: today, archivedAt: null }));
   return S;

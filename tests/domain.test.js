@@ -594,7 +594,7 @@ test('разделы: добавить, править, выключить, по
   const s = mk('2026-10-01');
   const id = sids();
   const w = D.addSection(s, { name: '  Работа ', icon: 'briefcase', color: 'blue' }, '2026-10-05', id);
-  assert.deepEqual(w, { id: 's1', name: 'Работа', icon: 'briefcase', color: 'blue', on: true, addedAt: '2026-10-05', items: [] });
+  assert.deepEqual(w, { id: 's1', name: 'Работа', icon: 'briefcase', color: 'blue', who: '', on: true, addedAt: '2026-10-05', items: [] });
   assert.equal(D.addSection(s, { name: '   ' }, '2026-10-05', id), null);
   const hb = D.addSection(s, { name: 'Хобби', icon: 'rocket', color: 'violet' }, '2026-10-05', id);
   assert.equal(hb.icon, 'star');
@@ -745,8 +745,8 @@ test('нормализация разделов: мусор выброшен, id
   raw.secMarks = { w1: ['2026-09-05', '2026-09-05', 'не дата', '2026-09-04'], i1: ['2026-09-05'], zz: ['2026-09-05'], m: 'bad' };
   const n = D.normalize(raw, '2026-09-10');
   assert.deepEqual(n.sections, [
-    { id: 'w', name: 'Работа', icon: 'briefcase', color: 'blue', on: false, addedAt: '2026-09-02', items: [{ id: 'w1', icon: 'clock', name: 'Фокус', note: 'утром', color: 'red', addedAt: '2026-09-03' }] },
-    { id: 'm', name: 'Музыка', icon: 'star', color: 'blue', on: true, addedAt: '2026-09-01', items: [] },
+    { id: 'w', name: 'Работа', icon: 'briefcase', color: 'blue', who: '', on: false, addedAt: '2026-09-02', items: [{ id: 'w1', icon: 'clock', name: 'Фокус', note: 'утром', color: 'red', addedAt: '2026-09-03' }] },
+    { id: 'm', name: 'Музыка', icon: 'star', color: 'blue', who: '', on: true, addedAt: '2026-09-01', items: [] },
   ]);
   assert.deepEqual(n.secMarks, { w1: ['2026-09-04', '2026-09-05'] });
   raw.secDays = { w: { '2026-09-05': ' созвон\n', 'не дата': 'x', '2026-09-06': 5 }, zz: { '2026-09-05': 'чужой' }, m: 'bad', constructor: { '2026-09-05': 'x' } };
@@ -947,4 +947,94 @@ test('«Не каждый день?»: пункт → раздел с отмет
   assert.equal(D.toSection(s, s.items[0].id, 'sec-u', today), null, 'в разделе уже 20 пунктов');
   assert.equal(s.items[0].archivedAt, null);
   assert.equal(D.toSection(s, s.items[0].id, 'нет-раздела', today), null);
+});
+
+// ---------- «Кто я» (v61)
+
+test('«Кто я»: чистка «я», подборка без повторов и без рода, подсказки по названию и значку', () => {
+  assert.equal(D.cleanWho('  Я — Спортсмен '), 'спортсмен');
+  assert.equal(D.cleanWho('я  читающий человек'), 'читающий человек');
+  assert.equal(D.cleanWho('— сильный'), 'сильный');
+  assert.equal(D.cleanWho('IT-специалист'), 'IT-специалист', 'аббревиатуру не трогаем');
+  assert.equal(D.cleanWho('ярый фанат'), 'ярый фанат', '«я» — только отдельным словом');
+  assert.equal(D.cleanWho('строка\nвторая'), 'строка вторая');
+  assert.equal(D.cleanWho(null), '');
+  assert.ok(D.cleanWho('а'.repeat(80)).length <= D.WHO_MAX);
+  const all = D.WHO_GROUPS.flatMap(([, l]) => l);
+  assert.ok(all.length >= 40);
+  assert.equal(new Set(all.map(D.whoKey)).size, all.length, 'без повторов');
+  assert.ok(all.every(w => w === D.cleanWho(w)), 'подборка уже чистая');
+  // без рода: прилагательное — только при «человек», «который» — только у «человека»
+  assert.ok(all.every(w => !/(ый|ий|ой|ая)$/.test(w)), 'нет «дисциплинированный» без «человек»');
+  assert.ok([...D.SUGGESTIONS.map(x => x.who), D.DAY_WHO, ...D.DAY_WHO_SUGGEST].every(w => all.includes(w)), 'шаблон и подсказки — из подборки');
+  assert.deepEqual(D.whoSuggest({ name: 'Турник', icon: 'dumbbell' }).slice(0, 2), ['спортивный человек', 'сильный человек']);
+  assert.equal(D.whoSuggest({ name: 'Английский', icon: 'globe' })[0], 'человек, который говорит по-английски');
+  assert.equal(D.whoSuggest({ name: 'Разное', icon: 'star' })[0], 'дисциплинированный человек');
+  assert.equal(D.whoSuggest({ name: 'Работа', icon: 'briefcase' }).length, 4);
+});
+
+test('«Кто я»: шаблон и подсказки — со своим «я»; правка без «я» его не стирает; нормализация чистит', () => {
+  const s = D.seed('2026-10-01', ids());
+  assert.equal(s.dayWho, D.DAY_WHO);
+  assert.deepEqual(s.items.map(i => i.who), ['человек, который бережёт здоровье', 'спортивный человек', 'организованный человек', 'человек, который высыпается', 'читающий человек']);
+  const it = s.items[1];
+  D.updateItem(s, it.id, { name: 'Зарядка утром', icon: 'dumbbell', color: 'red', note: '' });
+  assert.equal(it.who, 'спортивный человек');
+  D.updateItem(s, it.id, { name: 'Зарядка', icon: 'dumbbell', color: 'red', note: '', who: 'Я — сильный человек' });
+  assert.equal(it.who, 'сильный человек');
+  const sec = D.addSection(s, { name: 'Работа', icon: 'briefcase', color: 'blue', who: 'профессионал' }, '2026-10-02', () => 'sec-r');
+  D.updateSection(s, 'sec-r', { name: 'Работа!', icon: 'briefcase', color: 'blue' });
+  assert.equal(sec.who, 'профессионал');
+  const x = D.addSecItem(s, 'sec-r', { name: 'Отчёт', who: 'лишнее' }, '2026-10-02');
+  assert.equal('who' in x, false, '«я» — у раздела, не у пункта раздела');
+  const raw = JSON.parse(JSON.stringify(s));
+  raw.items[0].who = 'Я —  Здоровый\nчеловек';
+  raw.weekly = [{ id: 'w1', icon: 'pulse', name: 'Бег', color: 'green', perWeek: 3, who: 42 }];
+  raw.dayWho = 'я  человек слова';
+  const n = D.normalize(raw, '2026-10-05');
+  assert.equal(n.items[0].who, 'здоровый человек');
+  assert.equal(n.weekly[0].who, '');
+  assert.equal(n.dayWho, 'человек слова');
+  assert.equal(n.sections[0].who, 'профессионал');
+  assert.equal(D.normalize({ ...raw, dayWho: undefined }, '2026-10-05').dayWho, '', 'старый файл — без «я» дня');
+  // перевод в счётчик несёт «я»
+  assert.equal(D.toWeekly(s, it.id, 3, '2026-10-05', () => 'w-new').who, 'сильный человек');
+});
+
+test('«Кто я»: голоса — отметки пунктов и счётчиков, дни раздела с делом и закрытые дни; одно «я» складывается', async () => {
+  const { shareOf } = await import('../share.js');
+  const s = mk('2026-10-01');
+  const today = '2026-10-08';
+  const [a, b] = s.items;
+  a.who = 'Спортивный человек';
+  b.who = 'спортивный человек'; // то же «я» другим регистром — голоса вместе
+  s.weekly[0].who = 'сильный человек';
+  s.dayWho = 'человек слова';
+  for (const d of D.range('2026-10-01', '2026-10-07')) {
+    if (d === '2026-10-03') s.days[d] = { plan: D.activeIds(s), done: [a.id] };
+    else closeDay(s, d);
+  }
+  s.weekMarks[s.weekly[0].id] = ['2026-10-02', '2026-10-06', '2026-10-09']; // будущая не в счёт
+  const sec = D.addSection(s, { name: 'Учёба', icon: 'cap', color: 'purple', who: 'человек, который учится каждый день' }, '2026-10-05', () => 'sec-u');
+  D.setSecRec(s, 'sec-u', '2026-10-07', '2026-10-07', 'конспект');
+  D.setSecRec(s, 'sec-u', '2026-10-08', today, '');
+  assert.equal(D.whoCount(s, 'спортивный человек', today), 7 + 6, 'a — 7 дней, b — 6 (3-го не отмечен)');
+  assert.equal(D.whoCount(s, 'СИЛЬНЫЙ человек', today), 2);
+  assert.equal(D.whoCount(s, 'человек слова', today), 6, 'закрытые дни; 3-го не закрыт');
+  assert.equal(D.whoCount(s, 'человек, который учится каждый день', today), 2);
+  assert.equal(D.whoCount(s, 'никто', today), 0);
+  const st = D.whoStats(s, today);
+  assert.deepEqual(st.map(v => [v.who, v.month, v.total]), [
+    ['Спортивный человек', 13, 13], ['человек слова', 6, 6], ['сильный человек', 2, 2], ['человек, который учится каждый день', 2, 2],
+  ]);
+  assert.deepEqual(st[0].names, [a.name, b.name]);
+  assert.equal(st[1].day, true);
+  assert.deepEqual(st[0].week, ['on', 'on', 'on', 'on', 'future', 'future', 'future'].map((c, i) => (i === 3 ? 'off' : c)), 'пн 5 — чт 8: сегодня ещё без отметки');
+  assert.deepEqual(D.whoWeek(s, '2026-10-05', today).map(v => [v.who, v.n]), [['Спортивный человек', 6], ['человек слова', 3], ['человек, который учится каждый день', 2], ['сильный человек', 1]]);
+  // убранная привычка: голоса её — в истории «я», но в «Кем становлюсь» без действующих привычек — нет
+  s.weekly[0].archivedAt = today;
+  assert.equal(D.whoStats(s, today).some(v => v.who === 'сильный человек'), false);
+  assert.equal(D.whoCount(s, 'сильный человек', today), 2);
+  // друзьям «я» не уходит
+  assert.doesNotMatch(JSON.stringify(shareOf(s, today, { sections: [sec.id] })), /спортивный|человек слова|учится каждый|"who"|dayWho/i);
 });

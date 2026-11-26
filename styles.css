@@ -54,6 +54,8 @@
   --glow-1: rgba(255, 61, 127, 0.16);
   --glow-2: rgba(155, 92, 255, 0.14);
   --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.18);
+  --vote-bg: rgba(255, 255, 255, 0.94);
+  --shadow-vote: 0 10px 30px rgba(0, 0, 0, 0.16), 0 1px 2px rgba(0, 0, 0, 0.08);
   --shadow-knob: 0 3px 8px rgba(0, 0, 0, 0.15), 0 1px 1px rgba(0, 0, 0, 0.06);
   --nb-goal: rgba(94, 92, 230, 0.22);
 
@@ -226,6 +228,11 @@
   --spark: 8px;
   --spark-w: 5px;
   --spark-h: 12px;
+  --spark-star: 14px;
+  --spark-rise: 18px;
+  --who-cell: 10px;
+  --vote-w: 330px;
+  --r-vote: 22px;
   --row-friend: 64px;
   --code-btn: 48px;
   --tab-dot: 9px;
@@ -336,6 +343,8 @@
     --glow-2: rgba(155, 92, 255, 0.26);
     --train-text: #30D158;
     --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.45);
+    --vote-bg: rgba(44, 44, 46, 0.94);
+    --shadow-vote: 0 10px 30px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.3);
     --nb-goal: rgba(125, 122, 255, 0.42);
     --b-red: #FF6369;
     --b-orange: #F59E0B;
@@ -752,6 +761,7 @@ button.row:active, label.row:active { background: var(--press); }
 .welcome-head { display: flex; align-items: center; gap: var(--u14); }
 .welcome > p { font-size: var(--fs-sub); line-height: var(--lh-sub); color: var(--text-2); }
 .welcome .btn-text { align-self: flex-end; }
+.welcome .news-acts .btn-text { align-self: auto; }
 .news { list-style: none; display: flex; flex-direction: column; gap: var(--u8); font-size: var(--fs-sub); line-height: var(--lh-sub); }
 .news li { position: relative; padding-left: var(--u18); }
 .news li::before {
@@ -1205,6 +1215,59 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .plan-line.empty .tile { opacity: 0.45; }
 .carry-row .tile-round { background: var(--item); }
 
+/* ---------- «Кто я» (v61): голос — плашка над отметкой (в слое конфетти), «я» закрытого дня — в герое,
+   «Кем становлюсь» — на «Прогрессе», выбор — чипами подборки и полем «Я — …». */
+
+.vote {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: var(--u10);
+  max-width: min(var(--vote-w), calc(100vw - var(--u24)));
+  padding: var(--u7) var(--u16) var(--u7) var(--u7);
+  border-radius: var(--r-vote);
+  background: var(--vote-bg);
+  color: var(--text);
+  box-shadow: var(--shadow-vote);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--blur));
+  backdrop-filter: saturate(180%) blur(var(--blur));
+}
+.vote-dot { flex: none; display: grid; place-items: center; width: var(--tile); height: var(--tile); border-radius: 50%; background: var(--vc); color: var(--on-tile); }
+.vote-dot svg { width: var(--gl-check); height: var(--gl-check); fill: currentColor; }
+.vote-txt { display: flex; flex-direction: column; min-width: 0; }
+.vote-over { font-size: var(--fs-foot); line-height: var(--lh-foot); color: var(--text-2); }
+.vote-who { font-size: var(--fs-sub); line-height: var(--lh-sub); font-weight: 600; }
+
+.hero-who { display: flex; align-items: center; gap: var(--u10); margin-top: var(--u16); }
+.hw-star { flex: none; display: grid; place-items: center; width: var(--tile); height: var(--tile); border-radius: 50%; background: var(--sun-track); }
+.hw-star .gl { width: var(--gl-check); height: var(--gl-check); fill: var(--on-sun); stroke: none; }
+.hw-txt { display: flex; flex-direction: column; min-width: 0; font-size: var(--fs-sub); line-height: var(--lh-sub); }
+.hw-over { font-size: var(--fs-foot); line-height: var(--lh-foot); opacity: 0.85; }
+
+.pv-who { display: inline-flex; align-items: center; gap: var(--u6); font-size: var(--fs-foot); line-height: var(--lh-foot); color: var(--text-2); }
+.pv-who .gl { width: var(--gl-xs); height: var(--gl-xs); fill: var(--sun-2); stroke: none; }
+.who-lead { margin: var(--u6) var(--gutter) 0; line-height: var(--lh-foot); }
+.who-pick { gap: var(--u10); }
+.who-chip { height: auto; min-height: var(--chip-h); padding: var(--u7) var(--u14); }
+.who-all, .who-none { align-self: flex-start; }
+.who-none { color: var(--text-2); }
+.who-own { display: flex; align-items: center; gap: var(--u8); min-height: var(--tap); }
+.who-pre { flex: none; font-size: var(--fs-body); font-weight: 600; }
+.who-own .form-input { min-height: var(--tap); }
+
+.who-row { align-items: flex-start; padding-top: var(--u12); padding-bottom: var(--u12); }
+.who-row .tile { margin-top: var(--u2); }
+.who-week { display: flex; gap: var(--u4); margin-top: var(--u8); }
+.who-week i { width: var(--who-cell); height: var(--who-cell); border-radius: var(--r-legend); background: var(--fill); }
+.who-week i.on { background: var(--item, var(--sun-2)); }
+.who-week i.future { background: none; box-shadow: inset 0 0 0 var(--bw-s) var(--fill); }
+.who-num { flex: none; display: flex; flex-direction: column; align-items: flex-end; min-width: var(--pct-w); }
+.who-num b { font-size: var(--fs-stat); line-height: var(--lh-stat); font-weight: 700; font-variant-numeric: tabular-nums; }
+.who-num span { font-size: var(--fs-foot); line-height: var(--lh-foot); color: var(--text-2); }
+
+.news-acts { display: flex; justify-content: flex-end; gap: var(--u16); }
+.sr { position: absolute; width: var(--u1); height: var(--u1); margin: calc(var(--u1) * -1); overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
 /* ---------- первая настройка (v58): шаги без таб-бара, точки сверху, кнопка снизу */
 
 .screen.setup { min-height: 100dvh; display: flex; flex-direction: column; padding-bottom: 0; }
@@ -1513,6 +1576,15 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
   margin: calc(var(--spark-h) / -2) 0 0 calc(var(--spark-w) / -2);
   border-radius: var(--r-spark);
 }
+/* Звезда салюта закрытого дня (v61) — та же частица, вырезанная звездой. */
+.spark-star {
+  width: var(--spark-star);
+  height: var(--spark-star);
+  margin: calc(var(--spark-star) / -2) 0 0 calc(var(--spark-star) / -2);
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 61.8% 35%, 98% 35.4%, 68.8% 57.4%, 79.4% 91.6%, 50% 70.8%, 20.6% 91.6%, 31.2% 57.4%, 2% 35.4%, 38.2% 35%);
+}
+.spark-rise { width: var(--spark-rise); height: var(--spark-rise); margin: calc(var(--spark-rise) / -2) 0 0 calc(var(--spark-rise) / -2); }
 .haptic { display: none; }
 
 /* «Уменьшение движения»: JS-анимации уже выключены (dom.js), здесь — переходы и нажатия. */
