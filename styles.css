@@ -56,12 +56,27 @@
   --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.18);
   --vote-bg: rgba(255, 255, 255, 0.94);
   --shadow-vote: 0 10px 30px rgba(0, 0, 0, 0.16), 0 1px 2px rgba(0, 0, 0, 0.08);
-  /* тема (v61): цвет неба сверху экрана, частицы, плитки выбора */
+  /* тема (v61): цвет неба сверху экрана, частицы, гирлянда, плитки выбора. Небо начинается цветом фона —
+     без шва под строкой состояния iOS (её рисует система), — густеет к заголовку и тает к --sky-h. */
+  --sky-top: 72px;
   --sky-h: 420px;
-  --sky-winter: linear-gradient(180deg, #D6E6F8 0%, rgba(214, 230, 248, 0) var(--sky-h));
-  --sky-spring: linear-gradient(180deg, #FBE1EB 0%, rgba(251, 225, 235, 0) var(--sky-h));
-  --sky-summer: linear-gradient(180deg, #FFEFD0 0%, rgba(255, 239, 208, 0) var(--sky-h));
-  --sky-autumn: linear-gradient(180deg, #FCE2CC 0%, rgba(252, 226, 204, 0) var(--sky-h));
+  --sky-winter: linear-gradient(180deg, var(--bg) 0, #D6E6F8 var(--sky-top), rgba(214, 230, 248, 0) var(--sky-h));
+  --sky-spring: linear-gradient(180deg, var(--bg) 0, #FBE1EB var(--sky-top), rgba(251, 225, 235, 0) var(--sky-h));
+  --sky-summer: linear-gradient(180deg, var(--bg) 0, #FFEFD0 var(--sky-top), rgba(255, 239, 208, 0) var(--sky-h));
+  --sky-autumn: linear-gradient(180deg, var(--bg) 0, #FCE2CC var(--sky-top), rgba(252, 226, 204, 0) var(--sky-h));
+  --sky-newyear: linear-gradient(180deg, var(--bg) 0, #F8E4D0 var(--sky-top), rgba(248, 228, 208, 0) var(--sky-h));
+  --sky-rain: linear-gradient(180deg, var(--bg) 0, #DCE4EE var(--sky-top), rgba(220, 228, 238, 0) var(--sky-h));
+  /* частицы смешиваются с экраном: в светлой — умножением (тёмный текст всегда поверх), в тёмной — осветлением */
+  --sky-blend: multiply;
+  --rain: #7D97BC;
+  --rain-2: #95ACCC;
+  --wire: rgba(70, 52, 36, 0.42);
+  --bulb-1: #FF4D57;
+  --bulb-2: #FFB020;
+  --bulb-3: #2FBF66;
+  --bulb-4: #3D97FF;
+  --bulb-5: #F25BB2;
+  --bulb-hi: rgba(255, 255, 255, 0.85);
   --snow: #C9DBF2;
   --snow-2: #B3CAEA;
   --petal-1: #F4A3C0;
@@ -75,9 +90,11 @@
   --fly-glow: rgba(240, 174, 46, 0.5);
   --tile-winter: linear-gradient(135deg, #5A90E2, #2F5BBF);
   --tile-spring: linear-gradient(135deg, #E8679F, #B83C74);
-  --tile-summer: linear-gradient(135deg, #EA940F, #C55F09);
+  --tile-summer: linear-gradient(135deg, #D97B0A, #B5540A);
   --tile-autumn: linear-gradient(135deg, #DC6A2B, #A33E15);
-  --tile-none: linear-gradient(135deg, #98989D, #636366);
+  --tile-newyear: linear-gradient(135deg, #2A9259, #146B42);
+  --tile-rain: linear-gradient(135deg, #6A89B2, #3D5880);
+  --tile-none: linear-gradient(135deg, #8E8E93, #636366);
   --shadow-knob: 0 3px 8px rgba(0, 0, 0, 0.15), 0 1px 1px rgba(0, 0, 0, 0.06);
   --nb-goal: rgba(94, 92, 230, 0.22);
 
@@ -252,8 +269,10 @@
   --spark-h: 12px;
   --spark-star: 14px;
   --spark-rise: 18px;
-  --theme-tile: 64px;
-  --r-theme: 18px;
+  --theme-tile: 58px;
+  --gl-theme: 36px;
+  --r-theme: 16px;
+  --bulb: 7px;
   --who-cell: 10px;
   --vote-w: 330px;
   --r-vote: 22px;
@@ -369,12 +388,23 @@
     --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.45);
     --vote-bg: rgba(44, 44, 46, 0.94);
     --shadow-vote: 0 10px 30px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.3);
-    --sky-winter: linear-gradient(180deg, #0C1B30 0%, rgba(12, 27, 48, 0) var(--sky-h));
-    --sky-spring: linear-gradient(180deg, #2A1220 0%, rgba(42, 18, 32, 0) var(--sky-h));
-    --sky-summer: linear-gradient(180deg, #2A1D08 0%, rgba(42, 29, 8, 0) var(--sky-h));
-    --sky-autumn: linear-gradient(180deg, #2B1607 0%, rgba(43, 22, 7, 0) var(--sky-h));
-    --snow: #FFFFFF;
-    --snow-2: #D6E4FF;
+    --sky-winter: linear-gradient(180deg, var(--bg) 0, #0C1B30 var(--sky-top), rgba(12, 27, 48, 0) var(--sky-h));
+    --sky-spring: linear-gradient(180deg, var(--bg) 0, #2A1220 var(--sky-top), rgba(42, 18, 32, 0) var(--sky-h));
+    --sky-summer: linear-gradient(180deg, var(--bg) 0, #2A1D08 var(--sky-top), rgba(42, 29, 8, 0) var(--sky-h));
+    --sky-autumn: linear-gradient(180deg, var(--bg) 0, #2B1607 var(--sky-top), rgba(43, 22, 7, 0) var(--sky-h));
+    --sky-newyear: linear-gradient(180deg, var(--bg) 0, #1B1033 var(--sky-top), rgba(27, 16, 51, 0) var(--sky-h));
+    --sky-rain: linear-gradient(180deg, var(--bg) 0, #111A25 var(--sky-top), rgba(17, 26, 37, 0) var(--sky-h));
+    --sky-blend: screen;
+    --rain: #A9C0E0;
+    --rain-2: #8CA6CB;
+    --wire: rgba(255, 255, 255, 0.26);
+    --bulb-1: #FF5F68;
+    --bulb-2: #FFC24A;
+    --bulb-3: #46D47C;
+    --bulb-4: #58AAFF;
+    --bulb-5: #FF72C0;
+    --snow: #E8F0FF;
+    --snow-2: #C9D9F5;
     --petal-1: #E784A6;
     --petal-2: #F2A9C1;
     --petal-3: #D9719A;
@@ -1314,7 +1344,7 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .news-acts { display: flex; justify-content: flex-end; gap: var(--u16); }
 
 /* Выбор темы (v61): плитка с небом сезона и значком, выбранная — в кольце акцента. */
-.theme-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--u16) var(--u8); padding: var(--u18) var(--u10) var(--u16); }
+.theme-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--u16) var(--u4); padding: var(--u18) var(--u8) var(--u16); }
 .theme-opt { display: flex; flex-direction: column; align-items: center; gap: var(--u4); min-height: var(--tap); text-align: center; }
 .theme-tile {
   position: relative;
@@ -1328,7 +1358,7 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
   color: var(--on-tile);
   transition: transform var(--t) var(--e-spring);
 }
-.theme-tile .gl { width: var(--gl-l); height: var(--gl-l); stroke-width: 1.9; }
+.theme-tile .gl { width: var(--gl-theme); height: var(--gl-theme); stroke-width: 1.9; }
 .theme-tile::after {
   content: "";
   position: absolute;
@@ -1344,9 +1374,11 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .theme-opt[data-kind="spring"] .theme-tile { background: var(--tile-spring); }
 .theme-opt[data-kind="summer"] .theme-tile { background: var(--tile-summer); }
 .theme-opt[data-kind="autumn"] .theme-tile { background: var(--tile-autumn); }
+.theme-opt[data-kind="newyear"] .theme-tile { background: var(--tile-newyear); }
+.theme-opt[data-kind="rain"] .theme-tile { background: var(--tile-rain); }
 .theme-opt:active .theme-tile { transform: scale(var(--press-s)); }
-.theme-name { font-size: var(--fs-sub); line-height: var(--lh-sub); font-weight: 600; }
-.theme-note { font-size: var(--fs-foot); line-height: var(--lh-foot); color: var(--text-2); }
+.theme-name { font-size: var(--fs-foot); line-height: var(--lh-foot); font-weight: 600; }
+.theme-note { font-size: var(--fs-cap); line-height: var(--lh-foot); color: var(--text-2); }
 .sr { position: absolute; width: var(--u1); height: var(--u1); margin: calc(var(--u1) * -1); overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* ---------- первая настройка (v58): шаги без таб-бара, точки сверху, кнопка снизу */
@@ -1652,13 +1684,42 @@ button.race-row.win:active { background: var(--g-sunset); opacity: 0.9; }
 .sky[data-kind="spring"] { background: var(--sky-spring); }
 .sky[data-kind="summer"] { background: var(--sky-summer); }
 .sky[data-kind="autumn"] { background: var(--sky-autumn); }
-.sky-fall { position: fixed; inset: 0; z-index: 30; overflow: hidden; pointer-events: none; transition: opacity var(--t) var(--e-out); }
+.sky[data-kind="newyear"] { background: var(--sky-newyear); }
+.sky[data-kind="rain"] { background: var(--sky-rain); }
+/* Частицы поверх экрана, но текст остаётся поверх частиц: смешивание умножением (светлая) и осветлением (тёмная). */
+.sky-fall { position: fixed; inset: 0; z-index: 30; overflow: hidden; pointer-events: none; mix-blend-mode: var(--sky-blend); transition: opacity var(--t) var(--e-out); }
 body.locked .sky-fall { opacity: 0; } /* под листом и подтверждением — не мешает */
 .sky-p { position: absolute; top: 0; left: 0; border-radius: 50%; opacity: 0; background: var(--fc); }
 .sky-snow { background: radial-gradient(circle, var(--fc) 0 38%, transparent 72%); }
 .sky-petal { border-radius: 70% 0 70% 0; }
 .sky-leaf { border-radius: 0 100% 0 100%; }
 .sky-fly { box-shadow: 0 0 var(--u8) var(--u2) var(--fly-glow); }
+.sky-rain { width: var(--bw-s); border-radius: var(--u1); background: linear-gradient(180deg, transparent, var(--fc)); }
+/* Гирлянда Нового года (v61) — за экраном, вдоль верхнего края: провод дугами, лампочки с бликом и свечением. */
+.sky-lights { position: fixed; top: 0; left: 0; right: 0; z-index: 0; height: var(--u36); pointer-events: none; }
+.sky-wire { position: absolute; top: 0; left: 0; overflow: visible; }
+.sky-wire path { fill: none; stroke: var(--wire); stroke-width: var(--bw-s); stroke-linecap: round; }
+.sky-bulb {
+  position: absolute;
+  width: var(--bulb);
+  height: calc(var(--bulb) * 1.3);
+  margin: var(--u2) 0 0 calc(var(--bulb) / -2);
+  border-radius: 50% 50% 50% 50% / 40% 40% 60% 60%;
+  background: radial-gradient(circle at 38% 30%, var(--bulb-hi), var(--fc) 60%);
+  box-shadow: 0 0 var(--u8) var(--u2) color-mix(in srgb, var(--fc) 55%, transparent);
+  transform-origin: 50% 0;
+}
+.sky-bulb::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(var(--u3) * -1);
+  width: var(--u4);
+  height: var(--u3);
+  margin-left: calc(var(--u4) / -2);
+  border-radius: var(--u1);
+  background: var(--wire);
+}
 .spark {
   position: absolute;
   width: var(--spark);
@@ -1681,7 +1742,7 @@ body.locked .sky-fall { opacity: 0; } /* под листом и подтверж
   clip-path: polygon(50% 0%, 61.8% 35%, 98% 35.4%, 68.8% 57.4%, 79.4% 91.6%, 50% 70.8%, 20.6% 91.6%, 31.2% 57.4%, 2% 35.4%, 38.2% 35%);
 }
 .spark-rise { width: var(--spark-rise); height: var(--spark-rise); margin: calc(var(--spark-rise) / -2) 0 0 calc(var(--spark-rise) / -2); }
-/* Фигуры темы в салюте (v61): снежинка, лепесток, лист. */
+/* Фигуры темы в салюте (v61): снежинка, лепесток, лист, капля. */
 .spark-snow, .spark-petal, .spark-leaf {
   width: var(--spark-star);
   height: var(--spark-star);
@@ -1693,6 +1754,7 @@ body.locked .sky-fall { opacity: 0; } /* под листом и подтверж
 }
 .spark-petal { border-radius: 70% 0 70% 0; }
 .spark-leaf { border-radius: 0 100% 0 100%; }
+.spark-drop { width: var(--spark); height: calc(var(--spark) * 1.35); border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%; }
 .haptic { display: none; }
 
 /* «Уменьшение движения»: JS-анимации уже выключены (dom.js), здесь — переходы и нажатия. */

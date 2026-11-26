@@ -1044,9 +1044,17 @@ test('«Кто я»: голоса — отметки пунктов и счёт�
 test('тема (v61): по сезону — по месяцу логического дня, своя — как выбрана, «Без темы» — пусто; круглые голоса', () => {
   assert.deepEqual(['2026-12-01', '2027-02-28', '2027-03-01', '2027-05-31', '2027-06-01', '2027-08-31', '2027-09-01', '2026-11-30'].map(D.seasonOf),
     ['winter', 'winter', 'spring', 'spring', 'summer', 'summer', 'autumn', 'autumn']);
+  // Новый год — сезон с 20 декабря по 10 января
+  assert.deepEqual(['2026-12-19', '2026-12-20', '2026-12-31', '2027-01-01', '2027-01-10', '2027-01-11'].map(D.seasonOf),
+    ['winter', 'newyear', 'newyear', 'newyear', 'newyear', 'winter']);
   assert.equal(D.skyOf('season', '2026-12-05'), 'winter');
+  assert.equal(D.skyOf('season', '2026-12-25'), 'newyear');
   assert.equal(D.skyOf('summer', '2026-12-05'), 'summer');
+  assert.equal(D.skyOf('rain', '2026-12-25'), 'rain', 'дождь — только своим выбором');
+  assert.equal(D.skyOf('newyear', '2027-07-05'), 'newyear');
   assert.equal(D.skyOf('none', '2026-12-05'), '');
+  assert.deepEqual(D.THEME_IDS, ['season', 'winter', 'spring', 'summer', 'autumn', 'newyear', 'rain', 'none']);
+  assert.equal(D.normalize({ ...D.seed('2026-10-01'), ui: { theme: 'rain' } }, '2026-10-01').ui.theme, 'rain');
   assert.equal(D.skyOf('неон', '2026-07-05'), 'summer', 'неизвестная — как по сезону');
   assert.equal(D.seed('2026-10-01').ui.theme, 'season', 'новый телефон — по сезону');
   assert.deepEqual([1, 9, 10, 25, 49, 50, 66, 100, 101, 250, 365, 400, 500, 600, 750, 1000, 1100].filter(D.isVoteMilestone), [10, 25, 50, 100, 250, 400, 500, 750, 1000]);

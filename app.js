@@ -37,14 +37,20 @@ const TABS = [['today', 'Сегодня', G.tabToday], ['progress', 'Прогр�
 // Новичку — шаблон, который правится в Настройках; цифры — из его же состояния.
 const WELCOME = (n, now, goal) =>
   `${n ? `${n}${NB}${plural(n, ['пункт', 'пункта', 'пунктов'])}, одинаковых каждый день — поменяй их под себя в${NB}Настройках.` : 'Минимум пока пуст — пункты добавишь ниже: из подсказок или свои.'} Сон — шагами от ${dur(now)} к${NB}${dur(goal)}: шаг выбираешь на итогах недели или в${NB}Настройках.`;
-// «Что нового» — один раз для тех, кто уже пользовался; новичок видит первую настройку.
-const NEWS_ID = 'v61';
+// «Что нового» — один раз для тех, кто уже пользовался; новичок видит первую настройку. Строка помнит свою версию:
+// видевший новости v61 получит только новое, пришедший с более старой — всё.
+const NEWS_ID = 'v62';
 const NEWS = [
-  '«Кто я»: у привычки — своё «я» («спортивный человек», «человек слова» или своё), и каждая отметка становится голосом за него. Закрытый день — голос за главное «я» дня, а круглое число голосов — 10, 25, 50, 100… — с салютом',
-  '«План на завтра» — прямо здесь: с вечера до шести дел по важности, утром — галочки по порядку. Карточка «План» — если такой пункт есть в минимуме (он есть в подсказках); план составлен — пункт отметится сам',
-  'Не каждый день? Удержи пункт минимума — «Не каждый день?» переведёт его в «N раз в неделю» или в раздел, отметки перейдут с ним',
-  'Тема: небо за экраном — по сезону: зимой снег, весной лепестки, летом светлячки, осенью листья. Своя или без темы — в Настройках',
+  ['v61', '«Кто я»: у привычки — своё «я» («спортивный человек», «человек слова» или своё), и каждая отметка становится голосом за него. Закрытый день — голос за главное «я» дня, а круглое число голосов — 10, 25, 50, 100… — с салютом'],
+  ['v61', '«План на завтра» — прямо здесь: с вечера до шести дел по важности, утром — галочки по порядку. Карточка «План» — если такой пункт есть в минимуме (он есть в подсказках); план составлен — пункт отметится сам'],
+  ['v61', 'Не каждый день? Удержи пункт минимума — «Не каждый день?» переведёт его в «N раз в неделю» или в раздел, отметки перейдут с ним'],
+  ['v61', 'Тема: небо за экраном — по сезону: зимой снег, весной лепестки, летом светлячки, осенью листья. Своя или без темы — в Настройках'],
+  ['v62', `Ещё темы — «Новый год» (гирлянда и снег, по сезону — сама с 20${NB}декабря по 10${NB}января) и «Дождь». Небо больше не заслоняет текст, а через минуту без касаний стихает — батарея не тратится`],
 ];
+const newsSince = seen => {
+  const v = id => +String(id).replace(/\D/g, '') || 0;
+  return NEWS.filter(([id]) => v(id) > v(seen)).map(([, t]) => t);
+};
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
 const SECTION_PRESETS = [
   { icon: 'briefcase', name: 'Работа', color: 'blue', note: 'дела по работе', who: 'профессионал' },
@@ -526,6 +532,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         chev())),
       yesterdayCard(y),
     ].filter(Boolean);
+    const news = newsSince(S.ui.news); // «Что нового» — только то, чего ещё не видели
     return [
       topbar(h('p', { class: 'overline' }, `${WEEKDAYS[D.weekday(today)]}, ${dm(today)}`),
         h('span', { class: 'tb-progress' }, rings('tb-ring', 22, [8.5], 3.5, [{ kind: 'sun', f: n ? k / n : 0 }]),
@@ -537,11 +544,11 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
         h('div', { class: 'welcome-head' }, tile('sparkles', 'pink'), h('p', { class: 'name strong' }, 'Новый минимум')),
         h('p', {}, WELCOME(D.activeItems(S).length, D.sleepFor(D.stepTonight(S, today), S.sleep.goalWake), D.sleepFor(S.sleep.goalBed, S.sleep.goalWake))),
         h('button', { class: 'btn-text', onclick: e => leave(e.currentTarget.closest('.group'), () => { S.ui.welcomeSeen = true; S.ui.news = NEWS_ID; commit(); }) }, 'Понятно')),
-      S.ui.welcomeSeen && S.ui.news !== NEWS_ID && h('section', { key: 'news', class: 'group card-pad welcome', 'data-flip': '' },
+      S.ui.welcomeSeen && S.ui.news !== NEWS_ID && news.length > 0 && h('section', { key: 'news', class: 'group card-pad welcome', 'data-flip': '' },
         h('div', { class: 'welcome-head' }, tile('star', 'purple'), h('p', { class: 'name strong' }, 'Что нового')),
-        h('ul', { class: 'news' }, NEWS.map(t => h('li', {}, t))),
+        h('ul', { class: 'news' }, news.map(t => h('li', {}, t))),
         h('div', { class: 'news-acts' },
-          !whoAny() && h('button', { class: 'btn-text', onclick: () => { S.ui.news = NEWS_ID; save(); openWho(); } }, 'Выбрать «я»'),
+          news.includes(NEWS[0][1]) && !whoAny() && h('button', { class: 'btn-text', onclick: () => { S.ui.news = NEWS_ID; save(); openWho(); } }, 'Выбрать «я»'),
           h('button', { class: 'btn-text', onclick: e => leave(e.currentTarget.closest('.group'), () => { S.ui.news = NEWS_ID; commit(); }) }, 'Понятно'))),
       heroView(sum, { foot: sleepLine(step, card), who: S.dayWho }),
       D.status(S, y, today) === 'miss' && !closed && h('p', { key: 'miss', class: 'notice-line', 'data-flip': '' }, 'Вчера пропуск — сегодня не пропускай дважды'),
@@ -1076,11 +1083,13 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   }
 
   // ---------- тема (v61): небо за экраном — по сезону (по умолчанию: зима — снег, весна — лепестки, лето —
-  // светлячки, осень — листья) или своя; «Без темы» — как раньше. Выбор сразу в силе.
-  const THEMES = [['season', 'По сезону'], ['winter', 'Зима'], ['spring', 'Весна'], ['summer', 'Лето'], ['autumn', 'Осень'], ['none', 'Без темы']];
-  const THEME_NOTE = { winter: 'снег', spring: 'лепестки', summer: 'светлячки', autumn: 'листья' };
-  const SEASON_NAME = { winter: 'зима', spring: 'весна', summer: 'лето', autumn: 'осень' };
-  const themeGlyph = k => ({ winter: G.snow, spring: ICONS.plant[1], summer: ICONS.sun[1], autumn: ICONS.leaf[1] })[k] || G.noTheme;
+  // светлячки, осень — листья, с 20 декабря по 10 января — гирлянда и снег) или своя, дождь — только своим выбором;
+  // «Без темы» — как раньше. Выбор сразу в силе.
+  const THEMES = [['season', 'По сезону'], ['winter', 'Зима'], ['spring', 'Весна'], ['summer', 'Лето'], ['autumn', 'Осень'],
+    ['newyear', 'Новый год'], ['rain', 'Дождь'], ['none', 'Без темы']];
+  const THEME_NOTE = { winter: 'снег', spring: 'лепестки', summer: 'светлячки', autumn: 'листья', newyear: 'гирлянда', rain: 'капли' };
+  const SEASON_NAME = { winter: 'зима', spring: 'весна', summer: 'лето', autumn: 'осень', newyear: 'Новый год' };
+  const themeGlyph = k => ({ winter: G.snow, spring: ICONS.plant[1], summer: ICONS.sun[1], autumn: ICONS.leaf[1], newyear: G.tree, rain: G.rain })[k] || G.noTheme;
   function themePicker() {
     const cur = S.ui.theme, season = D.seasonOf(today);
     return [
@@ -1093,7 +1102,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
           h('span', { class: 'theme-note' }, id === 'season' ? `сейчас ${SEASON_NAME[season]}` : id === 'none' ? 'как раньше' : THEME_NOTE[id]));
       })),
       h('p', { key: 'theme-foot', class: 'sec-foot', 'data-flip': '' },
-        'Небо за экраном: снег, лепестки, светлячки или листья. «По сезону» меняет его само — 1 декабря, марта, июня и сентября. С «Уменьшением движения» остаётся только цвет неба.'),
+        `«По сезону» меняется само: зимой снег, весной лепестки, летом светлячки, осенью листья, а с 20${NB}декабря по 10${NB}января — гирлянда. Минута без касаний — небо стихает, касание — оживает. С «Уменьшением движения» небо не движется.`),
     ];
   }
   function setTheme(id) {

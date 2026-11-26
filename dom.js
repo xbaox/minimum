@@ -11,7 +11,8 @@ export const EASE = {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-export function createDOM(win) {
+// skyIdle — сколько без касаний небо идёт, прежде чем стихнуть (тесты передают короткое).
+export function createDOM(win, { skyIdle = 60e3 } = {}) {
   const doc = win.document;
   const reduce = typeof win.matchMedia === 'function' ? win.matchMedia('(prefers-reduced-motion: reduce)') : null;
   // Без Web Animations (тесты, старый браузер) и при «Уменьшении движения» интерфейс просто меняет состояние.
@@ -317,12 +318,15 @@ export function createDOM(win) {
     doc.body.append(fx);
   }
   // stars — цвет звёзд: тогда каждая четвёртая частица — звезда (праздник закрытого дня, v61);
-  // theme — тема неба: каждая пятая частица — её фигура (снежинка, лепесток, лист; летом — золотая звезда).
+  // theme — тема неба: каждая пятая частица — её фигура (снежинка, лепесток, лист, капля; летом — золотая звезда,
+  // на Новый год — звёзды цветами гирлянды).
   const SHAPES = {
     winter: ['spark-snow', ['var(--snow)', 'var(--snow-2)']],
     spring: ['spark-petal', ['var(--petal-1)', 'var(--petal-2)', 'var(--petal-3)']],
     summer: ['spark-star', ['var(--fly)', 'var(--sun-1)']],
     autumn: ['spark-leaf', ['var(--leaf-1)', 'var(--leaf-2)', 'var(--leaf-3)', 'var(--leaf-4)']],
+    newyear: ['spark-star', ['var(--bulb-1)', 'var(--bulb-2)', 'var(--bulb-3)', 'var(--bulb-4)', 'var(--bulb-5)']],
+    rain: ['spark-drop', ['var(--rain)', 'var(--rain-2)']],
   };
   function burst(origin, colors, { n = 22, spread = 1, delay = 0, stars = '', theme = '' } = {}) {
     if (!motion() || !origin || !origin.isConnected) return;
@@ -448,33 +452,52 @@ export function createDOM(win) {
     return true;
   }
 
-  // ---------- небо темы (v61): цвет неба — слой за экраном (.sky), снег, лепестки, светлячки и листья — тонкий
-  // слой поверх (.sky-fall, касаний не ловит; под листом и подтверждением гаснет — CSS по body.locked). Оба вне #app —
-  // перерисовка их не трогает. У частицы своя глубина: ближние крупнее, ярче и быстрее, дальние — мельче и тише
-  // (параллакс). Падение ровное, качание — синусом, лепестки и листья ещё и переворачиваются; светлячок тлеет.
-  // Только transform и opacity, по кругу. Небо проявляется мягко, смена темы — перетекание, а не щелчок.
-  // Без движения — только цвет. Ушли в фон — пауза; поменялся размер окна или «Уменьшение движения» — небо заново.
+  // ---------- небо темы (v61). Три слоя вне #app — перерисовка их не трогает:
+  // .sky — цвет неба за экраном; .sky-lights — гирлянда Нового года, тоже за экраном (текст всегда поверх);
+  // .sky-fall — снег, лепестки, светлячки, листья и дождь тонким слоем поверх (касаний не ловит, под листом и
+  // подтверждением гаснет — CSS по body.locked; смешивается с экраном так, что текст остаётся поверх: в светлой —
+  // умножением, в тёмной — осветлением, CSS). У частицы своя глубина: ближние крупнее, ярче и быстрее (параллакс).
+  // Падение ровное, качание — синусом, лепестки и листья переворачиваются, светлячок тлеет, дождь — косыми штрихами.
+  // Только transform и opacity. Небо проявляется мягко, смена темы — перетекание. Минута без касаний — небо стихает:
+  // частицы тают, лампочки дотлевают свой вдох и горят ровно (батарея не тратится); касание — небо оживает.
+  // Без движения — цвет и ровная гирлянда. Ушли в фон — пауза; поменялись размер окна или «Уменьшение движения» — заново.
   const SKY = {
     // dur — [дальние, ближние]: ближние падают быстрее
-    winter: { n: 28, cls: 'sky-snow', size: [3.5, 9], dur: [17000, 9000], sway: 24, spin: 0, flip: 0, glow: 0, up: false, peak: [0.4, 1], colors: ['var(--snow)', 'var(--snow-2)'] },
-    spring: { n: 12, cls: 'sky-petal', size: [6, 10.5], dur: [19000, 12000], sway: 40, spin: 200, flip: 1.6, glow: 0, up: false, peak: [0.45, 0.9], colors: ['var(--petal-1)', 'var(--petal-2)', 'var(--petal-3)'] },
-    summer: { n: 12, cls: 'sky-fly', size: [3, 6], dur: [24000, 15000], sway: 34, spin: 0, flip: 0, glow: 4, up: true, peak: [0.45, 0.85], colors: ['var(--fly)'] },
-    autumn: { n: 10, cls: 'sky-leaf', size: [8, 13], dur: [18000, 11000], sway: 52, spin: 300, flip: 1.8, glow: 0, up: false, peak: [0.55, 0.9], colors: ['var(--leaf-1)', 'var(--leaf-2)', 'var(--leaf-3)', 'var(--leaf-4)'] },
+    winter: { n: 28, cls: 'sky-snow', size: [3.5, 9], dur: [17000, 9000], sway: 24, peak: [0.4, 1], colors: ['var(--snow)', 'var(--snow-2)'] },
+    spring: { n: 12, cls: 'sky-petal', size: [6, 10.5], dur: [19000, 12000], sway: 40, spin: 200, flip: 1.6, peak: [0.45, 0.9], colors: ['var(--petal-1)', 'var(--petal-2)', 'var(--petal-3)'] },
+    summer: { n: 12, cls: 'sky-fly', size: [3, 6], dur: [24000, 15000], sway: 34, glow: 4, up: true, peak: [0.45, 0.85], colors: ['var(--fly)'] },
+    autumn: { n: 10, cls: 'sky-leaf', size: [8, 13], dur: [18000, 11000], sway: 52, spin: 300, flip: 1.8, peak: [0.55, 0.9], colors: ['var(--leaf-1)', 'var(--leaf-2)', 'var(--leaf-3)', 'var(--leaf-4)'] },
+    newyear: { n: 16, cls: 'sky-snow', size: [3, 7.5], dur: [18000, 10000], sway: 20, peak: [0.35, 0.9], colors: ['var(--snow)', 'var(--snow-2)'], lights: true },
+    rain: { n: 26, cls: 'sky-rain', size: [10, 22], dur: [3000, 1700], slant: 0.2, peak: [0.25, 0.6], colors: ['var(--rain)', 'var(--rain-2)'] },
   };
   const SKY_STEPS = 24; // кадров на круг: между ними — прямая, поэтому падение ровное, а качание — почти синус
+  const BULBS = ['var(--bulb-1)', 'var(--bulb-2)', 'var(--bulb-3)', 'var(--bulb-4)', 'var(--bulb-5)'];
+  const BREATH = 3600, WAVE = 300; // вдох лампочки и шаг волны по гирлянде, мс
   const TAU = Math.PI * 2;
   const lerp = ([a, b], z) => a + (b - a) * z;
-  let skyEl = null, fallEl = null, skyKind = null, skyMo = null, skyAnims = [], skyW = 0, skyH = 0;
+  const clock = () => (win.performance?.now ? win.performance.now() : Date.now());
+  let skyEl = null, lightsEl = null, fallEl = null, skyKind = null, skyMo = null, skyW = 0, skyH = 0;
+  let fallAnims = [], bulbAnims = [], bulbs = [], asleep = false, stirAt = clock(), napTimer = 0, napFade = null, napList = [];
   const skyLayer = cls => {
     const el = doc.createElement('div');
     el.className = cls;
     el.setAttribute('aria-hidden', 'true');
     return el;
   };
+  const fadeIn = (el, delay = 0) => {
+    if (!doc.body.classList.contains('locked')) anim(el, [{ opacity: 0 }, { opacity: 1 }], { duration: 1400, delay, easing: 'ease-in-out', fill: 'backwards' });
+  };
+  // Тает с той яркости, что сейчас на экране (слой мог ещё проявляться) — без вспышки.
+  const fadeOut = (el, duration, then) => {
+    const o = parseFloat(win.getComputedStyle(el).opacity);
+    return done(anim(el, [{ opacity: Number.isFinite(o) ? o : 1 }, { opacity: 0 }], { duration, easing: 'ease-in-out', fill: 'forwards' })).then(then);
+  };
+
   function sky(kind = '') {
     const W = win.innerWidth || 0, H = win.innerHeight || 0, mo = motion(), sk = kind || 'none';
-    if (kind === skyKind && mo === skyMo && skyEl?.isConnected && fallEl?.isConnected && (!skyAnims.length || (W === skyW && H === skyH))) return;
-    const swap = mo && skyKind !== null && kind !== skyKind; // тема сменилась на глазах
+    // Высота окна в браузере гуляет от панелей — небо заново только при заметной разнице.
+    if (kind === skyKind && mo === skyMo && skyEl?.isConnected && fallEl?.isConnected && W === skyW && Math.abs(H - skyH) <= 120) return;
+    const swap = mo && skyKind !== null && kind !== skyKind; // тема сменилась на глазах — перетекание, не щелчок
     // Цвет неба: прежний — призраком поверх нового — тает.
     if (!skyEl?.isConnected) {
       skyEl = skyLayer('sky');
@@ -483,58 +506,205 @@ export function createDOM(win) {
       const ghost = skyLayer('sky');
       ghost.dataset.kind = skyEl.dataset.kind;
       skyEl.after(ghost);
-      done(anim(ghost, [{ opacity: 1 }, { opacity: 0 }], { duration: 900, easing: 'ease-in-out', fill: 'forwards' })).then(() => ghost.remove());
+      fadeOut(ghost, 900, () => ghost.remove());
     }
     skyEl.dataset.kind = sk;
-    // Частицы: прежние тают и уходят, новые проявляются.
-    const old = fallEl?.isConnected ? fallEl : null, oldAnims = skyAnims;
-    skyAnims = [];
+    [skyKind, skyMo, skyW, skyH] = [kind, mo, W, H];
+    const cfg = SKY[kind];
+    // Гирлянда: прежняя тает, новая проявляется.
+    const oldLights = lightsEl?.isConnected ? lightsEl : null, oldBulbs = bulbAnims;
+    bulbAnims = [];
+    bulbs = [];
+    lightsEl = null;
+    if (oldLights) {
+      const drop = () => { oldBulbs.forEach(a => a.cancel()); oldLights.remove(); };
+      if (swap) fadeOut(oldLights, 700, drop);
+      else drop();
+    }
+    if (cfg?.lights && W) {
+      lightsEl = garland(W);
+      skyEl.after(lightsEl);
+      if (mo) {
+        bulbAnims = bulbs.map(breathe);
+        fadeIn(lightsEl, swap ? 250 : 0);
+      }
+    }
+    // Частицы: прежние тают и уходят, новые проявляются (стихшее небо — тоже заново).
+    const old = fallEl?.isConnected ? fallEl : null, oldAnims = fallAnims.concat(napList);
+    napFade?.cancel();
+    [fallAnims, napList, napFade] = [[], [], null];
     if (old) {
-      const drop = () => {
-        oldAnims.forEach(a => a.cancel());
-        old.remove();
-      };
-      if (swap) done(anim(old, [{ opacity: 1 }, { opacity: 0 }], { duration: 600, easing: EASE.out, fill: 'forwards' })).then(drop);
+      const drop = () => { oldAnims.forEach(a => a.cancel()); old.remove(); };
+      if (swap) fadeOut(old, 600, drop);
       else drop();
     }
     fallEl = skyLayer('sky-fall');
+    fallEl.dataset.kind = sk;
     doc.body.append(fallEl);
-    [skyKind, skyMo, skyW, skyH] = [kind, mo, W, H];
-    const cfg = SKY[kind];
-    if (!cfg || !mo || !W || !H) return;
+    asleep = false;
+    if (cfg && mo && W && H) {
+      fall(cfg, W, H);
+      fadeIn(fallEl, swap ? 250 : 0);
+    }
+    stirAt = clock();
+    arm();
+  }
+
+  // Частицы неба — в fallEl, по кругу, с отрицательной задержкой: сразу на всём экране.
+  function fall(cfg, W, H) {
+    const slant = cfg.slant || 0;
     for (let i = 0; i < cfg.n; i++) {
       const z = (i + rnd()) / cfg.n; // глубина: 0 — далеко, 1 — близко; дальних и ближних поровну
       const p = doc.createElement('i');
       p.className = `sky-p ${cfg.cls}`;
       const sz = lerp(cfg.size, z);
-      p.style.width = `${sz.toFixed(1)}px`;
-      p.style.height = `${(cfg.cls === 'sky-petal' ? sz * 0.78 : sz).toFixed(1)}px`;
-      p.style.left = `${Math.round(rnd() * W)}px`;
+      if (slant) p.style.height = `${sz.toFixed(1)}px`; // штрих дождя: длина — по глубине, толщина — CSS
+      else {
+        p.style.width = `${sz.toFixed(1)}px`;
+        p.style.height = `${(cfg.cls === 'sky-petal' ? sz * 0.78 : sz).toFixed(1)}px`;
+      }
+      // косой дождь сносит влево — начинается и правее экрана
+      p.style.left = `${Math.round(rnd() * (W + slant * H))}px`;
       p.style.setProperty('--fc', cfg.colors[i % cfg.colors.length]); // снежинка — мягким пятном, остальные — заливкой
       fallEl.append(p);
       const dur = Math.round(lerp(cfg.dur, z) * (0.9 + rnd() * 0.2));
       const [y0, y1] = cfg.up ? [H + 30, -30] : [-30, H + 30];
-      const sw = (0.5 + z * 0.5) * cfg.sway * (0.7 + rnd() * 0.6) * (rnd() < 0.5 ? -1 : 1);
-      const rot = cfg.spin * (0.5 + rnd()) * (rnd() < 0.5 ? -1 : 1);
-      const peak = lerp(cfg.peak, z), waves = 1 + rnd(), flips = cfg.flip * (0.6 + rnd() * 0.8);
+      const sw = (0.5 + z * 0.5) * (cfg.sway || 0) * (0.7 + rnd() * 0.6) * (rnd() < 0.5 ? -1 : 1);
+      const rot = (cfg.spin || 0) * (0.5 + rnd()) * (rnd() < 0.5 ? -1 : 1);
+      const peak = lerp(cfg.peak, z), waves = 1 + rnd(), flips = (cfg.flip || 0) * (0.6 + rnd() * 0.8);
       const ph = rnd() * TAU, ph2 = rnd() * TAU;
+      const tilt = slant ? Math.round((Math.atan(slant) * 180) / Math.PI) : 0; // штрих — вдоль падения
       const frames = [];
       for (let k = 0; k <= SKY_STEPS; k++) {
         const f = k / SKY_STEPS;
-        const x = sw * Math.sin(f * TAU * waves + ph), y = y0 + (y1 - y0) * f;
+        const y = y0 + (y1 - y0) * f;
+        const x = slant ? -slant * (y1 - y0) * f : sw * Math.sin(f * TAU * waves + ph);
         const turn = flips ? ` scaleX(${Math.cos(f * TAU * flips + ph2).toFixed(2)})` : ''; // лист переворачивается
         const edge = Math.min(1, f / 0.1, (1 - f) / 0.1); // проявляется и тает у краёв экрана
         const glow = cfg.glow ? 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(f * TAU * cfg.glow + ph2)) : 1; // светлячок тлеет — медленно, не мигает
-        frames.push({ transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) rotate(${Math.round(rot * f)}deg)${turn}`, opacity: +(peak * edge * glow).toFixed(3) });
+        frames.push({ transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) rotate(${slant ? tilt : Math.round(rot * f)}deg)${turn}`, opacity: +(peak * edge * glow).toFixed(3) });
       }
       const a = anim(p, frames, { duration: dur, delay: -Math.round(rnd() * dur), iterations: Infinity, easing: 'linear' });
-      if (a) skyAnims.push(a);
+      if (a) fallAnims.push(a);
     }
-    // Проявляется мягко — и при запуске, и после смены темы (тогда — чуть позже, пока прежнее тает).
-    // Под листом слой погашен (CSS) — не проявлять его там поверх.
-    if (!doc.body.classList.contains('locked')) anim(fallEl, [{ opacity: 0 }, { opacity: 1 }], { duration: 1400, delay: swap ? 250 : 0, easing: 'ease-in-out', fill: 'backwards' });
   }
-  doc.addEventListener('visibilitychange', () => skyAnims.forEach(a => (doc.hidden ? a.pause() : a.play())));
+
+  // Гирлянда Нового года: провод провисает дугами вдоль верхнего края, на нём — лампочки пяти цветов.
+  function garland(W) {
+    const el = skyLayer('sky-lights');
+    const arcs = Math.max(2, Math.round(W / 110)), span = (W + 24) / arcs, top = -2, sag = 9, per = 4;
+    let d = `M-12 ${top}`;
+    for (let a = 0; a < arcs; a++) {
+      const x0 = -12 + a * span;
+      d += ` Q${(x0 + span / 2).toFixed(1)} ${top + sag * 2} ${(x0 + span).toFixed(1)} ${top}`;
+    }
+    const NS = 'http://www.w3.org/2000/svg';
+    const wire = doc.createElementNS(NS, 'svg');
+    wire.setAttribute('class', 'sky-wire');
+    wire.setAttribute('width', String(W));
+    wire.setAttribute('height', String(top + sag * 2 + 4));
+    const path = doc.createElementNS(NS, 'path');
+    path.setAttribute('d', d);
+    wire.append(path);
+    el.append(wire);
+    for (let a = 0; a < arcs; a++) {
+      for (let k = 1; k <= per; k++) {
+        const t = k / (per + 1), x = -12 + (a + t) * span, y = top + 4 * sag * t * (1 - t); // точка на дуге провода
+        const b = doc.createElement('i');
+        b.className = 'sky-bulb';
+        b.style.left = `${x.toFixed(1)}px`;
+        b.style.top = `${y.toFixed(1)}px`;
+        b.style.setProperty('--fc', BULBS[bulbs.length % BULBS.length]);
+        el.append(b);
+        bulbs.push(b);
+      }
+    }
+    return el;
+  }
+  // Вдох лампочки: ярко — тише — ярко; волна бежит по гирлянде (задержка по порядку — до старта лампочка горит ровно).
+  const breathe = (b, i) => anim(b, [
+    { opacity: 1, transform: 'scale(1)' },
+    { opacity: 0.45, transform: 'scale(0.86)' },
+    { opacity: 1, transform: 'scale(1)' },
+  ], { duration: BREATH, delay: i * WAVE, iterations: Infinity, easing: 'ease-in-out' });
+
+  // Минута без касаний — небо стихает. Частицы тают; лампочка дотлевает свой вдох и горит ровно (ещё не начала — сразу).
+  function nap() {
+    if (asleep || (!fallAnims.length && !bulbAnims.length)) return;
+    asleep = true;
+    const el = fallEl;
+    napList = fallAnims;
+    fallAnims = [];
+    napFade = napList.length ? anim(el, [{ opacity: 1 }, { opacity: 0 }], { duration: 2400, easing: 'ease-in-out', fill: 'forwards' }) : null;
+    done(napFade).then(() => {
+      if (!asleep || el !== fallEl) return; // проснулись раньше — частицы остались
+      napList.forEach(a => a.cancel());
+      napList = [];
+      while (el.firstChild) el.firstChild.remove();
+    });
+    for (const a of bulbAnims) {
+      try {
+        const it = a.effect.getComputedTiming().currentIteration;
+        if (it == null) a.cancel();
+        else a.effect.updateTiming({ iterations: it + 1 });
+      } catch {
+        a.cancel();
+      }
+    }
+  }
+  // Касание — небо оживает: таяние ещё идёт — частицы возвращаются тем же путём, растаяли — проявляются заново;
+  // гирлянда снова дышит.
+  function wake() {
+    if (!asleep) return;
+    asleep = false;
+    const cfg = SKY[skyKind];
+    if (napFade?.playState === 'running' && napList.length) {
+      napFade.reverse();
+      fallAnims = napList;
+    } else if (cfg && skyMo && skyW && skyH && fallEl?.isConnected) {
+      napFade?.cancel();
+      const old = fallEl;
+      fallEl = skyLayer('sky-fall');
+      fallEl.dataset.kind = old.dataset.kind;
+      old.after(fallEl);
+      old.remove();
+      fall(cfg, skyW, skyH);
+      fadeIn(fallEl);
+    }
+    napFade = null;
+    napList = [];
+    bulbAnims = bulbs.map((b, i) => {
+      const a = bulbAnims[i];
+      if (a && a.playState === 'running') {
+        try {
+          a.effect.updateTiming({ iterations: Infinity }); // ещё дотлевает — просто дышит дальше
+          return a;
+        } catch {}
+      }
+      a?.cancel();
+      return breathe(b, i);
+    }).filter(Boolean);
+    arm();
+  }
+  function arm() {
+    win.clearTimeout(napTimer);
+    if (fallAnims.length || bulbAnims.length) napTimer = win.setTimeout(check, skyIdle);
+  }
+  function check() {
+    const idle = clock() - stirAt;
+    if (idle >= skyIdle - 20) nap();
+    else napTimer = win.setTimeout(check, skyIdle - idle);
+  }
+  const stir = () => {
+    stirAt = clock();
+    if (asleep) wake();
+  };
+  for (const t of ['pointerdown', 'keydown', 'wheel', 'scroll']) doc.addEventListener(t, stir, { capture: true, passive: true });
+  doc.addEventListener('visibilitychange', () => {
+    // снятые и доигравшие не трогаем: play() запустил бы их заново
+    for (const a of [...fallAnims, ...bulbAnims]) if (a.playState !== 'finished' && a.playState !== 'idle') doc.hidden ? a.pause() : a.play();
+    if (!doc.hidden) stir();
+  });
 
   // ---------- тактильный отклик
 

@@ -141,7 +141,7 @@ test('первый старт со старыми ключами: стёрто, 
   assert.doesNotMatch(a.text(), /На неделе/);
   assert.equal(a.doc.querySelectorAll('.tile svg path').length >= 5, true); // значки, а не эмодзи
   assert.doesNotMatch(a.text(), /Новый минимум|Что нового/); // настройка уже всё объяснила
-  assert.equal(a.app.state.ui.news, 'v61');
+  assert.equal(a.app.state.ui.news, 'v62');
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Новый минимум|Что нового/);
   assert.equal(b.doc.querySelector('main.setup'), null);
@@ -155,15 +155,21 @@ test('«Что нового» — один раз для тех, кто уже �
   off.done();
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
-  assert.equal(a.doc.querySelectorAll('.news li').length, 4);
+  assert.equal(a.doc.querySelectorAll('.news li').length, 5);
   assert.match(a.text(), /«Кто я»: у привычки — своё «я»/);
   assert.match(a.text(), /«План на завтра» — прямо здесь/);
   assert.match(a.text(), /Не каждый день\?/);
+  assert.match(a.text(), /Ещё темы — «Новый год» \(гирлянда и снег/);
   a.click('Понятно');
   assert.doesNotMatch(a.text(), /Что нового/);
   const b = await reboot(a);
   assert.doesNotMatch(b.text(), /Что нового/);
   b.done();
+  // видевший новости v61 — только новое, без приглашения выбрать «я»
+  const c = await start(WED, { storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v61', lastExport: '' } }) });
+  assert.deepEqual([...c.doc.querySelectorAll('.news li')].map(li => li.textContent.slice(0, 10)), ['Ещё темы —']);
+  assert.equal(c.all('.news-acts button').map(x => x.textContent).join('|'), 'Понятно');
+  c.done();
 });
 
 test('в разметке нет текста «null», «undefined», «NaN» — на вкладках, в листах и подтверждениях', async () => {
@@ -905,7 +911,7 @@ test('Прогресс рисуется: серия, цепь 6 недель, н
 test('пустой минимум — не тупик: «Из подсказок» и «Свой пункт» на «Сегодня», пустые «Прогресс» и лист дня', async () => {
   const S = seed('2026-09-30');
   Object.assign(S, { items: [] });
-  Object.assign(S.ui, { setup: false, welcomeSeen: true, news: 'v61' });
+  Object.assign(S.ui, { setup: false, welcomeSeen: true, news: 'v62' });
   const a = await start(WED, { storage: { 'minimum.v2': JSON.stringify(S) } });
   const clean = where => assert.doesNotMatch(a.doc.getElementById('app').textContent, /null|undefined|NaN/, where);
   assert.equal(a.rows().length, 0);
@@ -1365,7 +1371,7 @@ test('«Кто я»: «Кем становлюсь» на «Прогрессе»
   const b = await start(WED, { storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v60', lastExport: '' } }) });
   b.click('Выбрать «я»', '.news-acts button');
   assert.equal(sp(b.sheet().querySelector('.sheet-title').textContent), 'Кто я');
-  assert.equal(b.app.state.ui.news, 'v61', 'новость прочитана');
+  assert.equal(b.app.state.ui.news, 'v62', 'новость прочитана');
   b.click('Готово', '.sheet-act');
   await wait(10);
   b.click('Прогресс', '.tab');
@@ -1382,17 +1388,34 @@ test('тема (v61): по сезону по умолчанию, выбор — 
   assert.equal(a.doc.querySelectorAll('.sky-fall .sky-p').length, 0, 'без движения частиц нет');
   a.click('Настройки', '.tab');
   const opts = () => [...a.doc.querySelectorAll('.theme-opt')];
-  assert.deepEqual(opts().map(o => sp(o.querySelector('.theme-name').textContent)), ['По сезону', 'Зима', 'Весна', 'Лето', 'Осень', 'Без темы']);
+  assert.deepEqual(opts().map(o => sp(o.querySelector('.theme-name').textContent)), ['По сезону', 'Зима', 'Весна', 'Лето', 'Осень', 'Новый год', 'Дождь', 'Без темы']);
+  assert.match(sp(a.find('Новый год', '.theme-opt').textContent), /гирлянда/);
+  assert.match(sp(a.find('Дождь', '.theme-opt').textContent), /капли/);
   assert.equal(opts()[0].getAttribute('aria-pressed'), 'true');
   assert.match(sp(opts()[0].textContent), /сейчас осень/);
   a.find('Зима', '.theme-opt').click();
   assert.equal(a.app.state.ui.theme, 'winter');
   assert.equal(sky().dataset.kind, 'winter');
   assert.equal(opts()[1].getAttribute('aria-pressed'), 'true');
+  // Новый год без движения: гирлянда горит ровно за экраном, снега нет
+  a.find('Новый год', '.theme-opt').click();
+  assert.equal(sky().dataset.kind, 'newyear');
+  const lights = a.doc.querySelector('body > .sky-lights');
+  assert.ok(lights && lights.querySelectorAll('.sky-bulb').length >= 8, 'гирлянда');
+  assert.ok(lights.querySelector('.sky-wire path').getAttribute('d').includes('Q'), 'провод дугами');
+  assert.ok(lights.compareDocumentPosition(a.doc.getElementById('app')) & 4, 'за экраном: до #app');
+  assert.equal(a.doc.querySelectorAll('.sky-fall .sky-p').length, 0);
   a.find('Без темы', '.theme-opt').click();
   assert.equal(sky().dataset.kind, 'none');
+  assert.equal(a.doc.querySelector('.sky-lights'), null, 'гирлянда убрана');
   assert.equal(a.dump()['minimum.v2'].includes('"theme":"none"'), true, 'сохранено');
   a.done();
+  // По сезону с 20 декабря — Новый год
+  const ny = await start(new Date(2026, 11, 24, 12, 0));
+  assert.equal(ny.doc.querySelector('.sky').dataset.kind, 'newyear');
+  ny.click('Настройки', '.tab');
+  assert.match(sp(ny.doc.querySelector('.theme-opt').textContent), /сейчас Новый год/);
+  ny.done();
   // с движением: частицы по кругу, только transform и opacity; смена темы — небо заново
   const b = await start(WED, { motion: true });
   const parts = b.motionLog.filter(x => x.el.classList?.contains('sky-p'));
@@ -1416,6 +1439,23 @@ test('тема (v61): по сезону по умолчанию, выбор — 
   assert.equal(b.doc.querySelectorAll('.sky').length, 1, 'призрак прежнего неба убран');
   assert.equal(b.doc.querySelectorAll('.sky-fall').length, 1);
   assert.ok(b.doc.querySelectorAll('.sky-fall .sky-snow').length >= 20, 'снег');
+  // дождь — косыми штрихами: штрих повёрнут вдоль падения, снос влево ровный
+  let from = b.motionLog.length;
+  b.find('Дождь', '.theme-opt').click();
+  const drops = b.motionLog.slice(from).filter(x => x.el.classList?.contains('sky-rain'));
+  assert.ok(drops.length >= 20, 'дождь');
+  const tr = drops[0].frames.map(f => f.transform.match(/translate\((-?[\d.]+)px, (-?[\d.]+)px\) rotate\((-?\d+)deg\)/).slice(1).map(Number));
+  assert.ok(tr.every(([, , r]) => r === 11), 'наклон вдоль падения');
+  assert.ok(tr.every(([x, y]) => Math.abs(x + 0.2 * (y - tr[0][1])) < 0.2), 'снос пропорционален падению');
+  // Новый год: снег и гирлянда за экраном; лампочки дышат волной (до старта — горят ровно)
+  from = b.motionLog.length;
+  b.find('Новый год', '.theme-opt').click();
+  const breaths = b.motionLog.slice(from).filter(x => x.el.classList?.contains('sky-bulb'));
+  assert.ok(breaths.length >= 8, 'лампочки');
+  assert.ok(breaths.every((x, i) => x.opts.iterations === Infinity && x.opts.delay === i * 300), 'волна по порядку');
+  assert.deepEqual(breaths[0].frames.map(f => f.opacity), [1, 0.45, 1]);
+  assert.ok(b.motionLog.slice(from).some(x => x.el.classList?.contains('sky-snow')), 'и снег');
+  assert.ok(b.motionLog.slice(from).some(x => x.el.matches('.sky-lights') && x.frames[0].opacity === 0), 'гирлянда проявляется');
   b.done();
 });
 

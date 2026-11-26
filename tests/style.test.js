@@ -129,3 +129,19 @@ test('поле в фокусе — без розовой рамки (видно 
   assert.match(noComments, /input:focus-visible, textarea:focus-visible\s*\{\s*outline:\s*none;\s*\}/);
   assert.match(noComments, /:focus-visible\s*\{\s*outline:\s*var\(--bw\) solid var\(--accent\)/);
 });
+
+test('тема (v61): белый значок на каждой плитке темы ≥ 3:1 по всему градиенту; частицы смешиваются так, что текст поверх', () => {
+  const tiles = Object.keys(light).filter(k => k.startsWith('tile-') && light[k].startsWith('linear-gradient'));
+  assert.deepEqual(tiles.sort(), ['tile-autumn', 'tile-newyear', 'tile-none', 'tile-rain', 'tile-spring', 'tile-summer', 'tile-winter']);
+  for (const [name, t] of themes) for (const k of tiles) {
+    const stops = t[k].match(/#[0-9a-f]{6}/gi);
+    assert.ok(stops.length >= 2, k);
+    for (const c of [...stops, mix(stops[0], stops.at(-1), 0.5)]) need(t, 'on-tile', c, 3, `${name} ${k} ${c}`);
+  }
+  assert.equal(light['sky-blend'], 'multiply', 'светлая: тёмный текст поверх частиц');
+  assert.equal(dark['sky-blend'], 'screen', 'тёмная: светлый текст поверх частиц');
+  assert.match(noComments, /\.sky-fall\s*\{[^}]*mix-blend-mode:\s*var\(--sky-blend\)/);
+  // небо начинается цветом фона — без шва под строкой состояния
+  for (const [name, t] of themes) for (const k of ['winter', 'spring', 'summer', 'autumn', 'newyear', 'rain'])
+    assert.match(t['sky-' + k], /^linear-gradient\(180deg, var\(--bg\) 0,/, `${name} sky-${k}`);
+});

@@ -24,10 +24,12 @@ export const isMilestone = n => MILESTONES.includes(n) || (n > 100 && n % 50 ===
 export const VOTE_MILESTONES = [10, 25, 50, 100, 150, 200, 250, 300, 400, 500];
 export const isVoteMilestone = n => VOTE_MILESTONES.includes(n) || (n > 500 && n % 250 === 0);
 
-// Тема (v61): небо за экраном — по сезону (по умолчанию) или своя. Сезоны — северные, по месяцу логического дня.
-export const THEME_IDS = ['season', 'winter', 'spring', 'summer', 'autumn', 'none'];
+// Тема (v61): небо за экраном — по сезону (по умолчанию) или своя. Сезоны — северные, по месяцу логического дня;
+// с 20 декабря по 10 января сезон — Новый год (гирлянда и снег). Дождь — только своим выбором.
+export const THEME_IDS = ['season', 'winter', 'spring', 'summer', 'autumn', 'newyear', 'rain', 'none'];
 export const seasonOf = date => {
-  const m = +String(date).slice(5, 7);
+  const m = +String(date).slice(5, 7), d = +String(date).slice(8, 10);
+  if ((m === 12 && d >= 20) || (m === 1 && d <= 10)) return 'newyear';
   return m === 12 || m <= 2 ? 'winter' : m <= 5 ? 'spring' : m <= 8 ? 'summer' : 'autumn';
 };
 export const skyOf = (theme, date) => (theme === 'none' ? '' : THEME_IDS.includes(theme) && theme !== 'season' ? theme : seasonOf(date));

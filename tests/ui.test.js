@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { createDOM } from '../dom.js';
 
-function env({ ua, animate = false } = {}) {
+function env({ ua, animate = false, opts } = {}) {
   const dom = new JSDOM('<!doctype html><body><div id="r"></div></body>', { pretendToBeVisual: true });
   const win = dom.window;
   if (ua) Object.defineProperty(win.navigator, 'userAgent', { value: ua, configurable: true });
@@ -23,7 +23,7 @@ function env({ ua, animate = false } = {}) {
       return a;
     };
   }
-  const M = createDOM(win);
+  const M = createDOM(win, opts);
   const root = win.document.getElementById('r');
   return { win, doc: win.document, M, root, calls, close: () => win.close() };
 }
@@ -467,5 +467,49 @@ test('число перекатывается в свою сторону: «6 ч
   M.patch(root, view('6 ч 45 мин'));
   for (const v of ['6 ч 30 мин', '7 ч', '3 из 9', '4 из 9']) M.patch(root, view(v));
   assert.deepEqual(calls.map(a => a.frames[0].transform), ['translateY(-0.55em)', 'translateY(0.55em)', 'translateY(-0.55em)', 'translateY(0.55em)']);
+  close();
+});
+
+test('небо (v61): минута без касаний — стихает, касание — оживает; гирлянда дотлевает и горит ровно; в фоне — пауза', async () => {
+  const { win, doc, M, calls, close } = env({ animate: true, opts: { skyIdle: 40 } });
+  const wait = ms => new Promise(ok => setTimeout(ok, ms));
+  M.sky('newyear');
+  const flakes = calls.filter(x => x.el.classList?.contains('sky-snow'));
+  const bulbs = calls.filter(x => x.el.classList?.contains('sky-bulb'));
+  assert.ok(flakes.length >= 10 && bulbs.length >= 8);
+  assert.ok(flakes.every(x => x.opts.iterations === Infinity));
+  // ушли в фон — пауза, вернулись — дальше
+  Object.defineProperty(doc, 'hidden', { value: true, configurable: true });
+  doc.dispatchEvent(new win.Event('visibilitychange'));
+  assert.ok([...flakes, ...bulbs].every(x => x.state === 'paused'), 'в фоне не тратит батарею');
+  Object.defineProperty(doc, 'hidden', { value: false, configurable: true });
+  doc.dispatchEvent(new win.Event('visibilitychange'));
+  assert.ok(flakes.every(x => x.state === 'running'));
+  await wait(90);
+  // стихло: слой частиц тает, частицы остановлены и убраны; гирлянда на месте и горит ровно
+  assert.ok(calls.some(x => x.el.matches('.sky-fall') && x.frames.at(-1).opacity === 0 && x.opts.duration === 2400), 'частицы тают');
+  assert.ok(flakes.every(x => x.state === 'cancelled'));
+  assert.equal(doc.querySelectorAll('.sky-fall .sky-p').length, 0);
+  assert.ok(bulbs.every(x => x.state === 'cancelled'), 'лампочки без дыхания');
+  assert.ok(doc.querySelectorAll('.sky-lights .sky-bulb').length >= 8, 'гирлянда на месте');
+  const quiet = calls.length;
+  M.sky('newyear'); // перерисовка тихое небо не будит
+  assert.equal(calls.length, quiet);
+  // касание — небо оживает
+  doc.dispatchEvent(new win.Event('pointerdown'));
+  const again = calls.slice(quiet);
+  assert.ok(again.filter(x => x.el.classList?.contains('sky-snow')).length >= 10, 'снег снова');
+  assert.ok(again.filter(x => x.el.classList?.contains('sky-bulb')).length >= 8, 'гирлянда снова дышит');
+  assert.ok(again.some(x => x.el.matches('.sky-fall') && x.frames[0].opacity === 0), 'проявляется мягко');
+  assert.equal(doc.querySelectorAll('.sky-fall').length, 1);
+  // и снова тишина — снова стихнет
+  await wait(90);
+  assert.equal(doc.querySelectorAll('.sky-fall .sky-p').length, 0);
+  // без темы — пусто и тихо
+  M.sky('');
+  assert.equal(doc.querySelector('.sky').dataset.kind, 'none');
+  await wait(5); // гирлянда сперва тает
+  assert.equal(doc.querySelector('.sky-lights'), null);
+  assert.equal(doc.querySelectorAll('.sky').length, 1, 'призрак прежнего неба убран');
   close();
 });
