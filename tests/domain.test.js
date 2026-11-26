@@ -381,7 +381,7 @@ test('нормализация: битые поля → по умолчанию,
   assert.deepEqual(n.days, { '2026-09-02': { plan: ['i1'], done: [] } });
   assert.deepEqual(n.sleep.nights, { '2026-09-03': { wake: '07:30' } });
   assert.deepEqual(n.sleep.targets, [{ from: '2026-09-01', bed: '01:00' }]);
-  assert.deepEqual(n.ui, { welcomeSeen: false, news: '', lastExport: '', setup: false });
+  assert.deepEqual(n.ui, { welcomeSeen: false, news: '', lastExport: '', setup: false, theme: 'season' });
   assert.deepEqual(n.sections, []);
   assert.deepEqual(n.secMarks, {});
   assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(n)), '2026-09-10'), n);
@@ -453,9 +453,11 @@ test('кольца дня: минимум, ночь, первый недельн
 test('ui: новости и дата экспорта переживают нормализацию, мусор — нет', () => {
   const s = mk('2026-09-01');
   s.ui = { welcomeSeen: true, news: 'v53', lastExport: '2026-09-20', junk: 1 };
-  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: 'v53', lastExport: '2026-09-20', setup: false });
-  s.ui = { welcomeSeen: true, news: 5, lastExport: '2026-02-30', setup: 'да' };
-  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: '', lastExport: '', setup: false });
+  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: 'v53', lastExport: '2026-09-20', setup: false, theme: 'season' });
+  s.ui = { welcomeSeen: true, news: 5, lastExport: '2026-02-30', setup: 'да', theme: 'неон' };
+  assert.deepEqual(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui, { welcomeSeen: true, news: '', lastExport: '', setup: false, theme: 'season' });
+  s.ui = { theme: 'winter' };
+  assert.equal(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui.theme, 'winter');
   s.ui = { welcomeSeen: false, news: '', lastExport: '', setup: true }; // настройка не закончена — переживает перезапуск
   assert.equal(D.normalize(JSON.parse(JSON.stringify(s)), '2026-09-21').ui.setup, true);
 });
@@ -1037,4 +1039,15 @@ test('«Кто я»: голоса — отметки пунктов и счёт�
   assert.equal(D.whoCount(s, 'сильный человек', today), 2);
   // друзьям «я» не уходит
   assert.doesNotMatch(JSON.stringify(shareOf(s, today, { sections: [sec.id] })), /спортивный|человек слова|учится каждый|"who"|dayWho/i);
+});
+
+test('тема (v61): по сезону — по месяцу логического дня, своя — как выбрана, «Без темы» — пусто; круглые голоса', () => {
+  assert.deepEqual(['2026-12-01', '2027-02-28', '2027-03-01', '2027-05-31', '2027-06-01', '2027-08-31', '2027-09-01', '2026-11-30'].map(D.seasonOf),
+    ['winter', 'winter', 'spring', 'spring', 'summer', 'summer', 'autumn', 'autumn']);
+  assert.equal(D.skyOf('season', '2026-12-05'), 'winter');
+  assert.equal(D.skyOf('summer', '2026-12-05'), 'summer');
+  assert.equal(D.skyOf('none', '2026-12-05'), '');
+  assert.equal(D.skyOf('неон', '2026-07-05'), 'summer', 'неизвестная — как по сезону');
+  assert.equal(D.seed('2026-10-01').ui.theme, 'season', 'новый телефон — по сезону');
+  assert.deepEqual([1, 9, 10, 25, 49, 50, 66, 100, 101, 250, 365, 400, 500, 600, 750, 1000, 1100].filter(D.isVoteMilestone), [10, 25, 50, 100, 250, 400, 500, 750, 1000]);
 });

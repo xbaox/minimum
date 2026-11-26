@@ -155,7 +155,7 @@ test('«Что нового» — один раз для тех, кто уже �
   off.done();
   const a = await start(WED, { cloud: fakeSupabase(), storage: stateWith('2026-09-30', 3, { ui: { welcomeSeen: true, news: 'v57', lastExport: '' } }) });
   assert.match(a.text(), /Что нового/);
-  assert.equal(a.doc.querySelectorAll('.news li').length, 3);
+  assert.equal(a.doc.querySelectorAll('.news li').length, 4);
   assert.match(a.text(), /«Кто я»: у привычки — своё «я»/);
   assert.match(a.text(), /«План на завтра» — прямо здесь/);
   assert.match(a.text(), /Не каждый день\?/);
@@ -1370,5 +1370,73 @@ test('«Кто я»: «Кем становлюсь» на «Прогрессе»
   await wait(10);
   b.click('Прогресс', '.tab');
   assert.match(sp(b.find('Выбрать «я»', '.who-card .who-set').textContent), /каждая отметка станет голосом/);
+  b.done();
+});
+
+// ---------- тема и круглые голоса (v61)
+
+test('тема (v61): по сезону по умолчанию, выбор — сразу в силе; без движения — только цвет неба', async () => {
+  const a = await start(WED); // 30 сентября — осень
+  const sky = () => a.doc.querySelector('.sky');
+  assert.equal(sky().dataset.kind, 'autumn');
+  assert.equal(a.doc.querySelectorAll('.sky-fall .sky-p').length, 0, 'без движения частиц нет');
+  a.click('Настройки', '.tab');
+  const opts = () => [...a.doc.querySelectorAll('.theme-opt')];
+  assert.deepEqual(opts().map(o => sp(o.querySelector('.theme-name').textContent)), ['По сезону', 'Зима', 'Весна', 'Лето', 'Осень', 'Без темы']);
+  assert.equal(opts()[0].getAttribute('aria-pressed'), 'true');
+  assert.match(sp(opts()[0].textContent), /сейчас осень/);
+  a.find('Зима', '.theme-opt').click();
+  assert.equal(a.app.state.ui.theme, 'winter');
+  assert.equal(sky().dataset.kind, 'winter');
+  assert.equal(opts()[1].getAttribute('aria-pressed'), 'true');
+  a.find('Без темы', '.theme-opt').click();
+  assert.equal(sky().dataset.kind, 'none');
+  assert.equal(a.dump()['minimum.v2'].includes('"theme":"none"'), true, 'сохранено');
+  a.done();
+  // с движением: частицы по кругу, только transform и opacity; смена темы — небо заново
+  const b = await start(WED, { motion: true });
+  const parts = b.motionLog.filter(x => x.el.classList?.contains('sky-p'));
+  assert.ok(parts.length >= 10, 'листья осени');
+  assert.ok(parts.every(x => x.opts.iterations === Infinity && x.opts.delay <= 0), 'по кругу, сразу на всём экране');
+  assert.ok(parts.every(x => x.frames.every(f => Object.keys(f).every(k => ['transform', 'opacity', 'offset', 'easing'].includes(k)))));
+  b.app.render();
+  assert.equal(b.motionLog.filter(x => x.el.classList?.contains('sky-p')).length, parts.length, 'перерисовка небо не трогает');
+  assert.ok(b.motionLog.some(x => x.el.matches('.sky-fall') && x.frames[0].opacity === 0), 'небо проявляется мягко');
+  // падение ровное: между кадрами — прямая, высота растёт равными шагами
+  const ys = parts[0].frames.map(f => +f.transform.match(/translate\([^,]+,\s*(-?[\d.]+)px/)[1]);
+  const steps = ys.slice(1).map((y, i) => y - ys[i]);
+  assert.ok(parts[0].opts.easing === 'linear' && !parts[0].frames.some(f => f.easing), 'без рывков на кадрах');
+  assert.ok(steps.every(s => Math.abs(s - steps[0]) < 0.2), 'шаги падения равные');
+  b.click('Настройки', '.tab');
+  b.find('Зима', '.theme-opt').click();
+  assert.equal(b.doc.querySelector('.sky').dataset.kind, 'winter');
+  assert.ok(b.motionLog.some(x => x.el.matches('.sky[data-kind="autumn"]') && x.frames.at(-1).opacity === 0), 'прежнее небо тает');
+  await wait(5);
+  assert.ok(parts.every(x => x.state === 'cancelled'), 'старое небо остановлено');
+  assert.equal(b.doc.querySelectorAll('.sky').length, 1, 'призрак прежнего неба убран');
+  assert.equal(b.doc.querySelectorAll('.sky-fall').length, 1);
+  assert.ok(b.doc.querySelectorAll('.sky-fall .sky-snow').length >= 20, 'снег');
+  b.done();
+});
+
+test('круглые голоса (v61): 10-й голос — плашка закатом с салютом; «я» дня на круглом — в герое «круглое число»', async () => {
+  const storage = stateWith('2026-09-30', 9, {
+    closed: range('2026-09-21', '2026-09-29'), // 9 закрытых дней — 9 голосов
+    edit: S => { S.items[0].who = 'ранняя пташка'; S.dayWho = 'человек слова'; },
+  });
+  const a = await start(WED, { storage });
+  a.rows()[0].click();
+  assert.match(sp(a.doc.querySelector('.bar-toast').textContent), /^10-й голос за: ранняя пташка — круглое число$/);
+  for (const r of [...a.rows()].slice(1)) r.click();
+  const who = a.doc.querySelector('.hero-who');
+  assert.ok(who.classList.contains('round'));
+  assert.match(sp(who.textContent), /10-й голос за — круглое числочеловек слова/);
+  a.done();
+  const b = await start(WED, { motion: true, storage });
+  const from = b.motionLog.length;
+  b.rows()[0].click();
+  const pill = b.motionLog.slice(from).map(x => x.el).find(el => el.classList?.contains('vote'));
+  assert.ok(pill.classList.contains('round'), 'плашка закатом');
+  assert.ok(b.motionLog.slice(from).some(x => x.el.classList?.contains('spark-leaf')), 'в салюте — листья осени');
   b.done();
 });

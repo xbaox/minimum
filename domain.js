@@ -19,6 +19,18 @@ export const CHOICES = ['earlier30', 'earlier15', 'keep', 'later15'];
 // Круглые даты серии — праздник закрытия дня чуть больше. 66 — средний срок, за который действие становится привычкой.
 export const MILESTONES = [3, 7, 14, 21, 30, 50, 66, 100];
 export const isMilestone = n => MILESTONES.includes(n) || (n > 100 && n % 50 === 0);
+// Круглые голоса «я» (v61) — праздник крупнее: голосов больше, чем дней серии, поэтому и шаг крупнее. Только
+// круглые числа — подпись так и говорит: «100-й голос за — круглое число».
+export const VOTE_MILESTONES = [10, 25, 50, 100, 150, 200, 250, 300, 400, 500];
+export const isVoteMilestone = n => VOTE_MILESTONES.includes(n) || (n > 500 && n % 250 === 0);
+
+// Тема (v61): небо за экраном — по сезону (по умолчанию) или своя. Сезоны — северные, по месяцу логического дня.
+export const THEME_IDS = ['season', 'winter', 'spring', 'summer', 'autumn', 'none'];
+export const seasonOf = date => {
+  const m = +String(date).slice(5, 7);
+  return m === 12 || m <= 2 ? 'winter' : m <= 5 ? 'spring' : m <= 8 ? 'summer' : 'autumn';
+};
+export const skyOf = (theme, date) => (theme === 'none' ? '' : THEME_IDS.includes(theme) && theme !== 'season' ? theme : seasonOf(date));
 
 // ---------- даты: календарная арифметика по YYYY-MM-DD через UTC, переходы времени не сдвигают дни
 
@@ -126,7 +138,7 @@ export function seed(today, id = makeId, since = today) {
     secDays: {},
     tasks: {},
     dayWho: DAY_WHO,
-    ui: { welcomeSeen: false, news: '', lastExport: '', setup: true },
+    ui: { welcomeSeen: false, news: '', lastExport: '', setup: true, theme: 'season' },
   };
 }
 
@@ -1157,6 +1169,7 @@ export function normalize(raw, today) {
       news: str(raw.ui?.news, 16),
       lastExport: isDate(raw.ui?.lastExport) ? raw.ui.lastExport : '',
       setup: raw.ui?.setup === true,
+      theme: THEME_IDS.includes(raw.ui?.theme) ? raw.ui.theme : 'season', // не выбирали — по сезону
     },
   };
 }

@@ -653,7 +653,7 @@ test('движение настройки: шаг въезжает с той с�
   a.click('Назад', '.setup-bar button');
   assert.equal(enter().frames[0].transform, 'translateX(-28px)', 'назад — слева');
   const keys = new Set(log.flatMap(x => x.frames.flatMap(f => Object.keys(f))));
-  for (const k of keys) assert.ok(['transform', 'opacity', 'strokeDashoffset', 'offset'].includes(k), 'анимируется ' + k);
+  for (const k of keys) assert.ok(['transform', 'opacity', 'strokeDashoffset', 'offset', 'easing'].includes(k), 'анимируется ' + k); // easing — кривая участка (небо, v61)
   a.done();
 });
 

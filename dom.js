@@ -316,17 +316,25 @@ export function createDOM(win) {
     fx.setAttribute('aria-hidden', 'true');
     doc.body.append(fx);
   }
-  // stars — цвет звёзд: тогда каждая четвёртая частица — звезда (праздник закрытого дня, v61).
-  function burst(origin, colors, { n = 22, spread = 1, delay = 0, stars = '' } = {}) {
+  // stars — цвет звёзд: тогда каждая четвёртая частица — звезда (праздник закрытого дня, v61);
+  // theme — тема неба: каждая пятая частица — её фигура (снежинка, лепесток, лист; летом — золотая звезда).
+  const SHAPES = {
+    winter: ['spark-snow', ['var(--snow)', 'var(--snow-2)']],
+    spring: ['spark-petal', ['var(--petal-1)', 'var(--petal-2)', 'var(--petal-3)']],
+    summer: ['spark-star', ['var(--fly)', 'var(--sun-1)']],
+    autumn: ['spark-leaf', ['var(--leaf-1)', 'var(--leaf-2)', 'var(--leaf-3)', 'var(--leaf-4)']],
+  };
+  function burst(origin, colors, { n = 22, spread = 1, delay = 0, stars = '', theme = '' } = {}) {
     if (!motion() || !origin || !origin.isConnected) return;
     layer();
     const r = origin.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const shape = SHAPES[theme];
     for (let i = 0; i < n; i++) {
       const p = doc.createElement('i');
-      const star = stars && i % 4 === 1;
-      p.className = star ? 'spark spark-star' : i % 3 ? 'spark' : 'spark spark-bar';
-      p.style.background = star ? stars : colors[i % colors.length];
+      const star = stars && i % 4 === 1, own = shape && i % 5 === 3;
+      p.className = own ? `spark ${shape[0]}` : star ? 'spark spark-star' : i % 3 ? 'spark' : 'spark spark-bar';
+      p.style.background = own ? shape[1][i % shape[1].length] : star ? stars : colors[i % colors.length];
       p.style.left = `${cx}px`;
       p.style.top = `${cy}px`;
       fx.append(p);
@@ -374,13 +382,14 @@ export function createDOM(win) {
 
   // Голос «я» (v61): плашка поднимается над отметкой и тает (≈ 2,2 с) — в том же слое, что конфетти.
   // Текст — только текстовыми узлами. Без движения — false: тогда приложение говорит то же обычной полосой.
-  function vote(origin, { over, text, color, glyph }) {
+  // round — круглое число голосов: плашка закатом, крупнее, дольше и с салютом звёзд и фигур темы.
+  function vote(origin, { over, text, color, glyph, round = false, theme = '' }) {
     if (!motion() || !origin || !origin.isConnected) return false;
     layer();
     for (const old of [...fx.querySelectorAll('.vote')].slice(0, -2)) old.remove(); // не больше трёх разом
     const r = origin.getBoundingClientRect();
     const el = doc.createElement('div');
-    el.className = 'vote';
+    el.className = round ? 'vote round' : 'vote';
     el.style.setProperty('--vc', color);
     const dot = doc.createElement('span');
     dot.className = 'vote-dot';
@@ -411,14 +420,15 @@ export function createDOM(win) {
     // Кривая — у каждого участка своя: вылет с пружиной, покой, уход вверх с таянием.
     const an = anim(el, [
       { transform: 'translateY(14px) scale(0.82)', opacity: 0, easing: EASE.spring },
-      { transform: 'translateY(0) scale(1)', opacity: 1, offset: 0.2, easing: 'linear' },
-      { transform: 'translateY(-4px) scale(1)', opacity: 1, offset: 0.78, easing: EASE.in },
+      { transform: `translateY(0) scale(${round ? 1.06 : 1})`, opacity: 1, offset: round ? 0.14 : 0.2, easing: 'linear' },
+      { transform: 'translateY(-4px) scale(1)', opacity: 1, offset: round ? 0.84 : 0.78, easing: EASE.in },
       { transform: 'translateY(-22px) scale(0.96)', opacity: 0 },
-    ], { duration: 2200, easing: 'linear', fill: 'both' });
+    ], { duration: round ? 3200 : 2200, easing: 'linear', fill: 'both' });
     if (!an) {
       el.remove();
       return false;
     }
+    if (round) burst(el, ['var(--sun-1)', 'var(--sun-2)', 'var(--sun-3)', color], { n: 24, spread: 0.9, delay: 160, stars: 'var(--fly)', theme });
     // Прокрутили (экран или лист) — плашка отстала бы от строки: тает сразу.
     let gone = false;
     const away = () => {
@@ -437,6 +447,94 @@ export function createDOM(win) {
     });
     return true;
   }
+
+  // ---------- небо темы (v61): цвет неба — слой за экраном (.sky), снег, лепестки, светлячки и листья — тонкий
+  // слой поверх (.sky-fall, касаний не ловит; под листом и подтверждением гаснет — CSS по body.locked). Оба вне #app —
+  // перерисовка их не трогает. У частицы своя глубина: ближние крупнее, ярче и быстрее, дальние — мельче и тише
+  // (параллакс). Падение ровное, качание — синусом, лепестки и листья ещё и переворачиваются; светлячок тлеет.
+  // Только transform и opacity, по кругу. Небо проявляется мягко, смена темы — перетекание, а не щелчок.
+  // Без движения — только цвет. Ушли в фон — пауза; поменялся размер окна или «Уменьшение движения» — небо заново.
+  const SKY = {
+    // dur — [дальние, ближние]: ближние падают быстрее
+    winter: { n: 28, cls: 'sky-snow', size: [3.5, 9], dur: [17000, 9000], sway: 24, spin: 0, flip: 0, glow: 0, up: false, peak: [0.4, 1], colors: ['var(--snow)', 'var(--snow-2)'] },
+    spring: { n: 12, cls: 'sky-petal', size: [6, 10.5], dur: [19000, 12000], sway: 40, spin: 200, flip: 1.6, glow: 0, up: false, peak: [0.45, 0.9], colors: ['var(--petal-1)', 'var(--petal-2)', 'var(--petal-3)'] },
+    summer: { n: 12, cls: 'sky-fly', size: [3, 6], dur: [24000, 15000], sway: 34, spin: 0, flip: 0, glow: 4, up: true, peak: [0.45, 0.85], colors: ['var(--fly)'] },
+    autumn: { n: 10, cls: 'sky-leaf', size: [8, 13], dur: [18000, 11000], sway: 52, spin: 300, flip: 1.8, glow: 0, up: false, peak: [0.55, 0.9], colors: ['var(--leaf-1)', 'var(--leaf-2)', 'var(--leaf-3)', 'var(--leaf-4)'] },
+  };
+  const SKY_STEPS = 24; // кадров на круг: между ними — прямая, поэтому падение ровное, а качание — почти синус
+  const TAU = Math.PI * 2;
+  const lerp = ([a, b], z) => a + (b - a) * z;
+  let skyEl = null, fallEl = null, skyKind = null, skyMo = null, skyAnims = [], skyW = 0, skyH = 0;
+  const skyLayer = cls => {
+    const el = doc.createElement('div');
+    el.className = cls;
+    el.setAttribute('aria-hidden', 'true');
+    return el;
+  };
+  function sky(kind = '') {
+    const W = win.innerWidth || 0, H = win.innerHeight || 0, mo = motion(), sk = kind || 'none';
+    if (kind === skyKind && mo === skyMo && skyEl?.isConnected && fallEl?.isConnected && (!skyAnims.length || (W === skyW && H === skyH))) return;
+    const swap = mo && skyKind !== null && kind !== skyKind; // тема сменилась на глазах
+    // Цвет неба: прежний — призраком поверх нового — тает.
+    if (!skyEl?.isConnected) {
+      skyEl = skyLayer('sky');
+      doc.body.prepend(skyEl);
+    } else if (swap && skyEl.dataset.kind !== sk) {
+      const ghost = skyLayer('sky');
+      ghost.dataset.kind = skyEl.dataset.kind;
+      skyEl.after(ghost);
+      done(anim(ghost, [{ opacity: 1 }, { opacity: 0 }], { duration: 900, easing: 'ease-in-out', fill: 'forwards' })).then(() => ghost.remove());
+    }
+    skyEl.dataset.kind = sk;
+    // Частицы: прежние тают и уходят, новые проявляются.
+    const old = fallEl?.isConnected ? fallEl : null, oldAnims = skyAnims;
+    skyAnims = [];
+    if (old) {
+      const drop = () => {
+        oldAnims.forEach(a => a.cancel());
+        old.remove();
+      };
+      if (swap) done(anim(old, [{ opacity: 1 }, { opacity: 0 }], { duration: 600, easing: EASE.out, fill: 'forwards' })).then(drop);
+      else drop();
+    }
+    fallEl = skyLayer('sky-fall');
+    doc.body.append(fallEl);
+    [skyKind, skyMo, skyW, skyH] = [kind, mo, W, H];
+    const cfg = SKY[kind];
+    if (!cfg || !mo || !W || !H) return;
+    for (let i = 0; i < cfg.n; i++) {
+      const z = (i + rnd()) / cfg.n; // глубина: 0 — далеко, 1 — близко; дальних и ближних поровну
+      const p = doc.createElement('i');
+      p.className = `sky-p ${cfg.cls}`;
+      const sz = lerp(cfg.size, z);
+      p.style.width = `${sz.toFixed(1)}px`;
+      p.style.height = `${(cfg.cls === 'sky-petal' ? sz * 0.78 : sz).toFixed(1)}px`;
+      p.style.left = `${Math.round(rnd() * W)}px`;
+      p.style.setProperty('--fc', cfg.colors[i % cfg.colors.length]); // снежинка — мягким пятном, остальные — заливкой
+      fallEl.append(p);
+      const dur = Math.round(lerp(cfg.dur, z) * (0.9 + rnd() * 0.2));
+      const [y0, y1] = cfg.up ? [H + 30, -30] : [-30, H + 30];
+      const sw = (0.5 + z * 0.5) * cfg.sway * (0.7 + rnd() * 0.6) * (rnd() < 0.5 ? -1 : 1);
+      const rot = cfg.spin * (0.5 + rnd()) * (rnd() < 0.5 ? -1 : 1);
+      const peak = lerp(cfg.peak, z), waves = 1 + rnd(), flips = cfg.flip * (0.6 + rnd() * 0.8);
+      const ph = rnd() * TAU, ph2 = rnd() * TAU;
+      const frames = [];
+      for (let k = 0; k <= SKY_STEPS; k++) {
+        const f = k / SKY_STEPS;
+        const x = sw * Math.sin(f * TAU * waves + ph), y = y0 + (y1 - y0) * f;
+        const turn = flips ? ` scaleX(${Math.cos(f * TAU * flips + ph2).toFixed(2)})` : ''; // лист переворачивается
+        const edge = Math.min(1, f / 0.1, (1 - f) / 0.1); // проявляется и тает у краёв экрана
+        const glow = cfg.glow ? 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(f * TAU * cfg.glow + ph2)) : 1; // светлячок тлеет — медленно, не мигает
+        frames.push({ transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) rotate(${Math.round(rot * f)}deg)${turn}`, opacity: +(peak * edge * glow).toFixed(3) });
+      }
+      const a = anim(p, frames, { duration: dur, delay: -Math.round(rnd() * dur), iterations: Infinity, easing: 'linear' });
+      if (a) skyAnims.push(a);
+    }
+    // Проявляется мягко — и при запуске, и после смены темы (тогда — чуть позже, пока прежнее тает).
+    // Под листом слой погашен (CSS) — не проявлять его там поверх.
+    if (!doc.body.classList.contains('locked')) anim(fallEl, [{ opacity: 0 }, { opacity: 1 }], { duration: 1400, delay: swap ? 250 : 0, easing: 'ease-in-out', fill: 'backwards' });
+  }
+  doc.addEventListener('visibilitychange', () => skyAnims.forEach(a => (doc.hidden ? a.pause() : a.play())));
 
   // ---------- тактильный отклик
 
@@ -645,5 +743,5 @@ export function createDOM(win) {
     }
   }
 
-  return { h, svg, patch, motion, anim, done, measure, flip, draw, stagger, reveal, countUp, burst, rise, vote, haptic, holdable, dragSheet };
+  return { h, svg, patch, motion, anim, done, measure, flip, draw, stagger, reveal, countUp, burst, rise, vote, sky, haptic, holdable, dragSheet };
 }

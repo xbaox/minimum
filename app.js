@@ -40,9 +40,10 @@ const WELCOME = (n, now, goal) =>
 // «Что нового» — один раз для тех, кто уже пользовался; новичок видит первую настройку.
 const NEWS_ID = 'v61';
 const NEWS = [
-  '«Кто я»: у привычки — своё «я» («спортивный человек», «человек слова» или своё), и каждая отметка становится голосом за него. Закрыл день — голос за главное «я» дня',
-  '«План на завтра» — прямо здесь: с вечера до шести дел по важности, утром — галочки по порядку. Карточка «План» — если такой пункт есть в минимуме (он есть в подсказках); составил план — пункт отметится сам',
+  '«Кто я»: у привычки — своё «я» («спортивный человек», «человек слова» или своё), и каждая отметка становится голосом за него. Закрытый день — голос за главное «я» дня, а круглое число голосов — 10, 25, 50, 100… — с салютом',
+  '«План на завтра» — прямо здесь: с вечера до шести дел по важности, утром — галочки по порядку. Карточка «План» — если такой пункт есть в минимуме (он есть в подсказках); план составлен — пункт отметится сам',
   'Не каждый день? Удержи пункт минимума — «Не каждый день?» переведёт его в «N раз в неделю» или в раздел, отметки перейдут с ним',
+  'Тема: небо за экраном — по сезону: зимой снег, весной лепестки, летом светлячки, осенью листья. Своя или без темы — в Настройках',
 ];
 // Разделы на выбор в первой настройке (v58). Свой — кнопкой «Свой раздел».
 const SECTION_PRESETS = [
@@ -293,6 +294,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     entrance(entered);
     doc.body.classList.toggle('locked', modal);
     doc.body.classList.toggle('in-setup', !!setup);
+    M.sky(D.skyOf(S.ui.theme, today)); // небо темы (v61): поменялись тема, сезон или размер окна — заново; иначе ничего
     win.clearTimeout(dayTimer);
     dayTimer = win.setTimeout(render, D.msToNextDay(now()) + 1000);
     tick();
@@ -888,9 +890,15 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       n > 0 && h('div', { key: 'segs', class: 'segs', 'aria-hidden': 'true' }, plan.map((id, i) =>
         h('span', { key: id, class: 'seg' + (done.includes(id) ? ' on' : ''), style: `--i:${i};--n:${plan.length}` }, h('i', { class: 'seg-fill' })))),
       // Закрытый день — голос за главное «я» (v61): «63-й голос за · дисциплинированный человек».
-      closed && who && h('p', { key: 'who', class: 'hero-who', 'data-enter': 'pop' }, h('span', { class: 'hw-star' }, gl(STAR)),
-        h('span', { class: 'hw-txt' }, h('span', { class: 'hw-over' }, `${D.whoCount(S, who, today)}-й голос за`), h('b', {}, who))),
+      closed && who && heroWho(who),
       foot && [h('div', { key: 'line', class: 'hero-line' }), foot]);
+  }
+
+  // «Я» закрытого дня в герое; круглое число голосов — звезда навыворот (белый круг) и «круглое число».
+  function heroWho(who) {
+    const n = D.whoCount(S, who, today), round = D.isVoteMilestone(n);
+    return h('p', { key: 'who', class: 'hero-who' + (round ? ' round' : ''), 'data-enter': 'pop' }, h('span', { class: 'hw-star' }, gl(STAR)),
+      h('span', { class: 'hw-txt' }, h('span', { class: 'hw-over' }, `${n}-й голос за${round ? ' — круглое число' : ''}`), h('b', {}, who)));
   }
 
   // Строка сна в герое. Днём — сколько сна по шагу и подъём, вечером — живой отсчёт до отбоя и до «телефона на кухню».
@@ -1053,16 +1061,46 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
     ];
   }
 
+  // Круглое число голосов (10, 25, 50, 100, 250…) — плашка закатом, крупнее и с салютом (v61).
   function voteOf(who) {
     const n = D.whoCount(S, who, today);
-    return n ? { over: `${n}-й голос за`, who } : null;
+    return n ? { over: `${n}-й голос за`, who, round: D.isVoteMilestone(n) } : null;
   }
   function showVote(v, el, color) {
     if (!v) return;
     const origin = el?.isConnected ? el.querySelector('.check, .wk') || el : null;
-    if (M.vote(origin, { over: v.over, text: v.who, color: `var(--c-${color || 'purple'})`, glyph: STAR })) ui.say = `${v.over}: ${v.who}`;
-    else toast(`${v.over}: ${v.who}`);
+    const over = v.round ? `${v.over} — круглое число` : v.over, said = `${v.over}: ${v.who}${v.round ? ' — круглое число' : ''}`;
+    if (M.vote(origin, { over, text: v.who, color: `var(--c-${color || 'purple'})`, glyph: STAR, round: v.round, theme: D.skyOf(S.ui.theme, today) })) ui.say = said;
+    else toast(said);
     render();
+  }
+
+  // ---------- тема (v61): небо за экраном — по сезону (по умолчанию: зима — снег, весна — лепестки, лето —
+  // светлячки, осень — листья) или своя; «Без темы» — как раньше. Выбор сразу в силе.
+  const THEMES = [['season', 'По сезону'], ['winter', 'Зима'], ['spring', 'Весна'], ['summer', 'Лето'], ['autumn', 'Осень'], ['none', 'Без темы']];
+  const THEME_NOTE = { winter: 'снег', spring: 'лепестки', summer: 'светлячки', autumn: 'листья' };
+  const SEASON_NAME = { winter: 'зима', spring: 'весна', summer: 'лето', autumn: 'осень' };
+  const themeGlyph = k => ({ winter: G.snow, spring: ICONS.plant[1], summer: ICONS.sun[1], autumn: ICONS.leaf[1] })[k] || G.noTheme;
+  function themePicker() {
+    const cur = S.ui.theme, season = D.seasonOf(today);
+    return [
+      secH('h-theme', 'Тема'),
+      h('section', { key: 'theme', class: 'group theme-grid', 'data-flip': '' }, THEMES.map(([id, name]) => {
+        const kind = id === 'season' ? season : id;
+        return h('button', { key: id, class: 'theme-opt', 'data-kind': kind, 'aria-pressed': pressed(cur === id), onclick: () => setTheme(id) },
+          h('span', { class: 'theme-tile' }, gl(themeGlyph(kind))),
+          h('span', { class: 'theme-name' }, name),
+          h('span', { class: 'theme-note' }, id === 'season' ? `сейчас ${SEASON_NAME[season]}` : id === 'none' ? 'как раньше' : THEME_NOTE[id]));
+      })),
+      h('p', { key: 'theme-foot', class: 'sec-foot', 'data-flip': '' },
+        'Небо за экраном: снег, лепестки, светлячки или листья. «По сезону» меняет его само — 1 декабря, марта, июня и сентября. С «Уменьшением движения» остаётся только цвет неба.'),
+    ];
+  }
+  function setTheme(id) {
+    if (S.ui.theme === id) return;
+    S.ui.theme = id;
+    M.haptic();
+    commit();
   }
 
   // Праздник закрытия дня: толчок колец, конфетти цветами пунктов со звёздами, огонёк серии; «я» дня всплывает
@@ -1071,20 +1109,22 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
   function celebrate() {
     if (!M.motion()) return;
     const { streak } = D.history(S, today);
-    const big = D.isMilestone(streak);
+    const theme = D.skyOf(S.ui.theme, today);
+    // Крупнее — на круглой серии и на круглом голосе за «я» дня (v61).
+    const big = D.isMilestone(streak) || (!!S.dayWho && D.isVoteMilestone(D.whoCount(S, S.dayWho, today)));
     const colors = D.activeItems(S).map(i => `var(--c-${i.color})`).concat(['var(--sun-1)', 'var(--sun-2)', 'var(--sun-3)']);
     const pulse = (el, delay) => M.anim(el, [{ transform: 'none' }, { transform: 'scale(1.07)' }, { transform: 'none' }], { duration: 600, delay });
     // День закрыли из листа дня — салют от его колец, герой за листом не виден.
     const dayRings = ui.sheet?.kind === 'day' && root.querySelector('.sheet .day-rings');
     if (dayRings) {
       pulse(dayRings, 120);
-      return M.burst(dayRings, colors, { n: big ? 30 : 20, spread: 0.8, delay: 140, stars: 'var(--sun-2)' });
+      return M.burst(dayRings, colors, { n: big ? 30 : 20, spread: 0.8, delay: 140, stars: 'var(--sun-2)', theme });
     }
     const heroEl = root.querySelector('main .hero:not(.hero-streak)');
     const ringsEl = heroEl?.querySelector('.rings');
     if (!ringsEl) return;
     pulse(ringsEl, 300);
-    M.burst(ringsEl, colors, { n: big ? 44 : 28, spread: big ? 1.35 : 1, delay: 320, stars: 'var(--on-sun)' }); // звёзды в салюте (v61)
+    M.burst(ringsEl, colors, { n: big ? 44 : 28, spread: big ? 1.35 : 1, delay: 320, stars: 'var(--on-sun)', theme }); // звёзды и фигуры темы (v61)
     // Над каждым закрытым пунктом полосы — своя звезда, волной (v61): сколько привычек, столько звёзд.
     M.rise(heroEl.querySelectorAll('.seg'), 'var(--on-sun)', { delay: 340, dist: big ? 58 : 44 });
     M.anim(root.querySelector('.topbar .streak'), [{ transform: 'none' }, { transform: 'scale(1.28)' }, { transform: 'none' }],
@@ -3068,6 +3108,7 @@ export async function boot({ win = window, now = () => new Date(), idb = win.ind
       secH('h-sleep', 'Сон'),
       h('section', { key: 'sleep', class: 'group', 'data-flip': '' }, sleepRows()),
       h('p', { key: 'sleep-foot', class: 'sec-foot', 'data-flip': '' }, sleepFoot()),
+      themePicker(),
       sectionsSettings(),
       cloud.enabled && [secH('h-friends', 'Друзья'), h('section', { key: 'friends', class: 'group', 'data-flip': '' }, cloud.joined
         ? [
